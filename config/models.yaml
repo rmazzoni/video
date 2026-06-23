@@ -1,0 +1,12 @@
+# Mid-range machine (RTX 5060, 8GB VRAM)
+
+image_model: "sdxl_base"       # Fits in 8GB with optimizations
+image_model_fallback: "flux_schnell"
+
+models:
+  sdxl_base: "models/sd3/stable-diffusion-xl-base-1.0"
+  flux_schnell: "models/flux/FLUX.1-schnell"   # Lightweight Flux variant
+
+video_model: "svd_xt"
+models_video:
+  svd_xt: "models/svd/stable-video-diffusion-img2vid-xt"
