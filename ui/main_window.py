@@ -23,8 +23,9 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStatusBar,
+    QCheckBox,
 )
-from PyQt6.QtGui import QPixmap, QCursor
+from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, pyqtSignal
 from ui.pipeline_controller import PipelineController
 
@@ -74,6 +75,8 @@ class MainWindow(QMainWindow):
 
         self._apply_theme()
         self._wire_signals()
+
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._save_script)
 
         self._refresh_recent_projects(self.controller.get_recent_projects())
         self._load_settings_to_form(self.controller.load_settings())
@@ -145,7 +148,11 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
 
         self.style_preset_input = QComboBox()
-        self.style_preset_input.addItems(["cinematic", "realistic", "anime", "watercolor", "illustration"])
+        self.style_preset_input.addItems([
+            "cinematic", "realistic", "anime", "watercolor", "illustration",
+            "noir", "baroque", "concept art", "oil painting", "impressionist",
+            "ghibli", "golden hour", "ethereal",
+        ])
 
         self.aspect_ratio_input = QComboBox()
         self.aspect_ratio_input.addItems(["16:9", "9:16", "1:1", "4:3", "21:9"])
@@ -209,6 +216,20 @@ class MainWindow(QMainWindow):
         form.addRow("Audio volume", self.audio_volume_input)
         form.addRow("Audio fade in", self.fade_in_input)
         form.addRow("Audio fade out", self.fade_out_input)
+
+        form.addRow(QLabel(""))  # spacer
+        form.addRow(QLabel("── Prompt Enhancement (Ollama) ──"))
+
+        self.use_ollama_input = QCheckBox("Enable Ollama prompt enhancement")
+        form.addRow("", self.use_ollama_input)
+
+        self.ollama_model_input = QLineEdit()
+        self.ollama_model_input.setPlaceholderText("e.g. llama3, mistral")
+        form.addRow("Ollama model", self.ollama_model_input)
+
+        self.ollama_host_input = QLineEdit()
+        self.ollama_host_input.setPlaceholderText("http://localhost:11434")
+        form.addRow("Ollama host", self.ollama_host_input)
 
         buttons = QHBoxLayout()
         btn_reload = QPushButton("Reload Settings")
@@ -384,8 +405,12 @@ class MainWindow(QMainWindow):
         btn_run_draft.clicked.connect(self._run_draft_preview)
         btn_refresh_draft = QPushButton("Refresh")
         btn_refresh_draft.clicked.connect(self._refresh_draft_grid)
+        btn_clear_cache = QPushButton("Clear Prompt Cache")
+        btn_clear_cache.setToolTip("Delete prompts.yaml so Ollama regenerates all prompts on the next run")
+        btn_clear_cache.clicked.connect(self._clear_prompt_cache)
         header_row.addWidget(btn_run_draft)
         header_row.addWidget(btn_refresh_draft)
+        header_row.addWidget(btn_clear_cache)
         root.addLayout(header_row)
 
         scroll = QScrollArea()
@@ -668,6 +693,9 @@ class MainWindow(QMainWindow):
         self.audio_volume_input.setValue(float(settings.get("audio_volume", 1.0)))
         self.fade_in_input.setValue(float(settings.get("fade_in", 0.5)))
         self.fade_out_input.setValue(float(settings.get("fade_out", 0.5)))
+        self.use_ollama_input.setChecked(bool(settings.get("use_ollama", False)))
+        self.ollama_model_input.setText(str(settings.get("ollama_model", "llama3")))
+        self.ollama_host_input.setText(str(settings.get("ollama_host", "http://localhost:11434")))
 
     def _collect_settings_from_form(self) -> dict:
         return {
@@ -686,6 +714,9 @@ class MainWindow(QMainWindow):
             "audio_volume": self.audio_volume_input.value(),
             "fade_in": self.fade_in_input.value(),
             "fade_out": self.fade_out_input.value(),
+            "use_ollama": self.use_ollama_input.isChecked(),
+            "ollama_model": self.ollama_model_input.text().strip() or "llama3",
+            "ollama_host": self.ollama_host_input.text().strip() or "http://localhost:11434",
         }
 
     def select_project(self):
@@ -715,6 +746,21 @@ class MainWindow(QMainWindow):
 
     def _relaunch(self) -> None:
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    def _clear_prompt_cache(self) -> None:
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Load a project first.")
+            return
+        path = os.path.join(project, "output", "prompts.yaml")
+        if not os.path.exists(path):
+            QMessageBox.information(self, "No cache", "No prompts.yaml found — nothing to clear.")
+            return
+        try:
+            os.remove(path)
+            self._draft_status_label.setText("Prompt cache cleared — next run will regenerate all prompts.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Delete failed", str(exc))
 
     def _run_draft_preview(self):
         path = self.project_path_input.text().strip()

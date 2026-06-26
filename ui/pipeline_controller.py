@@ -121,10 +121,15 @@ class PipelineWorker(QObject):
                 prompt_builder = PromptBuilder(
                     style_preset=self.config.get("style_preset", "cinematic"),
                     default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
+                    use_ollama=bool(self.config.get("use_ollama", False)),
+                    ollama_model=str(self.config.get("ollama_model", "llama3")),
+                    ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
                 )
-
-                self._check_cancel()
-                self._emit_progress(30, "Generating draft images (low-res)")
+                if prompt_builder._enhancer:
+                    if prompt_builder._enhancer.is_available():
+                        self.log.emit("Ollama prompt enhancement: ACTIVE")
+                    else:
+                        self.log.emit("Ollama not available — using rule-based prompts.")
                 image_gen = ImageGenerator(
                     model_path=self._resolve_path(self.config.get("sdxl_base", "models/sd3")),
                     output_dir=draft_dir,
@@ -139,6 +144,13 @@ class PipelineWorker(QObject):
                 if max_draft and max_draft < total_scenes:
                     scenes = scenes[:max_draft]
                     total_scenes = max_draft
+
+                prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+                cached_prompts: dict = {}
+                if os.path.exists(prompts_path):
+                    with open(prompts_path, "r", encoding="utf-8") as fh:
+                        cached_prompts = yaml.safe_load(fh) or {}
+
                 for index, scene in enumerate(scenes, start=1):
                     self._check_cancel()
                     scene_id = int(scene["id"])
@@ -150,7 +162,14 @@ class PipelineWorker(QObject):
                     if existing:
                         self.log.emit(f"Skipping scene {scene_id} (draft already exists).")
                     else:
-                        prompt = prompt_builder.build_prompt(scene)
+                        if scene_id in cached_prompts:
+                            prompt = cached_prompts[scene_id]
+                            self.log.emit(f"Scene {scene_id}: using cached prompt.")
+                        else:
+                            prompt = prompt_builder.build_prompt(scene)
+                            cached_prompts[scene_id] = prompt
+                            with open(prompts_path, "w", encoding="utf-8") as fh:
+                                yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
                         image_gen.generate_image(prompt, scene_id)
                     step = 30 + int((index / total_scenes) * 70)
                     self._emit_progress(step, f"Draft image {index}/{total_scenes}")
@@ -167,7 +186,18 @@ class PipelineWorker(QObject):
                 prompt_builder = PromptBuilder(
                     style_preset=self.config.get("style_preset", "cinematic"),
                     default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
+                    use_ollama=bool(self.config.get("use_ollama", False)),
+                    ollama_model=str(self.config.get("ollama_model", "llama3")),
+                    ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
                 )
+                if prompt_builder._enhancer:
+                    if prompt_builder._enhancer.is_available():
+                        self.log.emit("Ollama prompt enhancement: ACTIVE")
+                    else:
+                        self.log.emit("Ollama not available — using rule-based prompts.")
+
+                self._check_cancel()
+                self._emit_progress(30, "Generating scene images")
 
                 self._check_cancel()
                 self._emit_progress(30, "Generating scene images")
@@ -178,11 +208,27 @@ class PipelineWorker(QObject):
                     num_inference_steps=int(self.config.get("num_inference_steps", 30)),
                     seed=int(self.config.get("seed", 42)),
                 )
+
+                prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+                cached_prompts: dict = {}
+                if os.path.exists(prompts_path):
+                    with open(prompts_path, "r", encoding="utf-8") as fh:
+                        cached_prompts = yaml.safe_load(fh) or {}
+                    self.log.emit(f"Loaded {len(cached_prompts)} cached prompt(s) from prompts.yaml")
+
                 total_scenes = len(scenes)
                 for index, scene in enumerate(scenes, start=1):
                     self._check_cancel()
-                    prompt = prompt_builder.build_prompt(scene)
-                    image_gen.generate_image(prompt, int(scene["id"]))
+                    scene_id = int(scene["id"])
+                    if scene_id in cached_prompts:
+                        prompt = cached_prompts[scene_id]
+                        self.log.emit(f"Scene {scene_id}: using cached prompt.")
+                    else:
+                        prompt = prompt_builder.build_prompt(scene)
+                        cached_prompts[scene_id] = prompt
+                        with open(prompts_path, "w", encoding="utf-8") as fh:
+                            yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
+                    image_gen.generate_image(prompt, scene_id)
                     if stage == "full":
                         step = 30 + int((index / total_scenes) * 25)
                     else:
@@ -308,6 +354,9 @@ class PipelineController(QObject):
         "audio_volume": 1.0,
         "fade_in": 0.5,
         "fade_out": 0.5,
+        "use_ollama": False,
+        "ollama_model": "llama3",
+        "ollama_host": "http://localhost:11434",
     }
 
     def __init__(self):
