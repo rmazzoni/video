@@ -97,7 +97,7 @@ class PipelineWorker(QObject):
                 splitter = SceneSplitter(min_sentence_length=int(self.config.get("min_sentence_length", 20)))
                 scenes = splitter.split_into_scenes(
                     narration_text,
-                    method=self.config.get("scene_split_method", "sentence"),
+                    method=self.config.get("scene_split_method", "paragraph"),
                 )
                 if not scenes:
                     raise ValueError("No scenes were produced from narration text.")
@@ -297,7 +297,7 @@ class PipelineController(QObject):
         "aspect_ratio": "16:9",
         "seed": 42,
         "fps": 8,
-        "scene_split_method": "sentence",
+        "scene_split_method": "paragraph",
         "min_sentence_length": 20,
         "sdxl_base": "models/sd3",
         "svd": "models/svd",

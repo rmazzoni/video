@@ -291,6 +291,30 @@ class MainWindow(QMainWindow):
                 border-radius: 2px;
                 padding: 2px 6px;
             }
+            QSpinBox::up-button, QDoubleSpinBox::up-button,
+            QSpinBox::down-button, QDoubleSpinBox::down-button {
+                background-color: #2A282F;
+                border: 1px solid #36343B;
+                width: 16px;
+            }
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+                background-color: #96BDE2;
+            }
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-bottom: 6px solid #E6E1E5;
+                width: 0; height: 0;
+            }
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #E6E1E5;
+                width: 0; height: 0;
+            }
             QPlainTextEdit {
                 background-color: #1D1B20;
                 color: #E6E1E5;
@@ -554,10 +578,12 @@ class MainWindow(QMainWindow):
         if not path:
             QMessageBox.warning(self, "No project", "Load a project before saving the script.")
             return
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        Path(path).write_text(self._script_editor.toPlainText(), encoding="utf-8")
-        self._script_path_label.setText(path)
-        self.tabs.setTabText(self.tabs.indexOf(self._script_editor.parent()), "Script")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            Path(path).write_text(self._script_editor.toPlainText(), encoding="utf-8")
+            self._script_path_label.setText(f"Saved: {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save failed", str(exc))
 
     def _wire_signals(self) -> None:
         self.controller.project_changed.connect(self._on_project_changed)
@@ -569,8 +595,12 @@ class MainWindow(QMainWindow):
         self.controller.settings_saved.connect(self._on_settings_saved)
 
     def _on_project_changed(self, path: str) -> None:
+        # Only reload script from disk if the editor is empty or project actually changed
+        current_project = self.project_path_input.text().strip()
+        project_changed = os.path.abspath(path) != os.path.abspath(current_project) if current_project else True
         self.project_path_input.setText(path)
-        self._reload_script()
+        if project_changed:
+            self._reload_script()
         self._refresh_draft_grid()
 
     def _refresh_recent_projects(self, projects) -> None:
@@ -691,6 +721,7 @@ class MainWindow(QMainWindow):
         if not path:
             QMessageBox.warning(self, "No project", "Load or create a project first.")
             return
+        self._save_script()  # always flush editor to disk before running
         self.controller.set_project_path(path)
         max_scenes = self._draft_max_scenes.value()
         self.controller.run_pipeline("draft", extra_config={"draft_max_scenes": max_scenes})

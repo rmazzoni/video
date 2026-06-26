@@ -51,7 +51,7 @@ class TranscriptLoader:
 
     def _load_txt(self, path: str) -> str:
         with open(path, "r", encoding="utf-8") as f:
-            return self._clean_text(f.read())
+            return self._clean_text(f.read(), preserve_paragraphs=True)
 
     def _load_srt(self, path: str) -> str:
         with open(path, "r", encoding="utf-8") as f:
@@ -86,20 +86,24 @@ class TranscriptLoader:
         # Remove lines like: 00:00:01.000 --> 00:00:04.000
         return re.sub(r"\d{2}:\d{2}:\d{2}\.\d{3} --> .*", "", text)
 
-    def _clean_text(self, text: str) -> str:
+    def _clean_text(self, text: str, preserve_paragraphs: bool = False) -> str:
         # Remove numbering (SRT sequence numbers on their own line)
         text = re.sub(r"^\d+\s*$", "", text, flags=re.MULTILINE)
 
-        # Collapse newlines: a newline that is NOT preceded by sentence-ending
-        # punctuation (. ! ?) means the sentence continues — join with a space.
-        # A newline after sentence-ending punctuation starts a new sentence.
-        text = re.sub(r"([^.!?])\n+", r"\1 ", text)
-        text = re.sub(r"([.!?])\n+", r"\1\n", text)
+        if preserve_paragraphs:
+            # Normalise paragraph breaks to exactly two newlines
+            text = re.sub(r"\n{2,}", "\n\n", text)
+            # Within each paragraph, join mid-sentence line breaks with a space
+            paragraphs = text.split("\n\n")
+            paragraphs = [re.sub(r"\s*\n\s*", " ", p).strip() for p in paragraphs]
+            text = "\n\n".join(p for p in paragraphs if p)
+        else:
+            # SRT/VTT: join mid-sentence breaks, keep sentence-ending breaks as single newlines
+            text = re.sub(r"([^.!?])\n+", r"\1 ", text)
+            text = re.sub(r"([.!?])\n+", r"\1\n", text)
+            text = re.sub(r"\n{2,}", "\n", text)
 
         # Collapse multiple spaces
         text = re.sub(r"[ \t]+", " ", text)
-
-        # Remove blank lines left over
-        text = re.sub(r"\n{2,}", "\n", text)
 
         return text.strip()
