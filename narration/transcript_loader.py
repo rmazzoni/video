@@ -87,10 +87,19 @@ class TranscriptLoader:
         return re.sub(r"\d{2}:\d{2}:\d{2}\.\d{3} --> .*", "", text)
 
     def _clean_text(self, text: str) -> str:
-        # Remove numbering (SRT)
+        # Remove numbering (SRT sequence numbers on their own line)
         text = re.sub(r"^\d+\s*$", "", text, flags=re.MULTILINE)
 
-        # Remove extra spaces
-        text = re.sub(r"\s+", " ", text)
+        # Collapse newlines: a newline that is NOT preceded by sentence-ending
+        # punctuation (. ! ?) means the sentence continues — join with a space.
+        # A newline after sentence-ending punctuation starts a new sentence.
+        text = re.sub(r"([^.!?])\n+", r"\1 ", text)
+        text = re.sub(r"([.!?])\n+", r"\1\n", text)
+
+        # Collapse multiple spaces
+        text = re.sub(r"[ \t]+", " ", text)
+
+        # Remove blank lines left over
+        text = re.sub(r"\n{2,}", "\n", text)
 
         return text.strip()

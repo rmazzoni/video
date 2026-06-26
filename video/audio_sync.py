@@ -1,5 +1,5 @@
 import os
-from moviepy.editor import VideoFileClip, AudioFileClip
+from moviepy import VideoFileClip, AudioFileClip
 
 
 class AudioSync:

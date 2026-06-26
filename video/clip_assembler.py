@@ -1,6 +1,6 @@
 import os
 from typing import List
-import moviepy.editor as mp
+from moviepy import VideoFileClip, concatenate_videoclips
 
 
 class ClipAssembler:
@@ -33,9 +33,9 @@ class ClipAssembler:
 
         print(f"Assembling {len(clip_files)} clips...")
 
-        video_clips = [mp.VideoFileClip(path) for path in clip_files]
+        video_clips = [VideoFileClip(path) for path in clip_files]
 
-        final_video = mp.concatenate_videoclips(video_clips, method="compose")
+        final_video = concatenate_videoclips(video_clips, method="compose")
 
         final_video.write_videofile(
             self.output_path,

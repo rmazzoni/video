@@ -19,7 +19,7 @@ class SceneSplitter:
     # PUBLIC API
     # ---------------------------------------------------------
 
-    def split_into_scenes(self, text: str, method: str = "sentence") -> List[Dict]:
+    def split_into_scenes(self, text: str, method: str = "paragraph") -> List[Dict]:
         """
         Main entry point.
         :param text: narration text
@@ -28,7 +28,9 @@ class SceneSplitter:
         """
         text = text.strip()
 
-        if method == "sentence":
+        if method == "paragraph":
+            scenes = self._split_by_paragraph(text)
+        elif method == "sentence":
             scenes = self._split_by_sentence(text)
         elif method == "semantic":
             scenes = self._split_by_semantic(text)
@@ -46,6 +48,36 @@ class SceneSplitter:
             for i, scene in enumerate(scenes)
             if len(scene.strip()) >= self.min_sentence_length
         ]
+
+    # ---------------------------------------------------------
+    # PARAGRAPH SPLITTING
+    # ---------------------------------------------------------
+
+    def _split_by_paragraph(self, text: str) -> List[str]:
+        """
+        Splits on blank lines. Adjacent short paragraphs (under
+        min_sentence_length characters) are merged with the next one
+        so each scene has enough context for image generation.
+        """
+        raw = re.split(r"\n{2,}", text)
+        raw = [p.replace("\n", " ").strip() for p in raw if p.strip()]
+
+        merged: List[str] = []
+        buffer = ""
+        for para in raw:
+            if buffer:
+                buffer = buffer + " " + para
+            else:
+                buffer = para
+            if len(buffer) >= self.min_sentence_length:
+                merged.append(buffer)
+                buffer = ""
+        if buffer:
+            if merged:
+                merged[-1] = merged[-1] + " " + buffer
+            else:
+                merged.append(buffer)
+        return merged
 
     # ---------------------------------------------------------
     # SENTENCE SPLITTING

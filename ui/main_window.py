@@ -1,3 +1,7 @@
+import os
+import sys
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -16,8 +20,28 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QMessageBox,
     QInputDialog,
+    QScrollArea,
+    QSizePolicy,
+    QStatusBar,
 )
+from PyQt6.QtGui import QPixmap, QCursor
+from PyQt6.QtCore import Qt, pyqtSignal
 from ui.pipeline_controller import PipelineController
+
+
+class _ClickableImageLabel(QLabel):
+    clicked = pyqtSignal(str)  # emits the image file path
+
+    def __init__(self, image_path: str, parent=None):
+        super().__init__(parent)
+        self._image_path = image_path
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setToolTip("Click to enlarge")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._image_path)
+        super().mousePressEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -33,14 +57,30 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_pipeline_tab(), "Pipeline")
+        self.tabs.addTab(self._build_script_tab(), "Script")
+        self.tabs.addTab(self._build_draft_tab(), "Draft Preview")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         layout.addWidget(self.tabs)
 
         self.setCentralWidget(central)
+
+        # Status bar with Relaunch button
+        status_bar = QStatusBar()
+        self.setStatusBar(status_bar)
+        btn_relaunch = QPushButton("⟳ Relaunch")
+        btn_relaunch.setToolTip("Restart the application")
+        btn_relaunch.clicked.connect(self._relaunch)
+        status_bar.addPermanentWidget(btn_relaunch)
+
+        self._apply_theme()
         self._wire_signals()
 
         self._refresh_recent_projects(self.controller.get_recent_projects())
         self._load_settings_to_form(self.controller.load_settings())
+
+        recent = self.controller.get_recent_projects()
+        if recent:
+            self.controller.set_project_path(recent[0])
 
     def _build_pipeline_tab(self) -> QWidget:
         page = QWidget()
@@ -76,16 +116,13 @@ class MainWindow(QMainWindow):
         self.stage_selector = QComboBox()
         for label, value in self.controller.get_stage_options():
             self.stage_selector.addItem(label, value)
-        self.btn_run_pipeline = QPushButton("Run Full Pipeline")
-        self.btn_run_pipeline.clicked.connect(self.run_pipeline)
-        self.btn_run_stage = QPushButton("Run Selected Stage")
+        self.btn_run_stage = QPushButton("Run Stage")
         self.btn_run_stage.clicked.connect(self.run_selected_stage)
         self.btn_cancel_pipeline = QPushButton("Cancel")
         self.btn_cancel_pipeline.setEnabled(False)
         self.btn_cancel_pipeline.clicked.connect(self.cancel_pipeline)
         controls_row.addWidget(QLabel("Stage:"))
         controls_row.addWidget(self.stage_selector)
-        controls_row.addWidget(self.btn_run_pipeline)
         controls_row.addWidget(self.btn_run_stage)
         controls_row.addWidget(self.btn_cancel_pipeline)
 
@@ -120,7 +157,7 @@ class MainWindow(QMainWindow):
         self.fps_input.setRange(1, 120)
 
         self.scene_split_method_input = QComboBox()
-        self.scene_split_method_input.addItems(["sentence", "semantic", "timed"])
+        self.scene_split_method_input.addItems(["paragraph", "sentence", "semantic", "timed"])
 
         self.min_sentence_length_input = QSpinBox()
         self.min_sentence_length_input.setRange(1, 500)
@@ -185,6 +222,343 @@ class MainWindow(QMainWindow):
         root.addLayout(buttons)
         return page
 
+    def _apply_theme(self) -> None:
+        self.setStyleSheet("""
+            QMainWindow, QWidget {
+                background-color: #0F0D13;
+                color: #E6E1E5;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 12px;
+            }
+            QMenuBar {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                border-bottom: 1px solid #211F26;
+            }
+            QMenuBar::item:selected { background-color: #2A282F; }
+            QMenu {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                border: 1px solid #211F26;
+            }
+            QMenu::item:selected { background-color: #96BDE2; color: #0F0D13; }
+            QToolBar {
+                background-color: #1D1B20;
+                border-bottom: 1px solid #211F26;
+                padding: 4px 6px;
+                spacing: 4px;
+            }
+            QPushButton {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                border: 1px solid #211F26;
+                border-radius: 2px;
+                padding: 4px 12px;
+                min-height: 24px;
+                font-weight: bold;
+            }
+            QPushButton:hover  { background-color: #2A282F; }
+            QPushButton:pressed { background-color: #211F26; }
+            QPushButton:disabled { color: #8E8B90; border-color: #211F26; }
+            QComboBox {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                border: 1px solid #211F26;
+                border-radius: 2px;
+                padding: 2px 6px;
+                min-height: 22px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                selection-background-color: #96BDE2;
+                selection-color: #0F0D13;
+            }
+            QLineEdit {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                border: 1px solid #211F26;
+                border-radius: 2px;
+                padding: 2px 6px;
+                min-height: 22px;
+            }
+            QLineEdit:focus { border: 1px solid #96BDE2; }
+            QSpinBox, QDoubleSpinBox {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                border: 1px solid #211F26;
+                border-radius: 2px;
+                padding: 2px 6px;
+            }
+            QPlainTextEdit {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                border: 1px solid #211F26;
+                border-radius: 2px;
+                padding: 4px;
+                font-family: 'Consolas', monospace;
+                font-size: 11px;
+            }
+            QPlainTextEdit:focus { border: 1px solid #96BDE2; }
+            QTabWidget::pane {
+                border: 1px solid #211F26;
+                background-color: #0F0D13;
+            }
+            QTabBar::tab {
+                background-color: #1D1B20;
+                color: #8E8B90;
+                border: 1px solid #211F26;
+                padding: 6px 14px;
+            }
+            QTabBar::tab:selected {
+                background-color: #0F0D13;
+                color: #E6E1E5;
+                border-bottom: 2px solid #96BDE2;
+            }
+            QTabBar::tab:hover { background-color: #2A282F; }
+            QLabel { color: #8E8B90; }
+            QProgressBar {
+                border: 1px solid #211F26;
+                border-radius: 2px;
+                text-align: center;
+                background: #0F0D13;
+                color: #E6E1E5;
+            }
+            QProgressBar::chunk { background: #96BDE2; border-radius: 2px; }
+            QScrollBar:vertical {
+                background-color: #211F26; width: 22px; border: none;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #7d9ab9; border-radius: 5px; min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover { background-color: #96BDE2; }
+            QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {
+                border: none; background: none;
+            }
+        """)
+
+    def _build_draft_tab(self) -> QWidget:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setSpacing(6)
+
+        header_row = QHBoxLayout()
+        self._draft_status_label = QLabel("Click \"Run Draft Preview\" to generate a low-res storyboard.")
+        self._draft_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
+        header_row.addWidget(self._draft_status_label, 1)
+
+        header_row.addWidget(QLabel("Max scenes:"))
+        self._draft_max_scenes = QSpinBox()
+        self._draft_max_scenes.setRange(1, 999)
+        self._draft_max_scenes.setValue(5)
+        self._draft_max_scenes.setToolTip("Limit how many scenes are rendered in Draft Preview (0 = all)")
+        self._draft_max_scenes.setFixedWidth(60)
+        header_row.addWidget(self._draft_max_scenes)
+
+        btn_run_draft = QPushButton("Run Draft Preview")
+        btn_run_draft.clicked.connect(self._run_draft_preview)
+        btn_refresh_draft = QPushButton("Refresh")
+        btn_refresh_draft.clicked.connect(self._refresh_draft_grid)
+        header_row.addWidget(btn_run_draft)
+        header_row.addWidget(btn_refresh_draft)
+        root.addLayout(header_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._draft_grid_widget = QWidget()
+        self._draft_grid_layout = QVBoxLayout(self._draft_grid_widget)
+        self._draft_grid_layout.setSpacing(12)
+        self._draft_grid_layout.addStretch(1)
+        scroll.setWidget(self._draft_grid_widget)
+        root.addWidget(scroll, 1)
+
+        return page
+
+    def _delete_draft_image(self, image_path: str, card: QWidget) -> None:
+        try:
+            os.remove(image_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Delete failed", str(exc))
+            return
+        card.setParent(None)
+        card.deleteLater()
+        # update count label
+        project = self.project_path_input.text().strip()
+        draft_dir = os.path.join(project, "output", "draft") if project else ""
+        remaining = len([f for f in os.listdir(draft_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))]) if os.path.isdir(draft_dir) else 0
+        self._draft_status_label.setText(f"{remaining} draft image(s) — {draft_dir}")
+
+    def _open_image_viewer(self, image_path: str) -> None:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea
+        pixmap = QPixmap(image_path)
+        if pixmap.isNull():
+            return
+
+        screen = self.screen().availableGeometry()
+        max_w = int(screen.width() * 0.85)
+        max_h = int(screen.height() * 0.85)
+        scaled = pixmap.scaled(max_w, max_h, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(os.path.basename(image_path))
+        dlg.setModal(True)
+        dlg.resize(scaled.width(), scaled.height())
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel()
+        lbl.setPixmap(scaled)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.mousePressEvent = lambda _: dlg.accept()
+        lbl.setToolTip("Click to close")
+        lay.addWidget(lbl)
+        dlg.exec()
+
+    def _refresh_draft_grid(self) -> None:
+        project = self.project_path_input.text().strip()
+        draft_dir = os.path.join(project, "output", "draft") if project else ""
+
+        # clear existing cards
+        while self._draft_grid_layout.count() > 1:  # keep trailing stretch
+            item = self._draft_grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not draft_dir or not os.path.isdir(draft_dir):
+            self._draft_status_label.setText("No draft images found. Run \"Draft Preview\" first.")
+            return
+
+        images = sorted(
+            [f for f in os.listdir(draft_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+        )
+
+        if not images:
+            self._draft_status_label.setText("Draft folder is empty. Run \"Draft Preview\" first.")
+            return
+
+        scenes_yaml = os.path.join(project, "output", "scenes.yaml")
+        scene_texts: dict = {}
+        if os.path.exists(scenes_yaml):
+            try:
+                import yaml
+                data = yaml.safe_load(Path(scenes_yaml).read_text(encoding="utf-8"))
+                for s in (data or {}).get("scenes", []):
+                    scene_texts[s["id"]] = s["text"]
+            except Exception:
+                pass
+
+        self._draft_status_label.setText(f"{len(images)} draft image(s) — {draft_dir}")
+
+        for fname in images:
+            try:
+                scene_id = int(fname.split("_")[1].split(".")[0])
+            except Exception:
+                scene_id = 0
+
+            card = QWidget()
+            card.setStyleSheet("background:#1D1B20; border:1px solid #36343B; border-radius:4px;")
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(12)
+
+            img_label = _ClickableImageLabel(os.path.join(draft_dir, fname))
+            img_label.clicked.connect(self._open_image_viewer)
+            img_label.setFixedSize(160, 90)
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pixmap = QPixmap(os.path.join(draft_dir, fname))
+            if not pixmap.isNull():
+                img_label.setPixmap(
+                    pixmap.scaled(160, 90, Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+                )
+            else:
+                img_label.setText("(no image)")
+            card_layout.addWidget(img_label)
+
+            text_block = QVBoxLayout()
+            id_lbl = QLabel(f"Scene {scene_id}")
+            id_lbl.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; background:transparent; border:none;")
+            text_lbl = QLabel(scene_texts.get(scene_id, ""))
+            text_lbl.setWordWrap(True)
+            text_lbl.setStyleSheet("color:#E6E1E5; font-size:12px; background:transparent; border:none;")
+            text_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            text_block.addWidget(id_lbl)
+            text_block.addWidget(text_lbl)
+            text_block.addStretch(1)
+            card_layout.addLayout(text_block, 1)
+
+            image_file = os.path.join(draft_dir, fname)
+            btn_delete = QPushButton("🗑")
+            btn_delete.setToolTip("Delete this draft image")
+            btn_delete.setFixedSize(28, 28)
+            btn_delete.setStyleSheet(
+                "QPushButton { color:#E73A4B; background:#1D1B20; border:1px solid #36343B; "
+                "border-radius:3px; font-size:14px; padding:0; }"
+                "QPushButton:hover { background:#2A282F; }"
+            )
+            btn_delete.clicked.connect(lambda checked, p=image_file, c=card: self._delete_draft_image(p, c))
+            card_layout.addWidget(btn_delete)
+
+            self._draft_grid_layout.insertWidget(self._draft_grid_layout.count() - 1, card)
+
+    def _build_script_tab(self) -> QWidget:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setSpacing(6)
+
+        self._script_path_label = QLabel("No project loaded")
+        self._script_path_label.setStyleSheet("color:#8E8B90; font-size:11px;")
+        root.addWidget(self._script_path_label)
+
+        self._script_editor = QPlainTextEdit()
+        self._script_editor.setPlaceholderText("Open or create a project to edit the narration script.")
+        self._script_editor.setStyleSheet(
+            "QPlainTextEdit { font-family: 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.5; }"
+        )
+        root.addWidget(self._script_editor, 1)
+
+        btn_row = QHBoxLayout()
+        btn_save_script = QPushButton("Save Script")
+        btn_save_script.clicked.connect(self._save_script)
+        btn_reload_script = QPushButton("Reload from Disk")
+        btn_reload_script.clicked.connect(self._reload_script)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_reload_script)
+        btn_row.addWidget(btn_save_script)
+        root.addLayout(btn_row)
+
+        return page
+
+    def _script_file_path(self) -> str:
+        project = self.project_path_input.text().strip()
+        if not project:
+            return ""
+        return os.path.join(project, "input", "narration.txt")
+
+    def _reload_script(self) -> None:
+        path = self._script_file_path()
+        if not path:
+            return
+        if os.path.exists(path):
+            self._script_editor.setPlainText(Path(path).read_text(encoding="utf-8"))
+            self._script_path_label.setText(path)
+        else:
+            self._script_editor.clear()
+            self._script_path_label.setText(f"{path}  (not found)")
+
+    def _save_script(self) -> None:
+        path = self._script_file_path()
+        if not path:
+            QMessageBox.warning(self, "No project", "Load a project before saving the script.")
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        Path(path).write_text(self._script_editor.toPlainText(), encoding="utf-8")
+        self._script_path_label.setText(path)
+        self.tabs.setTabText(self.tabs.indexOf(self._script_editor.parent()), "Script")
+
     def _wire_signals(self) -> None:
         self.controller.project_changed.connect(self._on_project_changed)
         self.controller.recent_projects_changed.connect(self._refresh_recent_projects)
@@ -196,6 +570,8 @@ class MainWindow(QMainWindow):
 
     def _on_project_changed(self, path: str) -> None:
         self.project_path_input.setText(path)
+        self._reload_script()
+        self._refresh_draft_grid()
 
     def _refresh_recent_projects(self, projects) -> None:
         self.recent_projects_combo.blockSignals(True)
@@ -204,7 +580,6 @@ class MainWindow(QMainWindow):
         self.recent_projects_combo.blockSignals(False)
 
     def _on_pipeline_started(self) -> None:
-        self.btn_run_pipeline.setEnabled(False)
         self.btn_run_stage.setEnabled(False)
         self.btn_cancel_pipeline.setEnabled(True)
         self.pipeline_status_label.setText("Pipeline started")
@@ -220,9 +595,13 @@ class MainWindow(QMainWindow):
         self.log_output.appendPlainText(message)
 
     def _on_pipeline_finished(self, success: bool, payload: str) -> None:
-        self.btn_run_pipeline.setEnabled(True)
         self.btn_run_stage.setEnabled(True)
         self.btn_cancel_pipeline.setEnabled(False)
+
+        # Auto-refresh the draft grid whenever the draft stage completes
+        if success and payload and os.path.isdir(payload) and "draft" in payload:
+            self._refresh_draft_grid()
+
         if success:
             self.pipeline_status_label.setText("Pipeline complete")
             self.pipeline_progress.setValue(100)
@@ -248,7 +627,7 @@ class MainWindow(QMainWindow):
         self.aspect_ratio_input.setCurrentText(str(settings.get("aspect_ratio", "16:9")))
         self.seed_input.setValue(int(settings.get("seed", 42)))
         self.fps_input.setValue(int(settings.get("fps", 8)))
-        self.scene_split_method_input.setCurrentText(str(settings.get("scene_split_method", "sentence")))
+        self.scene_split_method_input.setCurrentText(str(settings.get("scene_split_method", "paragraph")))
         self.min_sentence_length_input.setValue(int(settings.get("min_sentence_length", 20)))
         self.sdxl_model_input.setText(str(settings.get("sdxl_base", "models/sd3")))
         self.svd_model_input.setText(str(settings.get("svd", "models/svd")))
@@ -304,11 +683,18 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Create project failed", str(exc))
 
-    def run_pipeline(self):
+    def _relaunch(self) -> None:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    def _run_draft_preview(self):
         path = self.project_path_input.text().strip()
-        if path:
-            self.controller.set_project_path(path)
-        self.controller.run_full_pipeline()
+        if not path:
+            QMessageBox.warning(self, "No project", "Load or create a project first.")
+            return
+        self.controller.set_project_path(path)
+        max_scenes = self._draft_max_scenes.value()
+        self.controller.run_pipeline("draft", extra_config={"draft_max_scenes": max_scenes})
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self._draft_grid_widget.parent().parent()))
 
     def run_selected_stage(self):
         path = self.project_path_input.text().strip()

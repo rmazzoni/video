@@ -61,7 +61,7 @@ class PipelineWorker(QObject):
     def run(self):
         try:
             stage = (self.stage or "full").strip().lower()
-            if stage not in {"full", "narration", "scenes", "images", "clips", "assemble", "audio"}:
+            if stage not in {"full", "narration", "scenes", "images", "clips", "assemble", "audio", "draft"}:
                 raise ValueError(f"Unknown stage: {stage}")
 
             input_text = os.path.join(self.project_path, "input", "narration.txt")
@@ -80,7 +80,7 @@ class PipelineWorker(QObject):
             narration_text = ""
             scenes = []
 
-            if stage in {"full", "narration", "scenes", "images"}:
+            if stage in {"full", "narration", "scenes", "images", "draft"}:
                 self._check_cancel()
                 self._emit_progress(5, "Loading narration")
                 narration_text = TranscriptLoader().load(input_text)
@@ -91,7 +91,7 @@ class PipelineWorker(QObject):
                     self.finished.emit(True, input_text)
                     return
 
-            if stage in {"full", "scenes", "images"}:
+            if stage in {"full", "scenes", "images", "draft"}:
                 self._check_cancel()
                 self._emit_progress(15, "Splitting narration into scenes")
                 splitter = SceneSplitter(min_sentence_length=int(self.config.get("min_sentence_length", 20)))
@@ -109,6 +109,55 @@ class PipelineWorker(QObject):
                     self._emit_progress(100, "Scenes generated")
                     self.finished.emit(True, scenes_path)
                     return
+
+            if stage == "draft":
+                from images.image_generator import ImageGenerator
+
+                draft_dir = os.path.join(self.project_path, "output", "draft")
+                os.makedirs(draft_dir, exist_ok=True)
+
+                self._check_cancel()
+                self._emit_progress(25, "Building prompts for draft")
+                prompt_builder = PromptBuilder(
+                    style_preset=self.config.get("style_preset", "cinematic"),
+                    default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
+                )
+
+                self._check_cancel()
+                self._emit_progress(30, "Generating draft images (low-res)")
+                image_gen = ImageGenerator(
+                    model_path=self._resolve_path(self.config.get("sdxl_base", "models/sd3")),
+                    output_dir=draft_dir,
+                    guidance_scale=4.0,
+                    num_inference_steps=8,
+                    seed=int(self.config.get("seed", 42)),
+                    width=512,
+                    height=512,
+                )
+                total_scenes = len(scenes)
+                max_draft = int(self.config.get("draft_max_scenes", 0))
+                if max_draft and max_draft < total_scenes:
+                    scenes = scenes[:max_draft]
+                    total_scenes = max_draft
+                for index, scene in enumerate(scenes, start=1):
+                    self._check_cancel()
+                    scene_id = int(scene["id"])
+                    existing = next(
+                        (os.path.join(draft_dir, f) for f in os.listdir(draft_dir)
+                         if f.startswith(f"scene_{scene_id:03d}") and f.lower().endswith((".png", ".jpg", ".jpeg"))),
+                        None,
+                    )
+                    if existing:
+                        self.log.emit(f"Skipping scene {scene_id} (draft already exists).")
+                    else:
+                        prompt = prompt_builder.build_prompt(scene)
+                        image_gen.generate_image(prompt, scene_id)
+                    step = 30 + int((index / total_scenes) * 70)
+                    self._emit_progress(step, f"Draft image {index}/{total_scenes}")
+
+                self._emit_progress(100, "Draft preview ready")
+                self.finished.emit(True, draft_dir)
+                return
 
             if stage in {"full", "images"}:
                 from images.image_generator import ImageGenerator
@@ -234,6 +283,7 @@ class PipelineController(QObject):
 
     PIPELINE_STAGES: List[Tuple[str, str]] = [
         ("Full Pipeline", "full"),
+        ("Draft Preview", "draft"),
         ("Load Narration", "narration"),
         ("Split Scenes", "scenes"),
         ("Generate Images", "images"),
@@ -327,7 +377,7 @@ class PipelineController(QObject):
     def run_full_pipeline(self) -> None:
         self.run_pipeline("full")
 
-    def run_pipeline(self, stage: str = "full") -> None:
+    def run_pipeline(self, stage: str = "full", extra_config: dict = None) -> None:
         if self._thread is not None:
             self.log.warning("Pipeline is already running.")
             return
@@ -338,8 +388,12 @@ class PipelineController(QObject):
             self.pipeline_finished.emit(False, error)
             return
 
+        merged_config = dict(self.config)
+        if extra_config:
+            merged_config.update(extra_config)
+
         self._thread = QThread()
-        self._worker = PipelineWorker(self.project_path, dict(self.config), self.root_dir, stage=stage)
+        self._worker = PipelineWorker(self.project_path, merged_config, self.root_dir, stage=stage)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
