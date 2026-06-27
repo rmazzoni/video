@@ -121,6 +121,27 @@ class PipelineWorker(QObject):
                 voice = self.config.get("tts_voice", "it-IT-DiegoNeural")
                 self.log.emit(f"TTS voice: {voice}")
 
+                # Use dubbed text from dubbing.yaml if it exists, else scene text
+                dubbing_path = os.path.join(self.project_path, "output", "dubbing.yaml")
+                dubbed_texts: dict = {}
+                if os.path.exists(dubbing_path):
+                    with open(dubbing_path, "r", encoding="utf-8") as fh:
+                        raw = yaml.safe_load(fh) or {}
+                    dubbed_texts = {
+                        int(k): (v.get("dubbed") or v.get("original") or "")
+                        for k, v in raw.items()
+                    }
+                    self.log.emit(f"Loaded dubbed text for {len(dubbed_texts)} scene(s) from dubbing.yaml")
+
+                # Merge dubbed text into scenes
+                tts_scenes = []
+                for s in scenes:
+                    sid = int(s["id"])
+                    tts_scenes.append({
+                        "id": sid,
+                        "text": dubbed_texts.get(sid, s["text"]) or s["text"],
+                    })
+
                 def _on_tts_progress(scene_id, index, total, skipped=False):
                     action = "Skipped" if skipped else "Synthesised"
                     step = 20 + int((index / total) * 75)
@@ -135,7 +156,7 @@ class PipelineWorker(QObject):
                     volume=self.config.get("tts_volume", "+0%"),
                 )
                 engine.synthesise_scenes(
-                    scenes,
+                    tts_scenes,
                     timings_path=timings_path,
                     on_progress=_on_tts_progress,
                     skip_existing=True,
@@ -168,8 +189,8 @@ class PipelineWorker(QObject):
                 image_gen = ImageGenerator(
                     model_path=self._resolve_path(self.config.get("sdxl_base", "models/sd3")),
                     output_dir=draft_dir,
-                    guidance_scale=4.0,
-                    num_inference_steps=8,
+                    guidance_scale=6.0,
+                    num_inference_steps=15,
                     seed=int(self.config.get("seed", 42)),
                     width=512,
                     height=512,
@@ -287,19 +308,43 @@ class PipelineWorker(QObject):
                 clip_engine = self.config.get("clip_engine", "ken_burns")
                 self.log.emit(f"Clip engine: {clip_engine}")
 
-                # Load per-scene audio timings if available
+                # Load per-scene audio timings — from timings.yaml if present,
+                # otherwise measure MP3 durations directly from the audio folder.
                 scene_timings: dict = {}
                 if os.path.exists(timings_path):
                     with open(timings_path, "r", encoding="utf-8") as fh:
                         scene_timings = yaml.safe_load(fh) or {}
                     self.log.emit(f"Loaded audio timings for {len(scene_timings)} scene(s).")
+                elif os.path.isdir(tts_dir):
+                    self.log.emit("timings.yaml not found — measuring MP3 durations directly.")
+                    for mp3 in os.listdir(tts_dir):
+                        if not mp3.startswith("scene_") or not mp3.endswith(".mp3"):
+                            continue
+                        try:
+                            sid = int(mp3[6:9])
+                        except ValueError:
+                            continue
+                        mp3_path = os.path.join(tts_dir, mp3)
+                        try:
+                            from mutagen.mp3 import MP3
+                            scene_timings[sid] = MP3(mp3_path).info.length
+                        except Exception:
+                            try:
+                                from moviepy import AudioFileClip as _AFC
+                                c = _AFC(mp3_path); scene_timings[sid] = c.duration; c.close()
+                            except Exception:
+                                pass
+                    if scene_timings:
+                        with open(timings_path, "w", encoding="utf-8") as fh:
+                            yaml.safe_dump(scene_timings, fh, sort_keys=True)
+                        self.log.emit(f"Measured and saved timings for {len(scene_timings)} scene(s).")
 
                 if clip_engine == "ken_burns":
                     from video.ken_burns_generator import KenBurnsGenerator
                     default_duration = float(self.config.get("ken_burns_duration", 4.0))
                     generator = KenBurnsGenerator(
                         output_dir=clips_dir,
-                        fps=int(self.config.get("fps", 24)),
+                        fps=int(self.config.get("ken_burns_fps", 24)),
                         duration=default_duration,
                         seed=int(self.config.get("seed", 42)),
                     )
@@ -344,9 +389,16 @@ class PipelineWorker(QObject):
                 from video.clip_assembler import ClipAssembler
 
                 self._check_cancel()
-                self._emit_progress(82 if stage == "full" else 20, "Assembling final video")
-                assembler = ClipAssembler(final_video_path, fps=int(self.config.get("fps", 8)))
-                assembler.assemble(clips_dir)
+                base = 82 if stage == "full" else 20
+                self._emit_progress(base, "Loading clips…")
+                assembler = ClipAssembler(final_video_path, fps=int(self.config.get("ken_burns_fps", 24)))
+
+                def _on_clip_loaded(loaded, total):
+                    step = base + int((loaded / total) * 15)
+                    self._emit_progress(step, f"Loading clip {loaded}/{total}…")
+
+                assembler.assemble(clips_dir, on_progress=_on_clip_loaded)
+                self._emit_progress(base + 15, "Writing final video…")
 
                 if stage == "assemble":
                     self._emit_progress(100, "Assemble complete")
@@ -451,6 +503,7 @@ class PipelineController(QObject):
         "fade_out": 0.5,
         "clip_engine": "ken_burns",
         "ken_burns_duration": 4.0,
+        "ken_burns_fps": 24,
         "tts_voice": "it-IT-DiegoNeural",
         "tts_rate": "+0%",
         "tts_pitch": "+0Hz",

@@ -45,19 +45,31 @@ class AudioSync:
         video = VideoFileClip(video_path)
 
         print("Loading audio...")
-        audio = AudioFileClip(audio_path).volumex(self.audio_volume)
+        audio = AudioFileClip(audio_path)
+        if self.audio_volume != 1.0:
+            audio = audio.with_volume_scaled(self.audio_volume)
 
-        # Apply fades if needed
+        # Apply fades using MoviePy v2 effects
         if self.fade_in > 0:
-            audio = audio.audio_fadein(self.fade_in)
+            from moviepy.audio.fx import AudioFadeIn
+            audio = audio.with_effects([AudioFadeIn(self.fade_in)])
         if self.fade_out > 0:
-            audio = audio.audio_fadeout(self.fade_out)
+            from moviepy.audio.fx import AudioFadeOut
+            audio = audio.with_effects([AudioFadeOut(self.fade_out)])
 
-        # Trim or loop audio to match video duration
+        # If audio is longer than video, freeze the last frame to fill the gap
+        # rather than cutting the audio short.
+        if audio.duration > video.duration:
+            from moviepy.video.fx import Freeze
+            extra = audio.duration - video.duration
+            # Freeze the very last frame for the extra duration
+            freeze_t = max(video.duration - 0.04, 0)
+            video = video.with_effects([Freeze(t=freeze_t, freeze_duration=extra)])
+
         audio = self._match_audio_to_video(audio, video.duration)
 
         print("Merging audio with video...")
-        final = video.set_audio(audio)
+        final = video.with_audio(audio)
 
         final.write_videofile(
             self.output_path,
@@ -80,12 +92,10 @@ class AudioSync:
         """
 
         if audio.duration > video_duration:
-            return audio.subclip(0, video_duration)
+            return audio.subclipped(0, video_duration)
 
         if audio.duration < video_duration:
-            silence_duration = video_duration - audio.duration
-            silence = AudioFileClip(self._generate_silence(silence_duration))
-            return audio.set_duration(video_duration)
+            return audio.with_duration(video_duration)
 
         return audio
 

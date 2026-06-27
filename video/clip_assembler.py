@@ -20,20 +20,25 @@ class ClipAssembler:
     # PUBLIC API
     # ---------------------------------------------------------
 
-    def assemble(self, clips_dir: str) -> str:
+    def assemble(self, clips_dir: str, on_progress=None) -> str:
         """
         Concatenates all MP4 clips in a directory into a single video.
+        :param on_progress: optional callback(loaded, total) called as each clip is loaded
         Returns the output file path.
         """
-
         clip_files = self._get_sorted_clips(clips_dir)
 
         if not clip_files:
             raise ValueError(f"No clips found in {clips_dir}")
 
-        print(f"Assembling {len(clip_files)} clips...")
+        total = len(clip_files)
+        print(f"Assembling {total} clips...")
 
-        video_clips = [VideoFileClip(path) for path in clip_files]
+        video_clips = []
+        for i, path in enumerate(clip_files, start=1):
+            video_clips.append(VideoFileClip(path))
+            if on_progress:
+                on_progress(i, total)
 
         final_video = concatenate_videoclips(video_clips, method="compose")
 
@@ -41,7 +46,7 @@ class ClipAssembler:
             self.output_path,
             fps=self.fps,
             codec="libx264",
-            audio=False
+            audio=False,
         )
 
         return self.output_path

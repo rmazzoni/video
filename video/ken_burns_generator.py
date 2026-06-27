@@ -126,14 +126,19 @@ class KenBurnsGenerator:
     # ---------------------------------------------------------
 
     def _output_size(self, img_w: int, img_h: int):
-        """Return (width, height) for the output video, preserving aspect ratio."""
+        """Return (width, height) for the output video at 1920x1080 (or scaled to aspect ratio)."""
         aspect = img_w / img_h
-        if aspect >= 1:          # landscape / square
-            out_w = min(img_w, 1280)
+        # Target 1920x1080 for 16:9; scale proportionally for other ratios
+        target_w, target_h = 1920, 1080
+        if abs(aspect - 16/9) < 0.05:          # 16:9
+            out_w, out_h = 1920, 1080
+        elif abs(aspect - 9/16) < 0.05:        # 9:16 portrait
+            out_w, out_h = 1080, 1920
+        elif abs(aspect - 1.0) < 0.05:         # 1:1
+            out_w, out_h = 1080, 1080
+        else:
+            out_w = target_w
             out_h = int(out_w / aspect)
-        else:                    # portrait
-            out_h = min(img_h, 720)
-            out_w = int(out_h * aspect)
         # ensure even dimensions (required by libx264)
         out_w = out_w if out_w % 2 == 0 else out_w - 1
         out_h = out_h if out_h % 2 == 0 else out_h - 1

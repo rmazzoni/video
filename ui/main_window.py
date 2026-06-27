@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_pipeline_tab(), "Pipeline")
         self.tabs.addTab(self._build_script_tab(), "Script")
+        self.tabs.addTab(self._build_dubbing_tab(), "Dubbing")
         self.tabs.addTab(self._build_draft_tab(), "Draft Preview")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         layout.addWidget(self.tabs)
@@ -76,7 +77,13 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         self._wire_signals()
 
-        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._save_script)
+        def _ctrl_s():
+            tab_title = self.tabs.tabText(self.tabs.currentIndex())
+            if tab_title == "Dubbing":
+                self._dub_save()
+            else:
+                self._save_script()
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(_ctrl_s)
 
         self._refresh_recent_projects(self.controller.get_recent_projects())
         self._load_settings_to_form(self.controller.load_settings())
@@ -129,6 +136,17 @@ class MainWindow(QMainWindow):
         controls_row.addWidget(self.btn_run_stage)
         controls_row.addWidget(self.btn_cancel_pipeline)
 
+        extras_row = QHBoxLayout()
+        btn_clear_clips = QPushButton("🗑 Clear Clips")
+        btn_clear_clips.setToolTip("Delete all files in output/clips/ so they are regenerated with correct durations")
+        btn_clear_clips.clicked.connect(self._clear_clips)
+        btn_clear_draft = QPushButton("🗑 Clear Draft")
+        btn_clear_draft.setToolTip("Delete draft images so they are regenerated with current prompts")
+        btn_clear_draft.clicked.connect(self._clear_draft)
+        extras_row.addStretch(1)
+        extras_row.addWidget(btn_clear_draft)
+        extras_row.addWidget(btn_clear_clips)
+
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("Pipeline logs will appear here")
@@ -138,6 +156,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.pipeline_status_label)
         root.addWidget(self.pipeline_progress)
         root.addLayout(controls_row)
+        root.addLayout(extras_row)
         root.addWidget(self.log_output, 1)
         return page
 
@@ -195,6 +214,13 @@ class MainWindow(QMainWindow):
         self.ken_burns_duration_input.setDecimals(1)
         self.ken_burns_duration_input.setSingleStep(0.5)
         self.ken_burns_duration_input.setValue(4.0)
+        form.addRow("Ken Burns duration (s)", self.ken_burns_duration_input)
+
+        self.ken_burns_fps_input = QSpinBox()
+        self.ken_burns_fps_input.setRange(12, 60)
+        self.ken_burns_fps_input.setValue(24)
+        self.ken_burns_fps_input.setToolTip("Frames per second for Ken Burns clips (24 = smooth, 30 = very smooth)")
+        form.addRow("Ken Burns FPS", self.ken_burns_fps_input)
 
         self.guidance_scale_input = QDoubleSpinBox()
         self.guidance_scale_input.setRange(1.0, 30.0)
@@ -251,6 +277,7 @@ class MainWindow(QMainWindow):
         for label, short_name, _gender in EDGE_TTS_VOICES:
             self.tts_voice_input.addItem(label, short_name)
         self.tts_voice_input.setToolTip("Voice used for narration synthesis")
+        self.tts_voice_input.currentIndexChanged.connect(self._on_tts_voice_changed)
 
         self._tts_preview_btn = QPushButton("▶ Preview")
         self._tts_preview_btn.setToolTip("Play a sample of the selected voice")
@@ -503,11 +530,8 @@ class MainWindow(QMainWindow):
             return
         card.setParent(None)
         card.deleteLater()
-        # update count label
-        project = self.project_path_input.text().strip()
-        draft_dir = os.path.join(project, "output", "draft") if project else ""
-        remaining = len([f for f in os.listdir(draft_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))]) if os.path.isdir(draft_dir) else 0
-        self._draft_status_label.setText(f"{remaining} draft image(s) — {draft_dir}")
+        # Refresh grid to recount and update label
+        self._refresh_draft_grid()
 
     def _open_image_viewer(self, image_path: str) -> None:
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea
@@ -537,24 +561,40 @@ class MainWindow(QMainWindow):
 
     def _refresh_draft_grid(self) -> None:
         project = self.project_path_input.text().strip()
-        draft_dir = os.path.join(project, "output", "draft") if project else ""
+        draft_dir   = os.path.join(project, "output", "draft")  if project else ""
+        images_dir  = os.path.join(project, "output", "images") if project else ""
+
+        # Prefer full-res images when they exist; fall back to draft folder
+        def _images_from(folder: str):
+            if not folder or not os.path.isdir(folder):
+                return []
+            return sorted(f for f in os.listdir(folder)
+                          if f.lower().endswith((".png", ".jpg", ".jpeg")))
+
+        final_images = _images_from(images_dir)
+        draft_images = _images_from(draft_dir)
+
+        if final_images:
+            active_dir = images_dir
+            images = final_images
+            source_label = "final images"
+        elif draft_images:
+            active_dir = draft_dir
+            images = draft_images
+            source_label = "draft images"
+        else:
+            active_dir = draft_dir
+            images = []
+            source_label = ""
 
         # clear existing cards
-        while self._draft_grid_layout.count() > 1:  # keep trailing stretch
+        while self._draft_grid_layout.count() > 1:
             item = self._draft_grid_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        if not draft_dir or not os.path.isdir(draft_dir):
-            self._draft_status_label.setText("No draft images found. Run \"Draft Preview\" first.")
-            return
-
-        images = sorted(
-            [f for f in os.listdir(draft_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
-        )
-
         if not images:
-            self._draft_status_label.setText("Draft folder is empty. Run \"Draft Preview\" first.")
+            self._draft_status_label.setText("No images found. Run Draft Preview or Generate Images first.")
             return
 
         scenes_yaml = os.path.join(project, "output", "scenes.yaml")
@@ -568,7 +608,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        self._draft_status_label.setText(f"{len(images)} draft image(s) — {draft_dir}")
+        self._draft_status_label.setText(f"{len(images)} image(s) — showing {source_label}")
 
         for fname in images:
             try:
@@ -582,11 +622,11 @@ class MainWindow(QMainWindow):
             card_layout.setContentsMargins(10, 8, 10, 8)
             card_layout.setSpacing(12)
 
-            img_label = _ClickableImageLabel(os.path.join(draft_dir, fname))
+            img_label = _ClickableImageLabel(os.path.join(active_dir, fname))
             img_label.clicked.connect(self._open_image_viewer)
             img_label.setFixedSize(160, 90)
             img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            pixmap = QPixmap(os.path.join(draft_dir, fname))
+            pixmap = QPixmap(os.path.join(active_dir, fname))
             if not pixmap.isNull():
                 img_label.setPixmap(
                     pixmap.scaled(160, 90, Qt.AspectRatioMode.KeepAspectRatio,
@@ -608,7 +648,7 @@ class MainWindow(QMainWindow):
             text_block.addStretch(1)
             card_layout.addLayout(text_block, 1)
 
-            image_file = os.path.join(draft_dir, fname)
+            image_file = os.path.join(active_dir, fname)
             btn_delete = QPushButton("🗑")
             btn_delete.setToolTip("Delete this draft image")
             btn_delete.setFixedSize(28, 28)
@@ -621,6 +661,507 @@ class MainWindow(QMainWindow):
             card_layout.addWidget(btn_delete)
 
             self._draft_grid_layout.insertWidget(self._draft_grid_layout.count() - 1, card)
+
+    # ── Dubbing tab ───────────────────────────────────────────────────────────
+    # Color palette (matches dubbing_editor.py)
+    _DUB_NOT_DUBBED = ("#0e2a3d", "#5BB4D8")   # dark-blue bg, light-blue icon
+    _DUB_TO_REDUB   = ("#3d3000", "#F8B23D")   # amber  — text changed after dub
+    _DUB_DUBBED     = ("#0d2e14", "#4CAF50")   # green  — audio up-to-date
+
+    _DUB_BTN_COLORS = {
+        "none":      ("#555555", "#444444"),   # grey   — no segments loaded
+        "all_stale": ("#c0392b", "#a93226"),   # red    — nothing dubbed yet
+        "stale":     ("#e67e22", "#ca6f1e"),   # orange — some need redubbing
+        "complete":  ("#27ae60", "#1e8449"),   # green  — all up to date
+    }
+    _BTN_SS = (
+        "QPushButton {{ background-color:{bg}; color:white; font-weight:bold; "
+        "font-size:13px; border-radius:5px; padding:4px 14px; border:none; }}"
+        "QPushButton:hover {{ background-color:{hv}; }}"
+        "QPushButton:pressed {{ background-color:{hv}; }}"
+        "QPushButton:disabled {{ background-color:#555; color:#999; }}"
+    )
+
+    def _build_dubbing_tab(self) -> QWidget:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setSpacing(4)
+
+        # ── Toolbar ──────────────────────────────────────────────────────────
+        bar = QHBoxLayout()
+        self._dub_status_label = QLabel("Load scenes to start editing dubbed text.")
+        self._dub_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
+        bar.addWidget(self._dub_status_label, 1)
+
+        btn_load = QPushButton("Load from Scenes")
+        btn_load.setToolTip("Populate cards from scenes.yaml")
+        btn_load.clicked.connect(self._dub_load_from_scenes)
+
+        self._dub_all_btn = QPushButton("⏩ Dub All")
+        self._dub_all_btn.setToolTip("Synthesise audio for all segments")
+        self._dub_all_btn.clicked.connect(self._dub_all)
+
+        self._dub_save_btn = QPushButton("💾 Save Dubbing")
+        self._dub_save_btn.setToolTip("Save all dubbed text to dubbing.yaml  (Ctrl+S)")
+        self._dub_save_btn.clicked.connect(self._dub_save)
+
+        bar.addWidget(btn_load)
+        bar.addWidget(self._dub_all_btn)
+        bar.addWidget(self._dub_save_btn)
+        root.addLayout(bar)
+
+        # ── Progress bar (shown only during Dub All) ──────────────────────────
+        self._dub_progress = QProgressBar()
+        self._dub_progress.setRange(0, 100)
+        self._dub_progress.setFixedHeight(6)
+        self._dub_progress.setTextVisible(False)
+        self._dub_progress.setStyleSheet(
+            "QProgressBar { background:#0F0D13; border:none; }"
+            "QProgressBar::chunk { background:#4CAF50; }"
+        )
+        self._dub_progress.setVisible(False)
+        root.addWidget(self._dub_progress)
+
+        # ── Segment cards ─────────────────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._dub_cards_widget = QWidget()
+        self._dub_cards_layout = QVBoxLayout(self._dub_cards_widget)
+        self._dub_cards_layout.setSpacing(6)
+        self._dub_cards_layout.addStretch(1)
+        scroll.setWidget(self._dub_cards_widget)
+        root.addWidget(scroll, 1)
+
+        return page
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _dub_yaml_path(self) -> str:
+        project = self.project_path_input.text().strip()
+        return os.path.join(project, "output", "dubbing.yaml") if project else ""
+
+    def _dub_audio_path(self, sid: int) -> str:
+        project = self.project_path_input.text().strip()
+        return os.path.join(project, "output", "audio", f"scene_{sid:03d}.mp3") if project else ""
+
+    def _dub_scenes_yaml_path(self) -> str:
+        project = self.project_path_input.text().strip()
+        return os.path.join(project, "output", "scenes.yaml") if project else ""
+
+    def _dub_state(self, sid: int) -> str:
+        """Return 'not_dubbed', 'to_redub', or 'dubbed' for a scene."""
+        audio = self._dub_audio_path(sid)
+        if not os.path.exists(audio):
+            return "not_dubbed"
+        if self._dub_dirty.get(sid, False):
+            return "to_redub"
+        return "dubbed"
+
+    def _dub_apply_card_state(self, sid: int) -> None:
+        """Update card border colour and preview button to reflect current state."""
+        state = self._dub_state(sid)
+        card  = self._dub_cards.get(sid)
+        btn   = self._dub_preview_btns.get(sid)
+        if not card or not btn:
+            return
+        bg, col = {
+            "not_dubbed": self._DUB_NOT_DUBBED,
+            "to_redub":   self._DUB_TO_REDUB,
+            "dubbed":     self._DUB_DUBBED,
+        }[state]
+        border = {
+            "not_dubbed": "#36343B",
+            "to_redub":   "#F8B23D",
+            "dubbed":     "#4CAF50",
+        }[state]
+        card.setStyleSheet(
+            f"QWidget#dubCard {{ background:#1D1B20; border:2px solid {border}; border-radius:4px; }}"
+        )
+        icon = {"not_dubbed": "▶", "to_redub": "⟳", "dubbed": "▶"}[state]
+        btn.setText(icon)
+        btn.setStyleSheet(
+            f"QPushButton {{ background:{bg}; color:{col}; border:1px solid {border}; "
+            f"border-radius:3px; font-size:14px; min-width:28px; min-height:28px; padding:0; }}"
+            f"QPushButton:hover {{ background:#2A282F; }}"
+        )
+
+    def _dub_load_from_scenes(self) -> None:
+        scenes_path = self._dub_scenes_yaml_path()
+        if not scenes_path or not os.path.exists(scenes_path):
+            QMessageBox.warning(self, "No scenes", "Run 'Split Scenes' first.")
+            return
+        import yaml as _yaml
+        scenes = (_yaml.safe_load(Path(scenes_path).read_text(encoding="utf-8")) or {}).get("scenes", [])
+        dub_path = self._dub_yaml_path()
+        existing: dict = {}
+        if dub_path and os.path.exists(dub_path):
+            existing = _yaml.safe_load(Path(dub_path).read_text(encoding="utf-8")) or {}
+        self._dub_populate(scenes, existing)
+
+    def _dub_populate(self, scenes: list, existing: dict = None, from_disk: bool = False) -> None:
+        existing = existing or {}
+        while self._dub_cards_layout.count() > 1:
+            item = self._dub_cards_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._dub_editors: dict       = {}   # sid → QPlainTextEdit
+        self._dub_cards:   dict       = {}   # sid → card QWidget
+        self._dub_preview_btns: dict  = {}   # sid → QPushButton
+        self._dub_dirty:   dict       = {}   # sid → bool (text changed after last dub)
+
+        for scene in scenes:
+            sid      = int(scene["id"])
+            original = scene.get("text", "")
+            entry    = existing.get(sid, {})
+            dubbed   = (entry.get("dubbed") if isinstance(entry, dict) else original) or original
+
+            card = QWidget()
+            card.setObjectName("dubCard")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(10, 8, 10, 8)
+            cl.setSpacing(4)
+
+            # Header row: scene label | char count | preview btn
+            hdr = QHBoxLayout()
+            id_lbl = QLabel(f"Scene {sid}")
+            id_lbl.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; background:transparent; border:none;")
+            char_lbl = QLabel(f"{len(dubbed)} chars")
+            char_lbl.setStyleSheet("color:#8E8B90; font-size:10px; background:transparent; border:none;")
+            char_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+            preview_btn = QPushButton("▶")
+            preview_btn.setFixedSize(28, 28)
+            preview_btn.setToolTip("Synthesise and play this segment")
+            preview_btn.clicked.connect(lambda _, s=sid: self._dub_preview_segment(s))
+
+            hdr.addWidget(id_lbl)
+            hdr.addWidget(char_lbl, 1)
+            hdr.addWidget(preview_btn)
+            cl.addLayout(hdr)
+
+            # Original (read-only)
+            orig_lbl = QLabel(original)
+            orig_lbl.setWordWrap(True)
+            orig_lbl.setStyleSheet(
+                "color:#5a6470; font-size:12px; background:#131118; "
+                "border:1px solid #2a2830; border-radius:2px; padding:4px;"
+            )
+            cl.addWidget(orig_lbl)
+
+            # Dubbed (editable)
+            ed = QPlainTextEdit()
+            ed.setPlainText(dubbed)
+            ed.setPlaceholderText("Enter dubbed / translated text here…")
+            ed.setMinimumHeight(70)
+            ed.setMaximumHeight(160)
+            ed.setStyleSheet(
+                "QPlainTextEdit { background:#1D1B20; color:#E6E1E5; "
+                "border:1px solid #36343B; border-radius:2px; padding:4px; "
+                "font-family:'Segoe UI',sans-serif; font-size:13px; }"
+                "QPlainTextEdit:focus { border:1px solid #96BDE2; }"
+            )
+
+            def _on_text_changed(s=sid, lbl=char_lbl, e=ed):
+                lbl.setText(f"{len(e.toPlainText())} chars")
+                self._dub_dirty[s] = True
+                self._dub_has_unsaved = True
+                self._dub_apply_card_state(s)
+                self._dub_mark_unsaved()
+
+            ed.textChanged.connect(_on_text_changed)
+
+            cl.addWidget(ed)
+            self._dub_editors[sid]      = ed
+            self._dub_cards[sid]        = card
+            self._dub_preview_btns[sid] = preview_btn
+            self._dub_dirty[sid]        = False
+            self._dub_cards_layout.insertWidget(self._dub_cards_layout.count() - 1, card)
+            self._dub_apply_card_state(sid)
+
+        self._dub_status_label.setText(f"{len(scenes)} scene(s) loaded.")
+        self._dub_has_unsaved = not from_disk
+        self._dub_mark_unsaved() if self._dub_has_unsaved else self._dub_mark_saved()
+
+    def _dub_mark_unsaved(self) -> None:
+        self._dub_update_save_btn()
+        self._dub_update_dub_btn()
+
+    def _dub_mark_saved(self) -> None:
+        self._dub_update_save_btn()
+        self._dub_update_dub_btn()
+
+    def _dub_dubbing_status(self) -> str:
+        """Compute overall dubbing status: none / all_stale / stale / complete."""
+        if not hasattr(self, "_dub_editors") or not self._dub_editors:
+            return "none"
+        dubbed_clean = sum(
+            1 for sid in self._dub_editors
+            if os.path.exists(self._dub_audio_path(sid)) and not self._dub_dirty.get(sid, True)
+        )
+        total = len(self._dub_editors)
+        if dubbed_clean == total:
+            return "complete"
+        if dubbed_clean == 0:
+            return "all_stale"
+        return "stale"
+
+    def _dub_update_dub_btn(self) -> None:
+        if not hasattr(self, "_dub_all_btn"):
+            return
+        status = self._dub_dubbing_status()
+        bg, hv = self._DUB_BTN_COLORS.get(status, ("#c0392b", "#a93226"))
+        self._dub_all_btn.setEnabled(status != "none")
+        self._dub_all_btn.setStyleSheet(self._BTN_SS.format(bg=bg, hv=hv))
+
+    def _dub_update_save_btn(self) -> None:
+        if not hasattr(self, "_dub_save_btn"):
+            return
+        if not hasattr(self, "_dub_editors") or not self._dub_editors:
+            bg, hv, enabled = "#555555", "#444444", False
+        elif getattr(self, "_dub_has_unsaved", True):
+            bg, hv, enabled = "#c0392b", "#a93226", True   # red — unsaved
+        else:
+            bg, hv, enabled = "#27ae60", "#1e8449", True   # green — saved
+        self._dub_save_btn.setEnabled(enabled)
+        self._dub_save_btn.setStyleSheet(self._BTN_SS.format(bg=bg, hv=hv))
+
+    # ── Per-segment preview ───────────────────────────────────────────────────
+
+    def _dub_preview_segment(self, sid: int, auto_next: int = None, silent: bool = False) -> None:
+        """Synthesise and play a single segment, save its audio file."""
+        ed = self._dub_editors.get(sid)
+        if not ed:
+            return
+        text = ed.toPlainText().strip()
+        if not text:
+            return
+
+        btn = self._dub_preview_btns.get(sid)
+        if btn:
+            btn.setEnabled(False)
+            btn.setText("…")
+
+        audio_path = self._dub_audio_path(sid)
+        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+
+        voice  = self._tts_voice_setting()
+        rate   = f"{self.tts_rate_input.value():+d}%"
+        pitch  = f"{self.tts_pitch_input.value():+d}Hz"
+        volume = f"{self.tts_volume_input.value():+d}%"
+
+        class _Worker(QObject):
+            done  = pyqtSignal(int)
+            error = pyqtSignal(int, str)
+
+            def __init__(self, sid, text, voice, rate, pitch, volume, path):
+                super().__init__()
+                self._sid    = sid
+                self._text   = text
+                self._voice  = voice
+                self._rate   = rate
+                self._pitch  = pitch
+                self._volume = volume
+                self._path   = path
+
+            def run(self):
+                try:
+                    import sys, subprocess, tempfile as _tf, os as _os
+                    kw = ""
+                    if self._rate.lstrip('+').rstrip('%') != '0':
+                        kw += f"    kwargs['rate'] = {self._rate!r}\n"
+                    if self._pitch.lstrip('+').rstrip('Hz') != '0':
+                        kw += f"    kwargs['pitch'] = {self._pitch!r}\n"
+                    if self._volume.lstrip('+').rstrip('%') != '0':
+                        kw += f"    kwargs['volume'] = {self._volume!r}\n"
+                    script = (
+                        "# -*- coding: utf-8 -*-\nimport asyncio, edge_tts\n"
+                        "async def _go():\n    kwargs = {}\n" + kw +
+                        f"    c = edge_tts.Communicate({self._text!r}, {self._voice!r}, **kwargs)\n"
+                        f"    await c.save({self._path!r})\nasyncio.run(_go())\n"
+                    )
+                    sf = _tf.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8')
+                    sf.write(script); sf.close()
+                    try:
+                        r = subprocess.run([sys.executable, sf.name],
+                                           capture_output=True, text=True, timeout=60)
+                    finally:
+                        _os.unlink(sf.name)
+                    if r.returncode != 0:
+                        raise RuntimeError(r.stderr.strip() or "Synthesis failed")
+                    self.done.emit(self._sid)
+                except Exception as exc:
+                    self.error.emit(self._sid, str(exc))
+
+        thread = QThread(self)
+        worker = _Worker(sid, text, voice, rate, pitch, volume, audio_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        def _on_done(s):
+            self._dub_dirty[s] = False
+            self._dub_apply_card_state(s)
+            self._dub_update_dub_btn()
+            b = self._dub_preview_btns.get(s)
+            if b:
+                b.setEnabled(True)
+            if not silent:
+                from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+                from PyQt6.QtCore import QUrl
+                self._seg_player = QMediaPlayer(self)
+                ao = QAudioOutput(self); self._seg_player.setAudioOutput(ao)
+                self._seg_audio_out = ao; ao.setVolume(1.0)
+                self._seg_player.setSource(QUrl.fromLocalFile(audio_path))
+                self._seg_player.play()
+            if auto_next is not None:
+                self._dub_all_next(auto_next)
+            thread.quit()
+
+        def _on_error(s, msg):
+            b = self._dub_preview_btns.get(s)
+            if b:
+                b.setEnabled(True)
+                self._dub_apply_card_state(s)
+            if auto_next is not None:
+                self._dub_all_next(auto_next)   # continue even on error
+            else:
+                QMessageBox.warning(self, f"Scene {s} synthesis failed", msg)
+            thread.quit()
+
+        worker.done.connect(_on_done)
+        worker.error.connect(_on_error)
+        if not hasattr(self, "_dub_seg_threads"):
+            self._dub_seg_threads = []
+        self._dub_seg_threads.append((thread, worker))
+        thread.start()
+
+    def _tts_voice_setting(self) -> str:
+        try:
+            return self.tts_voice_input.currentData() or "it-IT-DiegoNeural"
+        except Exception:
+            return "it-IT-DiegoNeural"
+
+    def _on_tts_voice_changed(self) -> None:
+        """Mark all segments that have existing audio as dirty when voice changes."""
+        if not hasattr(self, "_dub_editors") or not self._dub_editors:
+            return
+        changed = False
+        for sid in self._dub_editors:
+            if os.path.exists(self._dub_audio_path(sid)):
+                self._dub_dirty[sid] = True
+                self._dub_apply_card_state(sid)
+                changed = True
+        if changed:
+            self._dub_has_unsaved = True
+            self._dub_update_dub_btn()
+            self._dub_update_save_btn()
+            self._dub_status_label.setText("Voice changed — re-dub segments to update audio.")
+
+    # ── Dub All ───────────────────────────────────────────────────────────────
+
+    def _dub_all(self) -> None:
+        if not hasattr(self, "_dub_editors") or not self._dub_editors:
+            QMessageBox.warning(self, "No segments", "Load scenes first.")
+            return
+        ids = sorted(self._dub_editors.keys())
+        self._dub_all_queue = ids[:]
+        self._dub_all_total = len(ids)
+        self._dub_all_btn.setEnabled(False)
+        self._dub_progress.setVisible(True)
+        self._dub_progress.setValue(0)
+        self._dub_all_next(-1)
+
+    def _dub_all_next(self, last_done_index: int) -> None:
+        done = last_done_index + 1
+        total = self._dub_all_total
+        if done >= total:
+            self._dub_all_btn.setEnabled(True)
+            self._dub_progress.setVisible(False)
+            self._dub_generate_timings()
+            self._dub_save()
+            self._dub_update_dub_btn()
+            self._dub_status_label.setText(f"Dub All complete — {total} segment(s) synthesised.")
+            return
+        self._dub_progress.setValue(int(done / total * 100))
+        sid = self._dub_all_queue[done]
+        self._dub_preview_segment(sid, auto_next=done, silent=True)
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+
+    def _dub_generate_timings(self) -> None:
+        """Measure duration of each dubbed MP3 and write timings.yaml."""
+        project = self.project_path_input.text().strip()
+        if not project:
+            return
+        audio_dir = os.path.join(project, "output", "audio")
+        timings_path = os.path.join(audio_dir, "timings.yaml")
+        timings: dict = {}
+        for sid in sorted(self._dub_editors.keys() if hasattr(self, "_dub_editors") else []):
+            mp3 = os.path.join(audio_dir, f"scene_{sid:03d}.mp3")
+            if not os.path.exists(mp3):
+                continue
+            try:
+                from mutagen.mp3 import MP3
+                timings[sid] = MP3(mp3).info.length
+            except Exception:
+                try:
+                    from moviepy import AudioFileClip
+                    c = AudioFileClip(mp3); dur = c.duration; c.close()
+                    timings[sid] = dur
+                except Exception:
+                    pass
+        if timings:
+            import yaml as _yaml
+            os.makedirs(audio_dir, exist_ok=True)
+            Path(timings_path).write_text(
+                _yaml.dump(timings, sort_keys=True), encoding="utf-8"
+            )
+            self._append_log(f"timings.yaml written: {len(timings)} scene(s).")
+
+    def _dub_save(self) -> None:
+        path = self._dub_yaml_path()
+        if not path:
+            QMessageBox.warning(self, "No project", "Load a project first.")
+            return
+        if not hasattr(self, "_dub_editors") or not self._dub_editors:
+            QMessageBox.warning(self, "Nothing to save", "Load scenes first.")
+            return
+        scenes_path = self._dub_scenes_yaml_path()
+        originals: dict = {}
+        if scenes_path and os.path.exists(scenes_path):
+            import yaml as _yaml
+            scenes = (_yaml.safe_load(Path(scenes_path).read_text(encoding="utf-8")) or {}).get("scenes", [])
+            originals = {int(s["id"]): s.get("text", "") for s in scenes}
+        data = {
+            sid: {"original": originals.get(sid, ""), "dubbed": ed.toPlainText()}
+            for sid, ed in self._dub_editors.items()
+        }
+        try:
+            import yaml as _yaml
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            Path(path).write_text(
+                _yaml.dump(data, allow_unicode=True, sort_keys=True, default_flow_style=False),
+                encoding="utf-8",
+            )
+            self._dub_status_label.setText(f"Saved {len(data)} scene(s) — {path}")
+            self._dub_has_unsaved = False
+            self._dub_mark_saved()
+        except Exception as exc:
+            QMessageBox.critical(self, "Save failed", str(exc))
+
+    def _dub_refresh(self) -> None:
+        dub_path = self._dub_yaml_path()
+        scenes_path = self._dub_scenes_yaml_path()
+        if not scenes_path or not os.path.exists(scenes_path):
+            self._dub_update_save_btn()
+            self._dub_update_dub_btn()
+            return
+        import yaml as _yaml
+        scenes = (_yaml.safe_load(Path(scenes_path).read_text(encoding="utf-8")) or {}).get("scenes", [])
+        existing: dict = {}
+        if dub_path and os.path.exists(dub_path):
+            existing = _yaml.safe_load(Path(dub_path).read_text(encoding="utf-8")) or {}
+        self._dub_populate(scenes, existing, from_disk=True)
 
     def _build_script_tab(self) -> QWidget:
         page = QWidget()
@@ -696,6 +1237,7 @@ class MainWindow(QMainWindow):
         if project_changed:
             self._reload_script()
         self._refresh_draft_grid()
+        self._dub_refresh()
 
     def _refresh_recent_projects(self, projects) -> None:
         self.recent_projects_combo.blockSignals(True)
@@ -757,6 +1299,7 @@ class MainWindow(QMainWindow):
         self.svd_model_input.setText(str(settings.get("svd", "models/svd")))
         self.clip_engine_input.setCurrentText(str(settings.get("clip_engine", "ken_burns")))
         self.ken_burns_duration_input.setValue(float(settings.get("ken_burns_duration", 4.0)))
+        self.ken_burns_fps_input.setValue(int(settings.get("ken_burns_fps", 24)))
         self.guidance_scale_input.setValue(float(settings.get("guidance_scale", 7.5)))
         self.num_inference_steps_input.setValue(int(settings.get("num_inference_steps", 30)))
         self.num_frames_input.setValue(int(settings.get("num_frames", 14)))
@@ -792,6 +1335,7 @@ class MainWindow(QMainWindow):
             "svd": self.svd_model_input.text().strip(),
             "clip_engine": self.clip_engine_input.currentText(),
             "ken_burns_duration": self.ken_burns_duration_input.value(),
+            "ken_burns_fps": self.ken_burns_fps_input.value(),
             "guidance_scale": self.guidance_scale_input.value(),
             "num_inference_steps": self.num_inference_steps_input.value(),
             "num_frames": self.num_frames_input.value(),
@@ -960,6 +1504,65 @@ class MainWindow(QMainWindow):
             self.controller.set_project_path(path)
         stage = self.stage_selector.currentData()
         self.controller.run_pipeline(stage)
+
+    def _clear_draft(self) -> None:
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Load a project first.")
+            return
+        draft_dir = os.path.join(project, "output", "draft")
+        if not os.path.isdir(draft_dir):
+            QMessageBox.information(self, "No draft", "No draft folder found.")
+            return
+        files = [f for f in os.listdir(draft_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+        if not files:
+            QMessageBox.information(self, "No draft", "Draft folder is already empty.")
+            return
+        reply = QMessageBox.question(
+            self, "Clear Draft Images",
+            f"Delete {len(files)} draft image(s)?\nThey will be regenerated using the current prompts.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for f in files:
+            try:
+                os.remove(os.path.join(draft_dir, f))
+            except Exception:
+                pass
+        self._refresh_draft_grid()
+        self._append_log(f"Cleared {len(files)} draft image(s).")
+
+    def _clear_clips(self) -> None:
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Load a project first.")
+            return
+        clips_dir = os.path.join(project, "output", "clips")
+        if not os.path.isdir(clips_dir):
+            QMessageBox.information(self, "No clips", "No clips folder found.")
+            return
+        files = [f for f in os.listdir(clips_dir) if f.lower().endswith(".mp4")]
+        if not files:
+            QMessageBox.information(self, "No clips", "Clips folder is already empty.")
+            return
+        reply = QMessageBox.question(
+            self, "Clear Clips",
+            f"Delete {len(files)} clip(s) from output/clips/?\nThey will be regenerated on the next run.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        errors = []
+        for f in files:
+            try:
+                os.remove(os.path.join(clips_dir, f))
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            QMessageBox.warning(self, "Some files not deleted", "\n".join(errors))
+        else:
+            self._append_log(f"Cleared {len(files)} clip(s) from output/clips/.")
 
     def cancel_pipeline(self):
         self.controller.cancel_pipeline()
