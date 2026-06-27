@@ -17,14 +17,14 @@ from PIL import Image
 # Available motion styles: (zoom_start, zoom_end, pan_x, pan_y)
 # pan values are fractions of the image width/height to shift across the clip
 _MOTIONS = [
-    {"name": "zoom_in",       "zoom_start": 1.0,  "zoom_end": 1.15, "pan_x": 0.0,  "pan_y": 0.0},
-    {"name": "zoom_out",      "zoom_start": 1.15, "zoom_end": 1.0,  "pan_x": 0.0,  "pan_y": 0.0},
-    {"name": "pan_right",     "zoom_start": 1.1,  "zoom_end": 1.1,  "pan_x": 0.05, "pan_y": 0.0},
-    {"name": "pan_left",      "zoom_start": 1.1,  "zoom_end": 1.1,  "pan_x":-0.05, "pan_y": 0.0},
-    {"name": "pan_up",        "zoom_start": 1.1,  "zoom_end": 1.1,  "pan_x": 0.0,  "pan_y":-0.04},
-    {"name": "pan_down",      "zoom_start": 1.1,  "zoom_end": 1.1,  "pan_x": 0.0,  "pan_y": 0.04},
-    {"name": "zoom_pan_right","zoom_start": 1.0,  "zoom_end": 1.12, "pan_x": 0.04, "pan_y": 0.0},
-    {"name": "zoom_pan_left", "zoom_start": 1.0,  "zoom_end": 1.12, "pan_x":-0.04, "pan_y": 0.0},
+    {"name": "zoom_in",       "zoom_start": 1.0,   "zoom_end": 1.08,  "pan_x": 0.0,   "pan_y": 0.0},
+    {"name": "zoom_out",      "zoom_start": 1.08,  "zoom_end": 1.0,   "pan_x": 0.0,   "pan_y": 0.0},
+    {"name": "pan_right",     "zoom_start": 1.05,  "zoom_end": 1.05,  "pan_x": 0.03,  "pan_y": 0.0},
+    {"name": "pan_left",      "zoom_start": 1.05,  "zoom_end": 1.05,  "pan_x":-0.03,  "pan_y": 0.0},
+    {"name": "pan_up",        "zoom_start": 1.05,  "zoom_end": 1.05,  "pan_x": 0.0,   "pan_y":-0.02},
+    {"name": "pan_down",      "zoom_start": 1.05,  "zoom_end": 1.05,  "pan_x": 0.0,   "pan_y": 0.02},
+    {"name": "zoom_pan_right","zoom_start": 1.0,   "zoom_end": 1.07,  "pan_x": 0.02,  "pan_y": 0.0},
+    {"name": "zoom_pan_left", "zoom_start": 1.0,   "zoom_end": 1.07,  "pan_x":-0.02,  "pan_y": 0.0},
 ]
 
 
@@ -81,27 +81,37 @@ class KenBurnsGenerator:
         pan_x      = motion["pan_x"]
         pan_y      = motion["pan_y"]
 
+        def _ease(t: float) -> float:
+            """Smoothstep: ease-in-out so motion doesn't start/stop abruptly."""
+            return t * t * (3 - 2 * t)
+
         def make_frame(t: float) -> np.ndarray:
-            progress = t / self.duration  # 0 → 1
+            progress = _ease(t / self.duration)  # 0 → 1, eased
 
             zoom = zoom_start + (zoom_end - zoom_start) * progress
 
-            # Size of the crop window in the source image
-            crop_w = int(out_w / zoom)
-            crop_h = int(out_h / zoom)
+            # Crop window relative to SOURCE image size
+            crop_w = img_w / zoom
+            crop_h = img_h / zoom
+            crop_w = max(1.0, min(crop_w, img_w))
+            crop_h = max(1.0, min(crop_h, img_h))
 
-            # Centre of the crop window, shifted by pan
+            # Centre of crop, shifted by pan (float precision)
             cx = img_w / 2 + pan_x * img_w * progress
             cy = img_h / 2 + pan_y * img_h * progress
 
-            x1 = int(cx - crop_w / 2)
-            y1 = int(cy - crop_h / 2)
-            x1 = max(0, min(x1, img_w - crop_w))
-            y1 = max(0, min(y1, img_h - crop_h))
-            x2 = x1 + crop_w
-            y2 = y1 + crop_h
+            x1 = cx - crop_w / 2
+            y1 = cy - crop_h / 2
+            x1 = max(0.0, min(x1, img_w - crop_w))
+            y1 = max(0.0, min(y1, img_h - crop_h))
 
-            crop = img_array[y1:y2, x1:x2]
+            # Convert to integer only at the last moment
+            xi, yi = round(x1), round(y1)
+            cw, ch = round(crop_w), round(crop_h)
+            xi = max(0, min(xi, img_w - cw))
+            yi = max(0, min(yi, img_h - ch))
+
+            crop = img_array[yi:yi+ch, xi:xi+cw]
             resized = np.array(
                 Image.fromarray(crop).resize((out_w, out_h), Image.LANCZOS)
             )
@@ -116,7 +126,7 @@ class KenBurnsGenerator:
             codec="libx264",
             audio=False,
             logger=None,
-            ffmpeg_params=["-crf", "18", "-preset", "fast"],
+            ffmpeg_params=["-crf", "14", "-preset", "slow", "-tune", "film"],
         )
         clip.close()
         return output_path

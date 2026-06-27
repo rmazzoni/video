@@ -230,6 +230,18 @@ class MainWindow(QMainWindow):
         self.num_inference_steps_input = QSpinBox()
         self.num_inference_steps_input.setRange(1, 200)
 
+        self.image_width_input = QSpinBox()
+        self.image_width_input.setRange(256, 2048)
+        self.image_width_input.setSingleStep(64)
+        self.image_width_input.setValue(1344)
+        self.image_width_input.setToolTip("Image width in pixels (SDXL 16:9 native: 1344)")
+
+        self.image_height_input = QSpinBox()
+        self.image_height_input.setRange(256, 2048)
+        self.image_height_input.setSingleStep(64)
+        self.image_height_input.setValue(768)
+        self.image_height_input.setToolTip("Image height in pixels (SDXL 16:9 native: 768)")
+
         self.num_frames_input = QSpinBox()
         self.num_frames_input.setRange(1, 120)
 
@@ -263,6 +275,8 @@ class MainWindow(QMainWindow):
         form.addRow("SVD model path", self.svd_model_input)
         form.addRow("Guidance scale", self.guidance_scale_input)
         form.addRow("Inference steps", self.num_inference_steps_input)
+        form.addRow("Image width (px)", self.image_width_input)
+        form.addRow("Image height (px)", self.image_height_input)
         form.addRow("Video frames", self.num_frames_input)
         form.addRow("Motion bucket id", self.motion_bucket_id_input)
         form.addRow("Audio volume", self.audio_volume_input)
@@ -1302,6 +1316,8 @@ class MainWindow(QMainWindow):
         self.ken_burns_fps_input.setValue(int(settings.get("ken_burns_fps", 24)))
         self.guidance_scale_input.setValue(float(settings.get("guidance_scale", 7.5)))
         self.num_inference_steps_input.setValue(int(settings.get("num_inference_steps", 30)))
+        self.image_width_input.setValue(int(settings.get("image_width", 1344)))
+        self.image_height_input.setValue(int(settings.get("image_height", 768)))
         self.num_frames_input.setValue(int(settings.get("num_frames", 14)))
         self.motion_bucket_id_input.setValue(int(settings.get("motion_bucket_id", 127)))
         self.audio_volume_input.setValue(float(settings.get("audio_volume", 1.0)))
@@ -1338,6 +1354,8 @@ class MainWindow(QMainWindow):
             "ken_burns_fps": self.ken_burns_fps_input.value(),
             "guidance_scale": self.guidance_scale_input.value(),
             "num_inference_steps": self.num_inference_steps_input.value(),
+            "image_width": self.image_width_input.value(),
+            "image_height": self.image_height_input.value(),
             "num_frames": self.num_frames_input.value(),
             "motion_bucket_id": self.motion_bucket_id_input.value(),
             "audio_volume": self.audio_volume_input.value(),

@@ -239,57 +239,71 @@ class PipelineWorker(QObject):
 
                 self._check_cancel()
                 self._emit_progress(25, "Building prompts")
-                prompt_builder = PromptBuilder(
-                    style_preset=self.config.get("style_preset", "cinematic"),
-                    default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
-                    use_ollama=bool(self.config.get("use_ollama", False)),
-                    ollama_model=str(self.config.get("ollama_model", "llama3")),
-                    ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
-                )
-                if prompt_builder._enhancer:
-                    if prompt_builder._enhancer.is_available():
-                        self.log.emit("Ollama prompt enhancement: ACTIVE")
-                    else:
-                        self.log.emit("Ollama not available — using rule-based prompts.")
 
-                self._check_cancel()
-                self._emit_progress(30, "Generating scene images")
+                # Check how many images still need generating
+                existing_images = {
+                    int(f.split("_")[1].split(".")[0])
+                    for f in os.listdir(images_dir)
+                    if f.startswith("scene_") and f.lower().endswith((".png", ".jpg", ".jpeg"))
+                }
+                scenes_needing_images = [s for s in scenes if int(s["id"]) not in existing_images]
 
-                self._check_cancel()
-                self._emit_progress(30, "Generating scene images")
-                image_gen = ImageGenerator(
-                    model_path=self._resolve_path(self.config.get("sdxl_base", "models/sd3")),
-                    output_dir=images_dir,
-                    guidance_scale=float(self.config.get("guidance_scale", 7.5)),
-                    num_inference_steps=int(self.config.get("num_inference_steps", 30)),
-                    seed=int(self.config.get("seed", 42)),
-                )
+                if not scenes_needing_images:
+                    self.log.emit("All images already exist — skipping image generation.")
+                else:
+                    prompt_builder = PromptBuilder(
+                        style_preset=self.config.get("style_preset", "cinematic"),
+                        default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
+                        use_ollama=bool(self.config.get("use_ollama", False)),
+                        ollama_model=str(self.config.get("ollama_model", "llama3")),
+                        ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
+                    )
+                    if prompt_builder._enhancer:
+                        if prompt_builder._enhancer.is_available():
+                            self.log.emit("Ollama prompt enhancement: ACTIVE")
+                        else:
+                            self.log.emit("Ollama not available — using rule-based prompts.")
 
-                prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
-                cached_prompts: dict = {}
-                if os.path.exists(prompts_path):
-                    with open(prompts_path, "r", encoding="utf-8") as fh:
-                        cached_prompts = yaml.safe_load(fh) or {}
-                    self.log.emit(f"Loaded {len(cached_prompts)} cached prompt(s) from prompts.yaml")
-
-                total_scenes = len(scenes)
-                for index, scene in enumerate(scenes, start=1):
                     self._check_cancel()
-                    scene_id = int(scene["id"])
-                    if scene_id in cached_prompts:
-                        prompt = cached_prompts[scene_id]
-                        self.log.emit(f"Scene {scene_id}: using cached prompt.")
-                    else:
-                        prompt = prompt_builder.build_prompt(scene)
-                        cached_prompts[scene_id] = prompt
-                        with open(prompts_path, "w", encoding="utf-8") as fh:
-                            yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
-                    image_gen.generate_image(prompt, scene_id)
-                    if stage == "full":
-                        step = 30 + int((index / total_scenes) * 25)
-                    else:
-                        step = 30 + int((index / total_scenes) * 70)
-                    self._emit_progress(step, f"Generated image {index}/{total_scenes}")
+                    self._emit_progress(30, "Generating scene images")
+
+                    self._check_cancel()
+                    self._emit_progress(30, "Generating scene images")
+                    image_gen = ImageGenerator(
+                        model_path=self._resolve_path(self.config.get("sdxl_base", "models/sd3")),
+                        output_dir=images_dir,
+                        guidance_scale=float(self.config.get("guidance_scale", 7.5)),
+                        num_inference_steps=int(self.config.get("num_inference_steps", 30)),
+                        seed=int(self.config.get("seed", 42)),
+                        width=int(self.config.get("image_width", 1024)),
+                        height=int(self.config.get("image_height", 1024)),
+                    )
+
+                    prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+                    cached_prompts: dict = {}
+                    if os.path.exists(prompts_path):
+                        with open(prompts_path, "r", encoding="utf-8") as fh:
+                            cached_prompts = yaml.safe_load(fh) or {}
+                        self.log.emit(f"Loaded {len(cached_prompts)} cached prompt(s) from prompts.yaml")
+
+                    total_scenes = len(scenes_needing_images)
+                    for index, scene in enumerate(scenes_needing_images, start=1):
+                        self._check_cancel()
+                        scene_id = int(scene["id"])
+                        if scene_id in cached_prompts:
+                            prompt = cached_prompts[scene_id]
+                            self.log.emit(f"Scene {scene_id}: using cached prompt.")
+                        else:
+                            prompt = prompt_builder.build_prompt(scene)
+                            cached_prompts[scene_id] = prompt
+                            with open(prompts_path, "w", encoding="utf-8") as fh:
+                                yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
+                        image_gen.generate_image(prompt, scene_id)
+                        if stage == "full":
+                            step = 30 + int((index / total_scenes) * 25)
+                        else:
+                            step = 30 + int((index / total_scenes) * 70)
+                        self._emit_progress(step, f"Generated image {index}/{total_scenes}")
 
                 if stage == "images":
                     self._emit_progress(100, "Image generation complete")
@@ -398,7 +412,8 @@ class PipelineWorker(QObject):
                     self._emit_progress(step, f"Loading clip {loaded}/{total}…")
 
                 assembler.assemble(clips_dir, on_progress=_on_clip_loaded)
-                self._emit_progress(base + 15, "Writing final video…")
+                self._emit_progress(base + 15, "Encoding final video (this may take a few minutes)…")
+                self.log.emit("Encoding final video with libx264 — please wait…")
 
                 if stage == "assemble":
                     self._emit_progress(100, "Assemble complete")
@@ -496,6 +511,8 @@ class PipelineController(QObject):
         "svd": "models/svd",
         "guidance_scale": 7.5,
         "num_inference_steps": 30,
+        "image_width": 1344,
+        "image_height": 768,
         "num_frames": 14,
         "motion_bucket_id": 127,
         "audio_volume": 1.0,
