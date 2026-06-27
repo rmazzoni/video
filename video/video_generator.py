@@ -1,4 +1,5 @@
 import os
+import gc
 from typing import Optional
 from diffusers import StableVideoDiffusionPipeline
 import torch
@@ -37,11 +38,17 @@ class VideoGenerator:
         self.fps = fps
         self.seed = seed
 
-        # Load SVD model
+        # Load SVD model — keep on CPU initially, offload layers to GPU on demand
+        # so the full model weight (~8 GB) never sits entirely on the GPU at once.
         self.pipe = StableVideoDiffusionPipeline.from_pretrained(
             self.model_path,
             torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-        ).to(self.device)
+        )
+        if self.device == "cuda":
+            self.pipe.enable_model_cpu_offload()
+            self.pipe.enable_attention_slicing()
+        else:
+            self.pipe = self.pipe.to(self.device)
 
         if self.output_dir:
             os.makedirs(self.output_dir, exist_ok=True)
@@ -78,6 +85,11 @@ class VideoGenerator:
         output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}.mp4")
         self._save_frames_as_video(frames, output_path)
 
+        # Free GPU memory before next clip
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            gc.collect()
+
         return output_path
 
     # ---------------------------------------------------------
@@ -89,9 +101,12 @@ class VideoGenerator:
         Saves a list of PIL frames as an MP4 video using imageio.
         """
         import imageio
+        import numpy as np
 
         writer = imageio.get_writer(output_path, fps=self.fps)
         for frame in frames:
+            if not isinstance(frame, np.ndarray):
+                frame = np.array(frame)
             writer.append_data(frame)
         writer.close()
 

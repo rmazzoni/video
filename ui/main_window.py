@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
 )
 from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject
 from ui.pipeline_controller import PipelineController
 
 
@@ -142,8 +142,19 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_settings_tab(self) -> QWidget:
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         page = QWidget()
         root = QVBoxLayout(page)
+        scroll.setWidget(page)
+        outer_layout.addWidget(scroll, 1)
 
         form = QFormLayout()
 
@@ -171,6 +182,19 @@ class MainWindow(QMainWindow):
 
         self.sdxl_model_input = QLineEdit()
         self.svd_model_input = QLineEdit()
+
+        self.clip_engine_input = QComboBox()
+        self.clip_engine_input.addItems(["ken_burns", "svd"])
+        self.clip_engine_input.setToolTip(
+            "ken_burns: CPU-only pan/zoom effect (fast, no VRAM)\n"
+            "svd: Stable Video Diffusion (GPU, slow, more realistic motion)"
+        )
+
+        self.ken_burns_duration_input = QDoubleSpinBox()
+        self.ken_burns_duration_input.setRange(1.0, 30.0)
+        self.ken_burns_duration_input.setDecimals(1)
+        self.ken_burns_duration_input.setSingleStep(0.5)
+        self.ken_burns_duration_input.setValue(4.0)
 
         self.guidance_scale_input = QDoubleSpinBox()
         self.guidance_scale_input.setRange(1.0, 30.0)
@@ -208,6 +232,8 @@ class MainWindow(QMainWindow):
         form.addRow("Scene split method", self.scene_split_method_input)
         form.addRow("Min sentence length", self.min_sentence_length_input)
         form.addRow("SD model path", self.sdxl_model_input)
+        form.addRow("Clip engine", self.clip_engine_input)
+        form.addRow("Ken Burns duration (s)", self.ken_burns_duration_input)
         form.addRow("SVD model path", self.svd_model_input)
         form.addRow("Guidance scale", self.guidance_scale_input)
         form.addRow("Inference steps", self.num_inference_steps_input)
@@ -216,6 +242,49 @@ class MainWindow(QMainWindow):
         form.addRow("Audio volume", self.audio_volume_input)
         form.addRow("Audio fade in", self.fade_in_input)
         form.addRow("Audio fade out", self.fade_out_input)
+
+        form.addRow(QLabel(""))  # spacer
+        form.addRow(QLabel("── Narration TTS (Edge TTS) ──"))
+
+        from narration.tts_engine import EDGE_TTS_VOICES
+        self.tts_voice_input = QComboBox()
+        for label, short_name, _gender in EDGE_TTS_VOICES:
+            self.tts_voice_input.addItem(label, short_name)
+        self.tts_voice_input.setToolTip("Voice used for narration synthesis")
+
+        self._tts_preview_btn = QPushButton("▶ Preview")
+        self._tts_preview_btn.setToolTip("Play a sample of the selected voice")
+        self._tts_preview_btn.clicked.connect(self._preview_tts_voice)
+        voice_row = QHBoxLayout()
+        voice_row.setContentsMargins(0, 0, 0, 0)
+        voice_row.setSpacing(6)
+        voice_row.addWidget(self.tts_voice_input, 1)
+        voice_row.addWidget(self._tts_preview_btn)
+        voice_widget = QWidget()
+        voice_widget.setLayout(voice_row)
+        voice_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        form.addRow("TTS voice", voice_widget)
+
+        self.tts_rate_input = QSpinBox()
+        self.tts_rate_input.setRange(-50, 100)
+        self.tts_rate_input.setValue(0)
+        self.tts_rate_input.setSuffix("%")
+        self.tts_rate_input.setToolTip("Speaking rate offset (+10 = 10% faster, -10 = 10% slower)")
+        form.addRow("TTS rate", self.tts_rate_input)
+
+        self.tts_pitch_input = QSpinBox()
+        self.tts_pitch_input.setRange(-20, 20)
+        self.tts_pitch_input.setValue(0)
+        self.tts_pitch_input.setSuffix(" Hz")
+        self.tts_pitch_input.setToolTip("Pitch offset in Hz")
+        form.addRow("TTS pitch", self.tts_pitch_input)
+
+        self.tts_volume_input = QSpinBox()
+        self.tts_volume_input.setRange(-50, 50)
+        self.tts_volume_input.setValue(0)
+        self.tts_volume_input.setSuffix("%")
+        self.tts_volume_input.setToolTip("Volume offset")
+        form.addRow("TTS volume", self.tts_volume_input)
 
         form.addRow(QLabel(""))  # spacer
         form.addRow(QLabel("── Prompt Enhancement (Ollama) ──"))
@@ -241,7 +310,7 @@ class MainWindow(QMainWindow):
 
         root.addLayout(form)
         root.addLayout(buttons)
-        return page
+        return outer
 
     def _apply_theme(self) -> None:
         self.setStyleSheet("""
@@ -686,6 +755,8 @@ class MainWindow(QMainWindow):
         self.min_sentence_length_input.setValue(int(settings.get("min_sentence_length", 20)))
         self.sdxl_model_input.setText(str(settings.get("sdxl_base", "models/sd3")))
         self.svd_model_input.setText(str(settings.get("svd", "models/svd")))
+        self.clip_engine_input.setCurrentText(str(settings.get("clip_engine", "ken_burns")))
+        self.ken_burns_duration_input.setValue(float(settings.get("ken_burns_duration", 4.0)))
         self.guidance_scale_input.setValue(float(settings.get("guidance_scale", 7.5)))
         self.num_inference_steps_input.setValue(int(settings.get("num_inference_steps", 30)))
         self.num_frames_input.setValue(int(settings.get("num_frames", 14)))
@@ -697,6 +768,18 @@ class MainWindow(QMainWindow):
         self.ollama_model_input.setText(str(settings.get("ollama_model", "llama3")))
         self.ollama_host_input.setText(str(settings.get("ollama_host", "http://localhost:11434")))
 
+        # TTS
+        tts_voice = str(settings.get("tts_voice", "it-IT-DiegoNeural"))
+        idx = self.tts_voice_input.findData(tts_voice)
+        if idx >= 0:
+            self.tts_voice_input.setCurrentIndex(idx)
+        tts_rate = str(settings.get("tts_rate", "+0%")).replace("+", "").replace("%", "")
+        self.tts_rate_input.setValue(int(tts_rate) if tts_rate.lstrip("-").isdigit() else 0)
+        tts_pitch = str(settings.get("tts_pitch", "+0Hz")).replace("+", "").replace("Hz", "")
+        self.tts_pitch_input.setValue(int(tts_pitch) if tts_pitch.lstrip("-").isdigit() else 0)
+        tts_volume = str(settings.get("tts_volume", "+0%")).replace("+", "").replace("%", "")
+        self.tts_volume_input.setValue(int(tts_volume) if tts_volume.lstrip("-").isdigit() else 0)
+
     def _collect_settings_from_form(self) -> dict:
         return {
             "style_preset": self.style_preset_input.currentText(),
@@ -707,6 +790,8 @@ class MainWindow(QMainWindow):
             "min_sentence_length": self.min_sentence_length_input.value(),
             "sdxl_base": self.sdxl_model_input.text().strip(),
             "svd": self.svd_model_input.text().strip(),
+            "clip_engine": self.clip_engine_input.currentText(),
+            "ken_burns_duration": self.ken_burns_duration_input.value(),
             "guidance_scale": self.guidance_scale_input.value(),
             "num_inference_steps": self.num_inference_steps_input.value(),
             "num_frames": self.num_frames_input.value(),
@@ -717,6 +802,10 @@ class MainWindow(QMainWindow):
             "use_ollama": self.use_ollama_input.isChecked(),
             "ollama_model": self.ollama_model_input.text().strip() or "llama3",
             "ollama_host": self.ollama_host_input.text().strip() or "http://localhost:11434",
+            "tts_voice": self.tts_voice_input.currentData() or "it-IT-DiegoNeural",
+            "tts_rate": f"{self.tts_rate_input.value():+d}%",
+            "tts_pitch": f"{self.tts_pitch_input.value():+d}Hz",
+            "tts_volume": f"{self.tts_volume_input.value():+d}%",
         }
 
     def select_project(self):
@@ -743,6 +832,98 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Project created", f"Created project:\n{created}")
         except Exception as exc:
             QMessageBox.critical(self, "Create project failed", str(exc))
+
+    def _preview_tts_voice(self) -> None:
+        voice  = self.tts_voice_input.currentData() or "it-IT-DiegoNeural"
+        rate   = f"{self.tts_rate_input.value():+d}%"
+        pitch  = f"{self.tts_pitch_input.value():+d}Hz"
+        volume = f"{self.tts_volume_input.value():+d}%"
+
+        self._tts_preview_btn.setEnabled(False)
+        self._tts_preview_btn.setText("…")
+
+        import tempfile, asyncio
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        class _Worker(QObject):
+            done  = pyqtSignal(str)
+            error = pyqtSignal(str)
+
+            def __init__(self, voice, rate, pitch, volume, path):
+                super().__init__()
+                self._voice  = voice
+                self._rate   = rate
+                self._pitch  = pitch
+                self._volume = volume
+                self._path   = path
+
+            def run(self):
+                try:
+                    import sys, subprocess, tempfile as _tf, os as _os
+                    kwargs_lines = ""
+                    if self._rate.lstrip('+').rstrip('%') != '0':
+                        kwargs_lines += f"    kwargs['rate'] = {self._rate!r}\n"
+                    if self._pitch.lstrip('+').rstrip('Hz') != '0':
+                        kwargs_lines += f"    kwargs['pitch'] = {self._pitch!r}\n"
+                    if self._volume.lstrip('+').rstrip('%') != '0':
+                        kwargs_lines += f"    kwargs['volume'] = {self._volume!r}\n"
+                    script = (
+                        "# -*- coding: utf-8 -*-\n"
+                        "import asyncio, edge_tts\n"
+                        "async def _go():\n"
+                        "    kwargs = {}\n"
+                        + kwargs_lines +
+                        f"    c = edge_tts.Communicate('Ciao, questa e una anteprima della voce.', {self._voice!r}, **kwargs)\n"
+                        f"    await c.save({self._path!r})\n"
+                        "asyncio.run(_go())\n"
+                    )
+                    sf = _tf.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8')
+                    sf.write(script)
+                    sf.close()
+                    try:
+                        result = subprocess.run(
+                            [sys.executable, sf.name],
+                            capture_output=True, text=True, timeout=30,
+                        )
+                    finally:
+                        _os.unlink(sf.name)
+                    if result.returncode != 0:
+                        raise RuntimeError(result.stderr.strip() or "Synthesis failed")
+                    self.done.emit(self._path)
+                except Exception as exc:
+                    self.error.emit(str(exc))
+
+        self._tts_preview_thread = QThread(self)
+        self._tts_preview_worker = _Worker(voice, rate, pitch, volume, tmp_path)
+        self._tts_preview_worker.moveToThread(self._tts_preview_thread)
+        self._tts_preview_thread.started.connect(self._tts_preview_worker.run)
+
+        def _on_done(path):
+            self._tts_preview_btn.setEnabled(True)
+            self._tts_preview_btn.setText("▶ Preview")
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+            from PyQt6.QtCore import QUrl
+            self._tts_preview_player = QMediaPlayer(self)
+            audio_out = QAudioOutput(self)
+            self._tts_preview_player.setAudioOutput(audio_out)
+            self._tts_preview_audio_out = audio_out
+            audio_out.setVolume(1.0)
+            self._tts_preview_player.setSource(QUrl.fromLocalFile(path))
+            self._tts_preview_player.play()
+            self._tts_preview_thread.quit()
+
+        def _on_error(msg):
+            self._tts_preview_btn.setEnabled(True)
+            self._tts_preview_btn.setText("▶ Preview")
+            QMessageBox.warning(self, "TTS Preview failed", msg)
+            self._tts_preview_thread.quit()
+
+        self._tts_preview_worker.done.connect(_on_done)
+        self._tts_preview_worker.error.connect(_on_error)
+        self._tts_preview_thread.start()
 
     def _relaunch(self) -> None:
         os.execv(sys.executable, [sys.executable] + sys.argv)

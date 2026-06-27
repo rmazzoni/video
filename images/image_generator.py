@@ -1,8 +1,12 @@
 import os
+import gc
 from typing import Optional
 from diffusers import StableDiffusionXLPipeline
 import torch
 from PIL import Image
+
+# Reduce CUDA memory fragmentation
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 class ImageGenerator:
@@ -76,6 +80,11 @@ class ImageGenerator:
         if self.output_dir:
             output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}.png")
             image.save(output_path)
+
+        # Free intermediate CUDA tensors between generations
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            gc.collect()
 
         return image
 

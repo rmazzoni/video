@@ -61,11 +61,13 @@ class PipelineWorker(QObject):
     def run(self):
         try:
             stage = (self.stage or "full").strip().lower()
-            if stage not in {"full", "narration", "scenes", "images", "clips", "assemble", "audio", "draft"}:
+            if stage not in {"full", "narration", "scenes", "tts", "images", "clips", "assemble", "audio", "draft"}:
                 raise ValueError(f"Unknown stage: {stage}")
 
             input_text = os.path.join(self.project_path, "input", "narration.txt")
             input_audio = os.path.join(self.project_path, "input", "audio.wav")
+            tts_dir = os.path.join(self.project_path, "output", "audio")
+            timings_path = os.path.join(tts_dir, "timings.yaml")
             images_dir = os.path.join(self.project_path, "output", "images")
             clips_dir = os.path.join(self.project_path, "output", "clips")
             final_dir = os.path.join(self.project_path, "output", "final")
@@ -80,7 +82,7 @@ class PipelineWorker(QObject):
             narration_text = ""
             scenes = []
 
-            if stage in {"full", "narration", "scenes", "images", "draft"}:
+            if stage in {"full", "narration", "scenes", "tts", "images", "draft"}:
                 self._check_cancel()
                 self._emit_progress(5, "Loading narration")
                 narration_text = TranscriptLoader().load(input_text)
@@ -91,7 +93,7 @@ class PipelineWorker(QObject):
                     self.finished.emit(True, input_text)
                     return
 
-            if stage in {"full", "scenes", "images", "draft"}:
+            if stage in {"full", "scenes", "tts", "images", "draft"}:
                 self._check_cancel()
                 self._emit_progress(15, "Splitting narration into scenes")
                 splitter = SceneSplitter(min_sentence_length=int(self.config.get("min_sentence_length", 20)))
@@ -108,6 +110,39 @@ class PipelineWorker(QObject):
                 if stage == "scenes":
                     self._emit_progress(100, "Scenes generated")
                     self.finished.emit(True, scenes_path)
+                    return
+
+            if stage in {"full", "tts"}:
+                from narration.tts_engine import TTSEngine
+
+                os.makedirs(tts_dir, exist_ok=True)
+                self._check_cancel()
+                self._emit_progress(20, "Synthesising narration audio (TTS)")
+                voice = self.config.get("tts_voice", "it-IT-DiegoNeural")
+                self.log.emit(f"TTS voice: {voice}")
+
+                def _on_tts_progress(scene_id, index, total, skipped=False):
+                    action = "Skipped" if skipped else "Synthesised"
+                    step = 20 + int((index / total) * 75)
+                    self._emit_progress(step, f"{action} audio {index}/{total} (scene {scene_id})")
+                    self.log.emit(f"{action} TTS scene {scene_id}")
+
+                engine = TTSEngine(
+                    output_dir=tts_dir,
+                    voice=voice,
+                    rate=self.config.get("tts_rate", "+0%"),
+                    pitch=self.config.get("tts_pitch", "+0Hz"),
+                    volume=self.config.get("tts_volume", "+0%"),
+                )
+                engine.synthesise_scenes(
+                    scenes,
+                    timings_path=timings_path,
+                    on_progress=_on_tts_progress,
+                    skip_existing=True,
+                )
+                self._emit_progress(100, "TTS synthesis complete")
+                self.finished.emit(True, tts_dir)
+                if stage == "tts":
                     return
 
             if stage == "draft":
@@ -241,8 +276,6 @@ class PipelineWorker(QObject):
                     return
 
             if stage in {"full", "clips"}:
-                from video.video_generator import VideoGenerator
-
                 self._check_cancel()
                 self._emit_progress(55 if stage == "full" else 10, "Generating video clips")
                 image_paths = self._scene_image_candidates(images_dir)
@@ -251,24 +284,56 @@ class PipelineWorker(QObject):
                         f"No scene images found in {images_dir}. Run image generation first."
                     )
 
-                video_gen = VideoGenerator(
-                    model_path=self._resolve_path(self.config.get("svd", "models/svd")),
-                    output_dir=clips_dir,
-                    num_frames=int(self.config.get("num_frames", 14)),
-                    motion_bucket_id=int(self.config.get("motion_bucket_id", 127)),
-                    fps=int(self.config.get("fps", 8)),
-                    seed=int(self.config.get("seed", 42)),
-                )
+                clip_engine = self.config.get("clip_engine", "ken_burns")
+                self.log.emit(f"Clip engine: {clip_engine}")
+
+                # Load per-scene audio timings if available
+                scene_timings: dict = {}
+                if os.path.exists(timings_path):
+                    with open(timings_path, "r", encoding="utf-8") as fh:
+                        scene_timings = yaml.safe_load(fh) or {}
+                    self.log.emit(f"Loaded audio timings for {len(scene_timings)} scene(s).")
+
+                if clip_engine == "ken_burns":
+                    from video.ken_burns_generator import KenBurnsGenerator
+                    default_duration = float(self.config.get("ken_burns_duration", 4.0))
+                    generator = KenBurnsGenerator(
+                        output_dir=clips_dir,
+                        fps=int(self.config.get("fps", 24)),
+                        duration=default_duration,
+                        seed=int(self.config.get("seed", 42)),
+                    )
+                else:
+                    from video.video_generator import VideoGenerator
+                    generator = VideoGenerator(
+                        model_path=self._resolve_path(self.config.get("svd", "models/svd")),
+                        output_dir=clips_dir,
+                        num_frames=int(self.config.get("num_frames", 14)),
+                        motion_bucket_id=int(self.config.get("motion_bucket_id", 127)),
+                        fps=int(self.config.get("fps", 8)),
+                        seed=int(self.config.get("seed", 42)),
+                    )
+
                 total_images = len(image_paths)
                 for index, image_path in enumerate(image_paths, start=1):
                     self._check_cancel()
                     scene_id = self._extract_scene_id(image_path)
-                    video_gen.generate_clip(image_path, scene_id)
+                    existing_clip = os.path.join(clips_dir, f"scene_{scene_id:03d}.mp4")
+                    if os.path.exists(existing_clip):
+                        self.log.emit(f"Skipping clip {scene_id} (already exists).")
+                        action = f"Skipped clip {index}/{total_images}"
+                    else:
+                        # Use audio duration for this scene if available (Ken Burns only)
+                        if clip_engine == "ken_burns" and scene_id in scene_timings:
+                            generator.duration = float(scene_timings[scene_id])
+                            self.log.emit(f"Scene {scene_id}: clip duration = {generator.duration:.1f}s (from TTS)")
+                        generator.generate_clip(image_path, scene_id)
+                        action = f"Generated clip {index}/{total_images}"
                     if stage == "full":
                         step = 55 + int((index / total_images) * 25)
                     else:
                         step = 10 + int((index / total_images) * 80)
-                    self._emit_progress(step, f"Generated clip {index}/{total_images}")
+                    self._emit_progress(step, action)
 
                 if stage == "clips":
                     self._emit_progress(100, "Clip generation complete")
@@ -290,21 +355,50 @@ class PipelineWorker(QObject):
 
             if stage in {"full", "audio"}:
                 from video.audio_sync import AudioSync
+                from moviepy import AudioFileClip, concatenate_audioclips
 
                 self._check_cancel()
-                self._emit_progress(92 if stage == "full" else 20, "Syncing narration audio")
+                self._emit_progress(92 if stage == "full" else 10, "Baking narration audio")
                 if not os.path.exists(final_video_path):
                     raise FileNotFoundError(
                         f"Final video not found at {final_video_path}. Run assemble stage first."
                     )
 
+                # Build concatenated audio from per-scene TTS files
+                tts_files = sorted([
+                    os.path.join(tts_dir, f)
+                    for f in os.listdir(tts_dir)
+                    if f.startswith("scene_") and f.endswith(".mp3")
+                ]) if os.path.isdir(tts_dir) else []
+
+                if tts_files:
+                    self.log.emit(f"Concatenating {len(tts_files)} TTS audio file(s)…")
+                    clips = [AudioFileClip(p) for p in tts_files]
+                    combined = concatenate_audioclips(clips)
+                    combined_path = os.path.join(final_dir, "narration_combined.mp3")
+                    combined.write_audiofile(combined_path, logger=None)
+                    for c in clips:
+                        c.close()
+                    combined.close()
+                    audio_source = combined_path
+                    self.log.emit(f"Combined audio: {combined_path}")
+                elif os.path.exists(input_audio):
+                    audio_source = input_audio
+                    self.log.emit("No TTS audio found — using input/audio.wav")
+                else:
+                    raise FileNotFoundError(
+                        "No TTS audio files found in output/audio/ and no input/audio.wav. "
+                        "Run 'Synthesise Audio (TTS)' first."
+                    )
+
+                self._emit_progress(96 if stage == "full" else 60, "Merging audio with video")
                 sync = AudioSync(
                     output_path=final_with_audio_path,
                     audio_volume=float(self.config.get("audio_volume", 1.0)),
-                    fade_in=float(self.config.get("fade_in", 0.5)),
+                    fade_in=float(self.config.get("fade_in", 0.0)),
                     fade_out=float(self.config.get("fade_out", 0.5)),
                 )
-                sync.merge(final_video_path, input_audio)
+                sync.merge(final_video_path, audio_source)
 
                 self._emit_progress(100, "Audio sync complete")
                 self.finished.emit(True, final_with_audio_path)
@@ -328,14 +422,15 @@ class PipelineController(QObject):
     pipeline_finished = pyqtSignal(bool, str)
 
     PIPELINE_STAGES: List[Tuple[str, str]] = [
-        ("Full Pipeline", "full"),
-        ("Draft Preview", "draft"),
-        ("Load Narration", "narration"),
-        ("Split Scenes", "scenes"),
-        ("Generate Images", "images"),
-        ("Generate Clips", "clips"),
-        ("Assemble Video", "assemble"),
-        ("Sync Audio", "audio"),
+        ("Full Pipeline",          "full"),
+        ("Draft Preview",          "draft"),
+        ("Load Narration",         "narration"),
+        ("Split Scenes",           "scenes"),
+        ("Synthesise Audio (TTS)", "tts"),
+        ("Generate Images",        "images"),
+        ("Generate Clips",         "clips"),
+        ("Assemble Video",         "assemble"),
+        ("Sync Audio",             "audio"),
     ]
 
     DEFAULT_SETTINGS = {
@@ -354,6 +449,12 @@ class PipelineController(QObject):
         "audio_volume": 1.0,
         "fade_in": 0.5,
         "fade_out": 0.5,
+        "clip_engine": "ken_burns",
+        "ken_burns_duration": 4.0,
+        "tts_voice": "it-IT-DiegoNeural",
+        "tts_rate": "+0%",
+        "tts_pitch": "+0Hz",
+        "tts_volume": "+0%",
         "use_ollama": False,
         "ollama_model": "llama3",
         "ollama_host": "http://localhost:11434",
