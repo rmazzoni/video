@@ -61,7 +61,9 @@ class PipelineWorker(QObject):
     def run(self):
         try:
             stage = (self.stage or "full").strip().lower()
-            if stage not in {"full", "narration", "scenes", "prompts", "tts", "images", "clips", "assemble", "audio", "draft"}:
+            if stage not in {"narration", "scenes", "prompts", "tts",
+                             "preview_images", "preview_clips", "preview_video",
+                             "final_images", "final_clips", "final_video"}:
                 raise ValueError(f"Unknown stage: {stage}")
 
             # Force-release any GPU memory left over from a previous pipeline run
@@ -77,7 +79,7 @@ class PipelineWorker(QObject):
                     _gc.collect()
                     alloc = _t.cuda.memory_allocated() / 1024**3
                     if alloc > 0.5:
-                        self.log.emit(f"⚠ VRAM start: {alloc:.2f} GiB still allocated from previous run — forcing further cleanup")
+                        self.log.emit(f"âš  VRAM start: {alloc:.2f} GiB still allocated from previous run â€” forcing further cleanup")
                         # Walk all live Python objects and delete any torch modules
                         import sys
                         for obj in list(_gc.get_objects()):
@@ -109,13 +111,21 @@ class PipelineWorker(QObject):
             input_audio = os.path.join(self.project_path, "input", "audio.wav")
             tts_dir = os.path.join(self.project_path, "output", "audio")
             timings_path = os.path.join(tts_dir, "timings.yaml")
+            draft_dir = os.path.join(self.project_path, "output", "draft")
+            draft_clips_dir = os.path.join(self.project_path, "output", "draft_clips")
+            preview_dir = os.path.join(self.project_path, "output", "preview")
             images_dir = os.path.join(self.project_path, "output", "images")
             clips_dir = os.path.join(self.project_path, "output", "clips")
             final_dir = os.path.join(self.project_path, "output", "final")
             scenes_path = os.path.join(self.project_path, "output", "scenes.yaml")
+            preview_video_path = os.path.join(preview_dir, "preview_video.mp4")
+            preview_with_audio_path = os.path.join(preview_dir, "preview_with_audio.mp4")
             final_video_path = os.path.join(final_dir, "final_video.mp4")
             final_with_audio_path = os.path.join(final_dir, "final_with_audio.mp4")
 
+            os.makedirs(draft_dir, exist_ok=True)
+            os.makedirs(draft_clips_dir, exist_ok=True)
+            os.makedirs(preview_dir, exist_ok=True)
             os.makedirs(images_dir, exist_ok=True)
             os.makedirs(clips_dir, exist_ok=True)
             os.makedirs(final_dir, exist_ok=True)
@@ -123,7 +133,7 @@ class PipelineWorker(QObject):
             narration_text = ""
             scenes = []
 
-            if stage in {"full", "narration", "scenes", "prompts", "tts", "images", "draft"}:
+            if stage in {"narration", "scenes", "prompts", "tts"}:
                 self._check_cancel()
                 self._emit_progress(5, "Loading narration")
                 narration_text = TranscriptLoader().load(input_text)
@@ -134,7 +144,7 @@ class PipelineWorker(QObject):
                     self.finished.emit(True, input_text)
                     return
 
-            if stage in {"full", "scenes", "prompts", "tts", "images", "draft"}:
+            if stage in {"scenes", "prompts", "tts"}:
                 self._check_cancel()
                 self._emit_progress(15, "Splitting narration into scenes")
                 splitter = SceneSplitter(min_sentence_length=int(self.config.get("min_sentence_length", 20)))
@@ -167,7 +177,7 @@ class PipelineWorker(QObject):
                     if prompt_builder._enhancer.is_available():
                         self.log.emit("Ollama prompt enhancement: ACTIVE")
                     else:
-                        self.log.emit("Ollama not available — using rule-based prompts.")
+                        self.log.emit("Ollama not available â€” using rule-based prompts.")
                 prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
                 cached_prompts: dict = {}
                 if os.path.exists(prompts_path):
@@ -249,413 +259,124 @@ class PipelineWorker(QObject):
                 if stage == "tts":
                     return
 
-            if stage == "draft":
-                from images.image_generator import ImageGenerator
-
-                draft_dir = os.path.join(self.project_path, "output", "draft")
-                os.makedirs(draft_dir, exist_ok=True)
-
-                # Use already-split scenes from scenes.yaml when available so
-                # that a "Sync to Dubbing" run is immediately reflected here
-                # without having to re-split from narration again.
-                if os.path.exists(scenes_path):
-                    with open(scenes_path, "r", encoding="utf-8") as fh:
-                        loaded = yaml.safe_load(fh) or {}
-                    scenes = loaded.get("scenes", scenes)
-                    self.log.emit(f"Draft: using {len(scenes)} scene(s) from scenes.yaml")
-
-                self._check_cancel()
-                self._emit_progress(25, "Building prompts for draft")
-                prompt_builder = PromptBuilder(
-                    style_preset=self.config.get("style_preset", "cinematic"),
-                    default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
-                    use_ollama=bool(self.config.get("use_ollama", False)),
-                    ollama_model=str(self.config.get("ollama_model", "llama3")),
-                    ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
-                )
-                if prompt_builder._enhancer:
-                    if prompt_builder._enhancer.is_available():
-                        self.log.emit("Ollama prompt enhancement: ACTIVE")
-                    else:
-                        self.log.emit("Ollama not available — using rule-based prompts.")
-
-                # Unload Ollama from GPU before loading the image model
-                try:
-                    import urllib.request, json as _json
-                    _host = str(self.config.get("ollama_host", "http://localhost:11434"))
-                    _payload = _json.dumps({"model": str(self.config.get("ollama_model", "llama3")), "keep_alive": 0}).encode()
-                    req = urllib.request.Request(f"{_host}/api/generate",
-                                                 data=_payload,
-                                                 headers={"Content-Type": "application/json"},
-                                                 method="POST")
-                    urllib.request.urlopen(req, timeout=10)
-                    self.log.emit("Ollama model unloaded from GPU.")
-                except Exception as _e:
-                    self.log.emit(f"Ollama unload skipped ({_e})")
-
-                image_gen = ImageGenerator(
-                    model_path=self._resolve_path(self.config.get("sdxl_base", "models/sd3")),
-                    output_dir=draft_dir,
-                    guidance_scale=6.0,
-                    num_inference_steps=15,
-                    seed=int(self.config.get("seed", 42)),
-                    width=512,
-                    height=512,
-                )
-                total_scenes = len(scenes)
-                max_draft = int(self.config.get("draft_max_scenes", 0))
-                if max_draft and max_draft < total_scenes:
-                    scenes = scenes[:max_draft]
-                    total_scenes = max_draft
-
-                prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
-                cached_prompts: dict = {}
-                prompts_mtime: float = 0.0
-                if os.path.exists(prompts_path):
-                    with open(prompts_path, "r", encoding="utf-8") as fh:
-                        cached_prompts = yaml.safe_load(fh) or {}
-                    prompts_mtime = os.path.getmtime(prompts_path)
-
-                for index, scene in enumerate(scenes, start=1):
-                    self._check_cancel()
-                    scene_id = int(scene["id"])
-                    existing = next(
-                        (os.path.join(draft_dir, f) for f in os.listdir(draft_dir)
-                         if f.startswith(f"scene_{scene_id:03d}") and f.lower().endswith((".png", ".jpg", ".jpeg"))),
-                        None,
-                    )
-                    # Regenerate if: no draft image, OR prompt was updated after
-                    # the draft image was generated (prompt edited via Sync).
-                    prompt_newer = (
-                        existing and prompts_mtime > os.path.getmtime(existing)
-                        and scene_id in cached_prompts
-                    )
-                    if existing and not prompt_newer:
-                        self.log.emit(f"Skipping scene {scene_id} (draft up to date).")
-                    else:
-                        if prompt_newer:
-                            self.log.emit(f"Scene {scene_id}: prompt updated — regenerating draft.")
-                            os.remove(existing)
-                        if scene_id in cached_prompts:
-                            prompt = cached_prompts[scene_id]
-                            self.log.emit(f"Scene {scene_id}: using cached prompt.")
-                        else:
-                            prompt = prompt_builder.build_prompt(scene)
-                            cached_prompts[scene_id] = prompt
-                            with open(prompts_path, "w", encoding="utf-8") as fh:
-                                yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
-                        image_gen.generate_image(prompt, scene_id)
-                    step = 30 + int((index / total_scenes) * 70)
-                    self._emit_progress(step, f"Draft image {index}/{total_scenes}")
-
-                self._emit_progress(100, "Draft preview ready")
-                _log_vram("before draft unload")
-                image_gen.unload()
-                _log_vram("after draft unload")
-                self.finished.emit(True, draft_dir)
-                return
-
-            if stage in {"full", "images"}:
-                from images.image_generator import ImageGenerator
-
-                self._check_cancel()
-                self._emit_progress(25, "Building prompts")
-
-                # Check how many images still need generating
-                existing_images = set()
-                if os.path.isdir(images_dir):
-                    for f in os.listdir(images_dir):
-                        if f.startswith("scene_") and f.lower().endswith((".png", ".jpg", ".jpeg")):
-                            try:
-                                existing_images.add(int(f.split("_")[1].split(".")[0]))
-                            except (IndexError, ValueError):
-                                pass
-                scenes_needing_images = [s for s in scenes if int(s["id"]) not in existing_images]
-
-                if not scenes_needing_images:
-                    self.log.emit("All images already exist — skipping image generation.")
-                    image_gen = None
+            # â”€â”€ Helper: build image generator for a given model type â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            def _make_image_gen(model_type: str, output_dir: str):
+                if model_type == "flux-schnell":
+                    model_path = self.config.get("flux_schnell", "models/flux/FLUX.1-schnell")
+                    steps = int(self.config.get("schnell_steps", 4))
+                    guidance = float(self.config.get("schnell_guidance", 0.0))
+                elif model_type == "flux-dev":
+                    model_path = self.config.get("flux_dev", "models/flux/FLUX.1-dev")
+                    steps = int(self.config.get("dev_steps", 20))
+                    guidance = float(self.config.get("dev_guidance", 3.5))
                 else:
-                    # Load cached prompts first — only invoke Ollama for missing ones
-                    prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
-                    cached_prompts: dict = {}
-                    if os.path.exists(prompts_path):
-                        with open(prompts_path, "r", encoding="utf-8") as fh:
-                            cached_prompts = yaml.safe_load(fh) or {}
-                        self.log.emit(f"Loaded {len(cached_prompts)} cached prompt(s) from prompts.yaml")
+                    model_path = self.config.get("sdxl_base", "models/sd3")
+                    steps = int(self.config.get("num_inference_steps", 30))
+                    guidance = float(self.config.get("guidance_scale", 7.5))
+                self.log.emit(f"Image model: {model_type}  steps={steps}  guidance={guidance}")
+                from images.image_generator import ImageGenerator
+                return ImageGenerator(
+                    model_path=self._resolve_path(model_path),
+                    model_type=model_type,
+                    output_dir=output_dir,
+                    guidance_scale=guidance,
+                    num_inference_steps=steps,
+                    seed=int(self.config.get("seed", 42)),
+                    width=int(self.config.get("image_width", 1024)),
+                    height=int(self.config.get("image_height", 576)),
+                )
 
-                    scenes_missing_prompts = [
-                        s for s in scenes_needing_images
-                        if int(s["id"]) not in cached_prompts
-                    ]
-
-                    ollama_was_used = False
-                    if scenes_missing_prompts:
-                        prompt_builder = PromptBuilder(
-                            style_preset=self.config.get("style_preset", "cinematic"),
-                            default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
-                            use_ollama=bool(self.config.get("use_ollama", False)),
-                            ollama_model=str(self.config.get("ollama_model", "llama3")),
-                            ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
-                        )
-                        ollama_active = bool(getattr(prompt_builder, "_enhancer", None) and prompt_builder._enhancer.is_available())
-                        if ollama_active:
-                            self.log.emit("Ollama prompt enhancement: ACTIVE")
-                            ollama_was_used = True
-                        else:
-                            self.log.emit("Ollama not available — using rule-based prompts.")
-                        for scene in scenes_missing_prompts:
-                            scene_id = int(scene["id"])
-                            cached_prompts[scene_id] = prompt_builder.build_prompt(scene)
-                        with open(prompts_path, "w", encoding="utf-8") as fh:
-                            yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
-                        self.log.emit(f"Generated {len(scenes_missing_prompts)} new prompt(s).")
-                    else:
-                        self.log.emit("All prompts already cached — Ollama not needed.")
-
-                    # Unload Ollama from GPU before loading the image model
-                    if ollama_was_used:
-                        try:
-                            import urllib.request, json as _json
-                            _host = str(self.config.get("ollama_host", "http://localhost:11434"))
-                            _payload = _json.dumps({"model": str(self.config.get("ollama_model", "llama3")), "keep_alive": 0}).encode()
-                            req = urllib.request.Request(f"{_host}/api/generate",
-                                                         data=_payload,
-                                                         headers={"Content-Type": "application/json"},
-                                                         method="POST")
-                            urllib.request.urlopen(req, timeout=10)
-                            self.log.emit("Ollama model unloaded from GPU.")
-                        except Exception as _e:
-                            self.log.emit(f"Ollama unload skipped ({_e})")
-
-                    self._check_cancel()
-                    self._emit_progress(30, "Generating scene images")
-
-                    model_type = str(self.config.get("image_model", "sdxl"))
-                    if model_type == "flux-schnell":
-                        model_path = self.config.get("flux_schnell", "models/flux/FLUX.1-schnell")
-                    elif model_type == "flux-dev":
-                        model_path = self.config.get("flux_dev", "models/flux/FLUX.1-dev")
-                    else:
-                        model_path = self.config.get("sdxl_base", "models/sd3")
-                    self.log.emit(f"Image model: {model_type} ({model_path})")
-
-                    image_gen = ImageGenerator(
-                        model_path=self._resolve_path(model_path),
-                        model_type=model_type,
-                        output_dir=images_dir,
-                        guidance_scale=float(self.config.get("guidance_scale", 7.5)),
-                        num_inference_steps=int(self.config.get("num_inference_steps", 30)),
-                        seed=int(self.config.get("seed", 42)),
-                        width=int(self.config.get("image_width", 1024)),
-                        height=int(self.config.get("image_height", 1024)),
-                    )
-
-                    total_scenes = len(scenes_needing_images)
-                    for index, scene in enumerate(scenes_needing_images, start=1):
-                        self._check_cancel()
-                        scene_id = int(scene["id"])
-                        prompt = cached_prompts.get(scene_id) or cached_prompts.get(str(scene_id), "")
-                        if not prompt:
-                            prompt = scene.get("text", "")
-                            self.log.emit(f"Scene {scene_id}: no cached prompt, using raw text.")
-                        else:
-                            self.log.emit(f"Scene {scene_id}: using cached prompt.")
-                        image_gen.generate_image(prompt, scene_id)
-                        if stage == "full":
-                            step = 30 + int((index / total_scenes) * 25)
-                        else:
-                            step = 30 + int((index / total_scenes) * 70)
-                        self._emit_progress(step, f"Generated image {index}/{total_scenes}")
-
-                if stage == "images":
-                    self._emit_progress(100, "Image generation complete")
-                    if image_gen is not None:
-                        _log_vram("before images unload")
-                        image_gen.unload()
-                        _log_vram("after images unload")
-                    self.finished.emit(True, images_dir)
-                    return
-
-                # Full run: unload image generator before generating clips
-                if image_gen is not None:
-                    _log_vram("before full-run image unload")
-                    image_gen.unload()
-                    _log_vram("after full-run image unload")
-
-            if stage in {"full", "clips"}:
-                self._check_cancel()
-                self._emit_progress(55 if stage == "full" else 10, "Generating video clips")
-
-                # Warn if any dubbed audio is older than dubbing.yaml by more than 60 s
-                # (a small window accounts for saves that happen right after dubbing)
-                dubbing_yaml = os.path.join(self.project_path, "output", "dubbing.yaml")
-                if os.path.exists(dubbing_yaml):
-                    dub_mtime = os.path.getmtime(dubbing_yaml)
-                    stale = [
-                        f for f in os.listdir(tts_dir)
-                        if f.startswith("scene_") and f.endswith(".mp3")
-                        and (dub_mtime - os.path.getmtime(os.path.join(tts_dir, f))) > 60
-                    ] if os.path.isdir(tts_dir) else []
-                    if stale:
-                        self.log.emit(
-                            f"⚠ Warning: {len(stale)} audio file(s) predate the last dubbing.yaml save "
-                            f"and may be out of sync with the current text. "
-                            f"Run 'Dub All' in the Dubbing tab to regenerate them."
-                        )
-
-                image_paths = self._scene_image_candidates(images_dir)
-                if not image_paths:
-                    raise FileNotFoundError(
-                        f"No scene images found in {images_dir}. Run image generation first."
-                    )
-
-                clip_engine = self.config.get("clip_engine", "ken_burns")
-                self.log.emit(f"Clip engine: {clip_engine}")
-
-                # Load per-scene audio timings — from timings.yaml if present,
-                # otherwise measure MP3 durations directly from the audio folder.
+            # â”€â”€ Helper: load scene_timings from timings.yaml or measure MP3s â”€â”€
+            def _load_scene_timings() -> dict:
                 scene_timings: dict = {}
                 if os.path.exists(timings_path):
                     with open(timings_path, "r", encoding="utf-8") as fh:
                         scene_timings = yaml.safe_load(fh) or {}
-                    self.log.emit(f"Loaded audio timings for {len(scene_timings)} scene(s).")
-                elif os.path.isdir(tts_dir):
-                    self.log.emit("timings.yaml not found — measuring MP3 durations directly.")
-                    for mp3 in os.listdir(tts_dir):
-                        if not mp3.startswith("scene_") or not mp3.endswith(".mp3"):
-                            continue
-                        try:
-                            sid = int(mp3[6:9])
-                        except ValueError:
-                            continue
-                        mp3_path = os.path.join(tts_dir, mp3)
-                        try:
-                            from mutagen.mp3 import MP3
-                            scene_timings[sid] = MP3(mp3_path).info.length
-                        except Exception:
+                    scene_timings = {int(k): float(v) for k, v in scene_timings.items()}
+                if not scene_timings and os.path.isdir(tts_dir):
+                    for f in os.listdir(tts_dir):
+                        if f.startswith("scene_") and f.endswith(".mp3"):
                             try:
-                                from moviepy import AudioFileClip as _AFC
-                                c = _AFC(mp3_path); scene_timings[sid] = c.duration; c.close()
+                                sid = int(f.split("_")[1].split(".")[0])
+                            except ValueError:
+                                continue
+                            mp3_path = os.path.join(tts_dir, f)
+                            try:
+                                import mutagen.mp3
+                                audio = mutagen.mp3.MP3(mp3_path)
+                                scene_timings[sid] = audio.info.length
                             except Exception:
-                                pass
+                                try:
+                                    from moviepy import AudioFileClip as _AFC
+                                    c = _AFC(mp3_path); scene_timings[sid] = c.duration; c.close()
+                                except Exception:
+                                    pass
                     if scene_timings:
                         with open(timings_path, "w", encoding="utf-8") as fh:
                             yaml.safe_dump(scene_timings, fh, sort_keys=True)
                         self.log.emit(f"Measured and saved timings for {len(scene_timings)} scene(s).")
+                return scene_timings
 
-                if clip_engine == "ken_burns":
-                    from video.ken_burns_generator import KenBurnsGenerator
-                    default_duration = float(self.config.get("ken_burns_duration", 4.0))
-                    generator = KenBurnsGenerator(
-                        output_dir=clips_dir,
-                        fps=int(self.config.get("ken_burns_fps", 24)),
-                        duration=default_duration,
-                        seed=int(self.config.get("seed", 42)),
-                    )
-                else:
-                    from video.video_generator import VideoGenerator
-                    generator = VideoGenerator(
-                        model_path=self._resolve_path(self.config.get("svd", "models/svd")),
-                        output_dir=clips_dir,
-                        num_frames=int(self.config.get("num_frames", 14)),
-                        motion_bucket_id=int(self.config.get("motion_bucket_id", 40)),
-                        fps=int(self.config.get("fps", 8)),
-                        decode_chunk_size=int(self.config.get("decode_chunk_size", 4)),
-                        noise_aug_strength=float(self.config.get("noise_aug_strength", 0.0)),
-                        seed=int(self.config.get("seed", 42)),
-                    )
-
-                # Load per-scene SVD overrides (motion_bucket_id, noise_aug_strength).
-                # Format: scene_id: {motion_bucket_id: 20, noise_aug_strength: 0.0}
+            # â”€â”€ Helper: generate clips from an image dir into a clip dir â”€â”€â”€â”€â”€â”€
+            def _run_clips(src_images_dir: str, out_clips_dir: str, timings: dict):
+                os.makedirs(out_clips_dir, exist_ok=True)
+                image_paths = self._scene_image_candidates(src_images_dir)
+                if not image_paths:
+                    raise FileNotFoundError(f"No scene images found in {src_images_dir}.")
+                from video.video_generator import VideoGenerator
+                gen = VideoGenerator(
+                    model_path=self._resolve_path(self.config.get("svd", "models/svd")),
+                    output_dir=out_clips_dir,
+                    num_frames=int(self.config.get("num_frames", 25)),
+                    motion_bucket_id=int(self.config.get("motion_bucket_id", 40)),
+                    fps=int(self.config.get("fps", 8)),
+                    decode_chunk_size=int(self.config.get("decode_chunk_size", 4)),
+                    noise_aug_strength=float(self.config.get("noise_aug_strength", 0.0)),
+                    seed=int(self.config.get("seed", 42)),
+                )
                 overrides_path = os.path.join(self.project_path, "output", "scene_overrides.yaml")
                 scene_overrides: dict = {}
                 if os.path.exists(overrides_path):
                     with open(overrides_path, "r", encoding="utf-8") as fh:
                         scene_overrides = yaml.safe_load(fh) or {}
-                    self.log.emit(f"Loaded scene overrides for {len(scene_overrides)} scene(s).")
 
-                total_images = len(image_paths)
-                for index, image_path in enumerate(image_paths, start=1):
+                total = len(image_paths)
+                for idx, img_path in enumerate(image_paths, 1):
                     self._check_cancel()
-                    scene_id = self._extract_scene_id(image_path)
-                    existing_clip = os.path.join(clips_dir, f"scene_{scene_id:03d}.mp4")
-                    if os.path.exists(existing_clip):
-                        self.log.emit(f"Skipping clip {scene_id} (already exists).")
-                        action = f"Skipped clip {index}/{total_images}"
+                    sid = self._extract_scene_id(img_path)
+                    existing = os.path.join(out_clips_dir, f"scene_{sid:03d}.mp4")
+                    if os.path.exists(existing):
+                        self.log.emit(f"Skipping clip {sid} (already exists).")
                     else:
-                        # Match clip length to the scene's narration duration.
-                        target_dur = float(scene_timings[scene_id]) if scene_id in scene_timings else None
-                        if clip_engine == "ken_burns" and target_dur is not None:
-                            generator.duration = target_dur
-                            self.log.emit(f"Scene {scene_id}: clip duration = {generator.duration:.1f}s (from TTS)")
-                        elif target_dur is not None:
-                            self.log.emit(f"Scene {scene_id}: target duration = {target_dur:.1f}s (from TTS)")
-                        ov = scene_overrides.get(scene_id, scene_overrides.get(str(scene_id), {}))
-                        if ov:
-                            self.log.emit(f"Scene {scene_id}: applying overrides {ov}")
-                        generator.generate_clip(
-                            image_path, scene_id,
+                        target_dur = float(timings[sid]) if sid in timings else None
+                        if target_dur:
+                            self.log.emit(f"Scene {sid}: target duration = {target_dur:.1f}s")
+                        ov = scene_overrides.get(sid, scene_overrides.get(str(sid), {}))
+                        gen.generate_clip(
+                            img_path, sid,
                             motion_bucket_id=ov.get("motion_bucket_id") if ov else None,
                             noise_aug_strength=ov.get("noise_aug_strength") if ov else None,
                             target_duration=target_dur,
                         )
-                        action = f"Generated clip {index}/{total_images}"
-                    if stage == "full":
-                        step = 55 + int((index / total_images) * 25)
-                    else:
-                        step = 10 + int((index / total_images) * 80)
-                    self._emit_progress(step, action)
+                    step = 10 + int((idx / total) * 80)
+                    self._emit_progress(step, f"Clip {idx}/{total}")
+                _log_vram("before clip gen unload")
+                gen.unload()
+                _log_vram("after clip gen unload")
 
-                if stage == "clips":
-                    self._emit_progress(100, "Clip generation complete")
-                    _log_vram("before clips unload")
-                    generator.unload()
-                    _log_vram("after clips unload")
-                    self.finished.emit(True, clips_dir)
-                    return
-
-                # Full run: unload clip generator before assembling
-                _log_vram("before full-run clip unload")
-                generator.unload()
-                _log_vram("after full-run clip unload")
-
-            if stage in {"full", "assemble"}:
+            # â”€â”€ Helper: assemble clips + audio into a video â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            def _run_assemble(clips_d: str, video_out: str, audio_out: str,
+                              resolution: tuple):
                 from video.clip_assembler import ClipAssembler
-
-                self._check_cancel()
-                base = 82 if stage == "full" else 20
-                self._emit_progress(base, "Loading clips…")
-                out_w = int(self.config.get("output_width", 1920))
-                out_h = int(self.config.get("output_height", 1080))
-                assembler = ClipAssembler(final_video_path, fps=int(self.config.get("fps", 24)),
-                                          target_resolution=(out_w, out_h))
-
-                def _on_clip_loaded(loaded, total):
-                    step = base + int((loaded / total) * 15)
-                    self._emit_progress(step, f"Loading clip {loaded}/{total}…")
-
-                assembler.assemble(clips_dir, on_progress=_on_clip_loaded)
-                self._emit_progress(base + 15, "Encoding final video (this may take a few minutes)…")
-                self.log.emit("Encoding final video with libx264 — please wait…")
-
-                if stage == "assemble":
-                    self._emit_progress(100, "Assemble complete")
-                    self.finished.emit(True, final_video_path)
-                    return
-
-            if stage in {"full", "audio"}:
                 from video.audio_sync import AudioSync
                 from moviepy import AudioFileClip, concatenate_audioclips
 
-                self._check_cancel()
-                self._emit_progress(92 if stage == "full" else 10, "Baking narration audio")
-                if not os.path.exists(final_video_path):
-                    raise FileNotFoundError(
-                        f"Final video not found at {final_video_path}. Run assemble stage first."
-                    )
+                self._emit_progress(82, "Assembling clipsâ€¦")
+                assembler = ClipAssembler(video_out, fps=int(self.config.get("fps", 24)),
+                                          target_resolution=resolution)
+                assembler.assemble(clips_d)
+                self._emit_progress(92, "Merging audioâ€¦")
 
-                # Build concatenated audio from per-scene TTS files
                 tts_files = sorted([
                     os.path.join(tts_dir, f)
                     for f in os.listdir(tts_dir)
@@ -663,40 +384,204 @@ class PipelineWorker(QObject):
                 ]) if os.path.isdir(tts_dir) else []
 
                 if tts_files:
-                    self.log.emit(f"Concatenating {len(tts_files)} TTS audio file(s)…")
-                    clips = [AudioFileClip(p) for p in tts_files]
-                    combined = concatenate_audioclips(clips)
-                    combined_path = os.path.join(final_dir, "narration_combined.mp3")
+                    clips_a = [AudioFileClip(p) for p in tts_files]
+                    combined = concatenate_audioclips(clips_a)
+                    combined_path = os.path.join(os.path.dirname(audio_out), "narration_combined.mp3")
                     combined.write_audiofile(combined_path, logger=None)
-                    for c in clips:
-                        c.close()
+                    for c in clips_a: c.close()
                     combined.close()
-                    audio_source = combined_path
-                    self.log.emit(f"Combined audio: {combined_path}")
+                    audio_src = combined_path
                 elif os.path.exists(input_audio):
-                    audio_source = input_audio
-                    self.log.emit("No TTS audio found — using input/audio.wav")
+                    audio_src = input_audio
                 else:
-                    raise FileNotFoundError(
-                        "No TTS audio files found in output/audio/ and no input/audio.wav. "
-                        "Run 'Synthesise Audio (TTS)' first."
-                    )
+                    raise FileNotFoundError("No TTS audio found. Run Synthesise Audio first.")
 
-                self._emit_progress(96 if stage == "full" else 60, "Merging audio with video")
                 sync = AudioSync(
-                    output_path=final_with_audio_path,
+                    output_path=audio_out,
                     audio_volume=float(self.config.get("audio_volume", 1.0)),
                     fade_in=float(self.config.get("fade_in", 0.0)),
                     fade_out=float(self.config.get("fade_out", 0.5)),
                 )
-                sync.merge(final_video_path, audio_source)
+                sync.merge(video_out, audio_src)
 
-                self._emit_progress(100, "Audio sync complete")
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # STAGE: preview_images  â€” FLUX schnell â†’ output/draft/
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            if stage == "preview_images":
+                self._check_cancel()
+                self._emit_progress(10, "Generating preview images (FLUX schnell)")
+
+                # Load scenes from scenes.yaml
+                if os.path.exists(scenes_path):
+                    with open(scenes_path, "r", encoding="utf-8") as fh:
+                        scenes = (yaml.safe_load(fh) or {}).get("scenes", scenes)
+
+                prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+                cached_prompts: dict = {}
+                if os.path.exists(prompts_path):
+                    with open(prompts_path, "r", encoding="utf-8") as fh:
+                        cached_prompts = yaml.safe_load(fh) or {}
+
+                # Scan existing draft images
+                existing_drafts: set = set()
+                if os.path.isdir(draft_dir):
+                    for f in os.listdir(draft_dir):
+                        if f.startswith("scene_") and f.lower().endswith((".png", ".jpg", ".jpeg")):
+                            try:
+                                existing_drafts.add(int(f.split("_")[1].split(".")[0]))
+                            except (IndexError, ValueError):
+                                pass
+
+                scenes_needed = [s for s in scenes if int(s["id"]) not in existing_drafts]
+                if not scenes_needed:
+                    self.log.emit("All preview images already exist â€” skipping.")
+                    self._emit_progress(100, "Preview images up to date")
+                    self.finished.emit(True, draft_dir)
+                    return
+
+                # Generate missing prompts
+                scenes_no_prompt = [s for s in scenes_needed
+                                    if int(s["id"]) not in cached_prompts]
+                if scenes_no_prompt:
+                    prompt_builder = PromptBuilder(
+                        style_preset=self.config.get("style_preset", "cinematic"),
+                        default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
+                        use_ollama=bool(self.config.get("use_ollama", False)),
+                        ollama_model=str(self.config.get("ollama_model", "llama3")),
+                        ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
+                    )
+                    for s in scenes_no_prompt:
+                        cached_prompts[int(s["id"])] = prompt_builder.build_prompt(s)
+                    with open(prompts_path, "w", encoding="utf-8") as fh:
+                        yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
+                    # Unload Ollama
+                    try:
+                        import urllib.request, json as _json
+                        _host = str(self.config.get("ollama_host", "http://localhost:11434"))
+                        _payload = _json.dumps({"model": str(self.config.get("ollama_model", "llama3")), "keep_alive": 0}).encode()
+                        req = urllib.request.Request(f"{_host}/api/generate", data=_payload,
+                                                     headers={"Content-Type": "application/json"}, method="POST")
+                        urllib.request.urlopen(req, timeout=10)
+                    except Exception as _e:
+                        self.log.emit(f"Ollama unload skipped ({_e})")
+
+                image_gen = _make_image_gen("flux-schnell", draft_dir)
+                total = len(scenes_needed)
+                for idx, scene in enumerate(scenes_needed, 1):
+                    self._check_cancel()
+                    sid = int(scene["id"])
+                    prompt = cached_prompts.get(sid) or scene.get("text", "")
+                    self.log.emit(f"Scene {sid}: generating preview imageâ€¦")
+                    image_gen.generate_image(prompt, sid)
+                    self._emit_progress(10 + int((idx / total) * 85), f"Preview image {idx}/{total}")
+
+                _log_vram("before preview_images unload")
+                image_gen.unload()
+                _log_vram("after preview_images unload")
+                self._emit_progress(100, "Preview images complete")
+                self.finished.emit(True, draft_dir)
+                return
+
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # STAGE: preview_clips  â€” SVD from draft images â†’ output/draft_clips/
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            if stage == "preview_clips":
+                self._check_cancel()
+                self._emit_progress(5, "Generating preview clips")
+                scene_timings = _load_scene_timings()
+                _run_clips(draft_dir, draft_clips_dir, scene_timings)
+                self._emit_progress(100, "Preview clips complete")
+                self.finished.emit(True, draft_clips_dir)
+                return
+
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # STAGE: preview_video  â€” assemble draft clips at 1024Ã—576
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            if stage == "preview_video":
+                self._check_cancel()
+                _run_assemble(draft_clips_dir, preview_video_path, preview_with_audio_path,
+                              resolution=(1024, 576))
+                self._emit_progress(100, "Preview video complete")
+                self.finished.emit(True, preview_with_audio_path)
+                return
+
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # STAGE: final_images  â€” FLUX dev â†’ output/images/
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            if stage == "final_images":
+                self._check_cancel()
+                self._emit_progress(10, "Generating final images (FLUX dev)")
+
+                if os.path.exists(scenes_path):
+                    with open(scenes_path, "r", encoding="utf-8") as fh:
+                        scenes = (yaml.safe_load(fh) or {}).get("scenes", scenes)
+
+                prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+                cached_prompts = {}
+                if os.path.exists(prompts_path):
+                    with open(prompts_path, "r", encoding="utf-8") as fh:
+                        cached_prompts = yaml.safe_load(fh) or {}
+
+                existing_images: set = set()
+                if os.path.isdir(images_dir):
+                    for f in os.listdir(images_dir):
+                        if f.startswith("scene_") and f.lower().endswith((".png", ".jpg", ".jpeg")):
+                            try:
+                                existing_images.add(int(f.split("_")[1].split(".")[0]))
+                            except (IndexError, ValueError):
+                                pass
+
+                scenes_needed = [s for s in scenes if int(s["id"]) not in existing_images]
+                if not scenes_needed:
+                    self.log.emit("All final images already exist â€” skipping.")
+                    self._emit_progress(100, "Final images up to date")
+                    self.finished.emit(True, images_dir)
+                    return
+
+                image_gen = _make_image_gen("flux-dev", images_dir)
+                total = len(scenes_needed)
+                for idx, scene in enumerate(scenes_needed, 1):
+                    self._check_cancel()
+                    sid = int(scene["id"])
+                    prompt = cached_prompts.get(sid) or cached_prompts.get(str(sid)) or scene.get("text", "")
+                    self.log.emit(f"Scene {sid}: generating final imageâ€¦")
+                    image_gen.generate_image(prompt, sid)
+                    self._emit_progress(10 + int((idx / total) * 85), f"Final image {idx}/{total}")
+
+                _log_vram("before final_images unload")
+                image_gen.unload()
+                _log_vram("after final_images unload")
+                self._emit_progress(100, "Final images complete")
+                self.finished.emit(True, images_dir)
+                return
+
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # STAGE: final_clips  â€” SVD from final images â†’ output/clips/
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            if stage == "final_clips":
+                self._check_cancel()
+                self._emit_progress(5, "Generating final clips")
+                scene_timings = _load_scene_timings()
+                _run_clips(images_dir, clips_dir, scene_timings)
+                self._emit_progress(100, "Final clips complete")
+                self.finished.emit(True, clips_dir)
+                return
+
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # STAGE: final_video  â€” assemble final clips at 1920Ã—1080
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            if stage == "final_video":
+                self._check_cancel()
+                out_w = int(self.config.get("output_width", 1920))
+                out_h = int(self.config.get("output_height", 1080))
+                _run_assemble(clips_dir, final_video_path, final_with_audio_path,
+                              resolution=(out_w, out_h))
+                self._emit_progress(100, "Final video complete")
                 self.finished.emit(True, final_with_audio_path)
                 return
 
-            self._emit_progress(100, "Pipeline complete")
-            self.finished.emit(True, final_with_audio_path)
+            self._emit_progress(100, "Stage complete")
+            self.finished.emit(True, "")
         except Exception as exc:
             self.finished.emit(False, str(exc))
 
@@ -713,16 +598,16 @@ class PipelineController(QObject):
     pipeline_finished = pyqtSignal(bool, str)
 
     PIPELINE_STAGES: List[Tuple[str, str]] = [
-        ("Full Pipeline",          "full"),
-        ("Draft Preview",          "draft"),
-        ("Build Prompts",           "prompts"),
-        ("Load Narration",         "narration"),
-        ("Split Scenes",           "scenes"),
-        ("Synthesise Audio (TTS)", "tts"),
-        ("Generate Images",        "images"),
-        ("Generate Clips",         "clips"),
-        ("Assemble Video",         "assemble"),
-        ("Sync Audio",             "audio"),
+        ("1. Load Narration",          "narration"),
+        ("2. Split Scenes",            "scenes"),
+        ("3. Build Prompts",           "prompts"),
+        ("4. Synthesise Audio (TTS)",  "tts"),
+        ("5. Preview Images (Schnell)", "preview_images"),
+        ("6. Preview Clips",           "preview_clips"),
+        ("7. Preview Video",           "preview_video"),
+        ("8. Final Images (FLUX Dev)", "final_images"),
+        ("9. Final Clips",             "final_clips"),
+        ("10. Final Video",            "final_video"),
     ]
 
     DEFAULT_SETTINGS = {
@@ -740,6 +625,10 @@ class PipelineController(QObject):
         "flux_schnell": "models/flux/FLUX.1-schnell",
         "guidance_scale": 7.5,
         "num_inference_steps": 30,
+        "schnell_steps": 4,
+        "schnell_guidance": 0.0,
+        "dev_steps": 20,
+        "dev_guidance": 3.5,
         "image_width": 1344,
         "image_height": 768,
         "image_model": "sdxl",

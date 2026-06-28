@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_pipeline_tab(), "Pipeline")
         self.tabs.addTab(self._build_script_tab(), "Script")
         self.tabs.addTab(self._build_dubbing_tab(), "Dubbing")
-        self.tabs.addTab(self._build_draft_tab(), "Draft Preview")
+        self.tabs.addTab(self._build_draft_tab(), "Preview Images")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         layout.addWidget(self.tabs)
 
@@ -151,29 +151,50 @@ class MainWindow(QMainWindow):
         self.pipeline_progress.setRange(0, 100)
         self.pipeline_progress.setValue(0)
 
-        controls_row = QHBoxLayout()
-        self.stage_selector = QComboBox()
-        for label, value in self.controller.get_stage_options():
-            self.stage_selector.addItem(label, value)
-        self.btn_run_stage = QPushButton("Run Stage")
-        self.btn_run_stage.clicked.connect(self.run_selected_stage)
+        # Individual stage buttons
+        stages_row1 = QHBoxLayout()
+        stages_row2 = QHBoxLayout()
+        self._stage_btns: dict = {}
+        stage_defs = [
+            ("1. Narration",       "narration"),
+            ("2. Split Scenes",    "scenes"),
+            ("3. Build Prompts",   "prompts"),
+            ("4. Synth Audio",     "tts"),
+            ("5. Preview Images",  "preview_images"),
+            ("6. Preview Clips",   "preview_clips"),
+            ("7. Preview Video",   "preview_video"),
+            ("8. Final Images",    "final_images"),
+            ("9. Final Clips",     "final_clips"),
+            ("10. Final Video",    "final_video"),
+        ]
+        for i, (label, value) in enumerate(stage_defs):
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _checked, v=value: self.run_stage(v))
+            btn.setMinimumWidth(110)
+            self._stage_btns[value] = btn
+            if i < 5:
+                stages_row1.addWidget(btn)
+            else:
+                stages_row2.addWidget(btn)
+
         self.btn_cancel_pipeline = QPushButton("Cancel")
         self.btn_cancel_pipeline.setEnabled(False)
         self.btn_cancel_pipeline.clicked.connect(self.cancel_pipeline)
-        controls_row.addWidget(QLabel("Stage:"))
-        controls_row.addWidget(self.stage_selector)
-        controls_row.addWidget(self.btn_run_stage)
-        controls_row.addWidget(self.btn_cancel_pipeline)
+        stages_row2.addWidget(self.btn_cancel_pipeline)
 
         extras_row = QHBoxLayout()
-        btn_clear_clips = QPushButton("🗑 Clear Clips")
-        btn_clear_clips.setToolTip("Delete all files in output/clips/ so they are regenerated with correct durations")
+        btn_clear_clips = QPushButton("🗑 Clear Final Clips")
+        btn_clear_clips.setToolTip("Delete all files in output/clips/")
         btn_clear_clips.clicked.connect(self._clear_clips)
-        btn_clear_draft = QPushButton("🗑 Clear Draft")
-        btn_clear_draft.setToolTip("Delete draft images so they are regenerated with current prompts")
+        btn_clear_draft = QPushButton("🗑 Clear Preview Images")
+        btn_clear_draft.setToolTip("Delete draft images so they are regenerated")
         btn_clear_draft.clicked.connect(self._clear_draft)
+        btn_clear_preview_clips = QPushButton("🗑 Clear Preview Clips")
+        btn_clear_preview_clips.setToolTip("Delete all files in output/draft_clips/")
+        btn_clear_preview_clips.clicked.connect(self._clear_preview_clips)
         extras_row.addStretch(1)
         extras_row.addWidget(btn_clear_draft)
+        extras_row.addWidget(btn_clear_preview_clips)
         extras_row.addWidget(btn_clear_clips)
 
         self.log_output = QPlainTextEdit()
@@ -184,7 +205,8 @@ class MainWindow(QMainWindow):
         root.addLayout(recent_row)
         root.addWidget(self.pipeline_status_label)
         root.addWidget(self.pipeline_progress)
-        root.addLayout(controls_row)
+        root.addLayout(stages_row1)
+        root.addLayout(stages_row2)
         root.addLayout(extras_row)
         root.addWidget(self.log_output, 1)
         return page
@@ -265,12 +287,40 @@ class MainWindow(QMainWindow):
         )
 
         self.guidance_scale_input = QDoubleSpinBox()
-        self.guidance_scale_input.setRange(1.0, 30.0)
+        self.guidance_scale_input.setRange(0.0, 30.0)
         self.guidance_scale_input.setDecimals(2)
         self.guidance_scale_input.setSingleStep(0.5)
+        self.guidance_scale_input.setVisible(False)  # legacy, kept for compat
 
         self.num_inference_steps_input = QSpinBox()
         self.num_inference_steps_input.setRange(1, 200)
+        self.num_inference_steps_input.setVisible(False)  # legacy
+
+        # FLUX Schnell settings
+        self.schnell_steps_input = QSpinBox()
+        self.schnell_steps_input.setRange(1, 20)
+        self.schnell_steps_input.setValue(4)
+        self.schnell_steps_input.setToolTip("Inference steps for FLUX schnell (Preview Images). Recommended: 4")
+
+        self.schnell_guidance_input = QDoubleSpinBox()
+        self.schnell_guidance_input.setRange(0.0, 10.0)
+        self.schnell_guidance_input.setDecimals(2)
+        self.schnell_guidance_input.setSingleStep(0.5)
+        self.schnell_guidance_input.setValue(0.0)
+        self.schnell_guidance_input.setToolTip("Guidance scale for FLUX schnell. Use 0.0 (distilled model)")
+
+        # FLUX Dev settings
+        self.dev_steps_input = QSpinBox()
+        self.dev_steps_input.setRange(1, 100)
+        self.dev_steps_input.setValue(20)
+        self.dev_steps_input.setToolTip("Inference steps for FLUX dev (Final Images). Recommended: 20–30")
+
+        self.dev_guidance_input = QDoubleSpinBox()
+        self.dev_guidance_input.setRange(0.0, 30.0)
+        self.dev_guidance_input.setDecimals(2)
+        self.dev_guidance_input.setSingleStep(0.5)
+        self.dev_guidance_input.setValue(3.5)
+        self.dev_guidance_input.setToolTip("Guidance scale for FLUX dev. Recommended: 3.5–5.0")
 
         self.image_resolution_input = QComboBox()
         self.image_resolution_input.addItem("1024 × 576  (16:9 — fits 16 GiB GPU)", (1024, 576))
@@ -307,13 +357,17 @@ class MainWindow(QMainWindow):
         form.addRow("Scene split method", self.scene_split_method_input)
         form.addRow("Min sentence length", self.min_sentence_length_input)
         form.addRow("SD model path", self.sdxl_model_input)
-        form.addRow("FLUX dev model path", self.flux_dev_model_input)
         form.addRow("FLUX schnell model path", self.flux_schnell_model_input)
-        form.addRow("Image model type", self.image_model_input)
-        form.addRow("Clip engine", self.clip_engine_input)
+        form.addRow("FLUX dev model path", self.flux_dev_model_input)
         form.addRow("SVD model path", self.svd_model_input)
-        form.addRow("Guidance scale", self.guidance_scale_input)
-        form.addRow("Inference steps", self.num_inference_steps_input)
+        form.addRow("Clip engine", self.clip_engine_input)
+        form.addRow(QLabel("── FLUX Schnell (Preview Images) ──"))
+        form.addRow("Schnell inference steps", self.schnell_steps_input)
+        form.addRow("Schnell guidance scale", self.schnell_guidance_input)
+        form.addRow(QLabel("── FLUX Dev (Final Images) ──"))
+        form.addRow("Dev inference steps", self.dev_steps_input)
+        form.addRow("Dev guidance scale", self.dev_guidance_input)
+        form.addRow(QLabel("── SVD Clip Generation ──"))
         form.addRow("Image resolution", self.image_resolution_input)
         form.addRow("SVD video frames", self.num_frames_input)
         form.addRow("SVD motion bucket id", self.motion_bucket_id_input)
@@ -539,24 +593,17 @@ class MainWindow(QMainWindow):
         root.setSpacing(6)
 
         header_row = QHBoxLayout()
-        self._draft_status_label = QLabel("Click \"Run Draft Preview\" to generate a low-res storyboard.")
+        self._draft_status_label = QLabel("Click \"Run Preview Images\" to generate a storyboard with FLUX schnell.")
         self._draft_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
         header_row.addWidget(self._draft_status_label, 1)
 
-        header_row.addWidget(QLabel("Max scenes:"))
-        self._draft_max_scenes = QSpinBox()
-        self._draft_max_scenes.setRange(1, 999)
-        self._draft_max_scenes.setValue(5)
-        self._draft_max_scenes.setToolTip("Limit how many scenes are rendered in Draft Preview (0 = all)")
-        self._draft_max_scenes.setFixedWidth(60)
-        header_row.addWidget(self._draft_max_scenes)
-
-        btn_run_draft = QPushButton("Run Draft Preview")
-        btn_run_draft.clicked.connect(self._run_draft_preview)
+        btn_run_draft = QPushButton("▶ Run Preview Images")
+        btn_run_draft.setToolTip("Generate preview images using FLUX schnell (stage 5)")
+        btn_run_draft.clicked.connect(lambda: self.run_stage("preview_images"))
         btn_refresh_draft = QPushButton("Refresh")
         btn_refresh_draft.clicked.connect(self._refresh_draft_grid)
         btn_clear_cache = QPushButton("Clear Prompt Cache")
-        btn_clear_cache.setToolTip("Delete prompts.yaml so Ollama regenerates all prompts on the next run")
+        btn_clear_cache.setToolTip("Delete prompts.yaml so prompts are regenerated on the next run")
         btn_clear_cache.clicked.connect(self._clear_prompt_cache)
         header_row.addWidget(btn_run_draft)
         header_row.addWidget(btn_refresh_draft)
@@ -658,7 +705,7 @@ class MainWindow(QMainWindow):
                 item.widget().deleteLater()
 
         if not scene_entries:
-            self._draft_status_label.setText("No images found. Run Draft Preview or Generate Images first.")
+            self._draft_status_label.setText("No images found. Run Preview Images (stage 5) first.")
             return
 
         scenes_yaml = os.path.join(project, "output", "scenes.yaml")
@@ -793,10 +840,76 @@ class MainWindow(QMainWindow):
         bar.addWidget(self._dub_save_btn)
         bar.addWidget(btn_export_word)
         bar.addStretch(1)
+
+        btn_find = QPushButton("🔍 Find")
+        btn_find.setToolTip("Open Find / Replace panel  (Ctrl+F)")
+        btn_find.setFixedHeight(28)
+        btn_find.clicked.connect(self._dub_toggle_find_panel)
+        bar.addWidget(btn_find)
+
         bar.addWidget(btn_spell_it)
         bar.addWidget(btn_spell_en)
         bar.addWidget(btn_spell_off)
         root.addLayout(bar)
+
+        # ── Find / Replace panel (hidden by default) ──────────────────────────
+        self._dub_find_panel = QWidget()
+        self._dub_find_panel.setVisible(False)
+        fp = QHBoxLayout(self._dub_find_panel)
+        fp.setContentsMargins(0, 2, 0, 2)
+        fp.setSpacing(4)
+
+        self._dub_find_input = QLineEdit()
+        self._dub_find_input.setPlaceholderText("Find…")
+        self._dub_find_input.setFixedHeight(26)
+        self._dub_find_input.returnPressed.connect(self._dub_find_next)
+        self._dub_find_input.textChanged.connect(lambda: setattr(self, "_dub_find_cursor", None))
+
+        self._dub_replace_input = QLineEdit()
+        self._dub_replace_input.setPlaceholderText("Replace with…")
+        self._dub_replace_input.setFixedHeight(26)
+
+        self._dub_find_case = QCheckBox("Match case")
+        self._dub_find_word = QCheckBox("Whole word")
+
+        btn_fn = QPushButton("▼ Next")
+        btn_fn.setFixedHeight(26)
+        btn_fn.clicked.connect(self._dub_find_next)
+        btn_fp = QPushButton("▲ Prev")
+        btn_fp.setFixedHeight(26)
+        btn_fp.clicked.connect(self._dub_find_prev)
+        btn_repl = QPushButton("Replace")
+        btn_repl.setFixedHeight(26)
+        btn_repl.clicked.connect(self._dub_replace_one)
+        btn_repl_all = QPushButton("Replace All")
+        btn_repl_all.setFixedHeight(26)
+        btn_repl_all.clicked.connect(self._dub_replace_all)
+        btn_close_find = QPushButton("X")
+        btn_close_find.setFixedSize(26, 26)
+        btn_close_find.setToolTip("Close find/replace panel")
+        btn_close_find.setStyleSheet("QPushButton { color: #E6E1E5; font-weight: bold; }")
+        btn_close_find.clicked.connect(self._dub_close_find_panel)
+
+        self._dub_find_status = QLabel("")
+        self._dub_find_status.setStyleSheet("color:#8E8B90; font-size:11px;")
+
+        fp.addWidget(QLabel("Find:"))
+        fp.addWidget(self._dub_find_input, 2)
+        fp.addWidget(QLabel("Replace:"))
+        fp.addWidget(self._dub_replace_input, 2)
+        fp.addWidget(self._dub_find_case)
+        fp.addWidget(self._dub_find_word)
+        fp.addWidget(btn_fp)
+        fp.addWidget(btn_fn)
+        fp.addWidget(btn_repl)
+        fp.addWidget(btn_repl_all)
+        fp.addWidget(self._dub_find_status, 1)
+        fp.addWidget(btn_close_find)
+        root.addWidget(self._dub_find_panel)
+
+        # Ctrl+F shortcut to open the panel
+        _find_sc = QShortcut(QKeySequence("Ctrl+F"), page)
+        _find_sc.activated.connect(self._dub_open_find_panel)
 
         # ── Progress bar (shown only during Dub All) ──────────────────────────
         self._dub_progress = QProgressBar()
@@ -819,6 +932,7 @@ class MainWindow(QMainWindow):
         self._dub_cards_layout.setSpacing(6)
         self._dub_cards_layout.addStretch(1)
         scroll.setWidget(self._dub_cards_widget)
+        self._dub_scroll_area = scroll
         root.addWidget(scroll, 1)
 
         return page
@@ -890,6 +1004,145 @@ class MainWindow(QMainWindow):
         if dub_path and os.path.exists(dub_path):
             existing = _yaml.safe_load(Path(dub_path).read_text(encoding="utf-8")) or {}
         self._dub_populate(scenes, existing)
+
+    # ── Find / Replace ────────────────────────────────────────────────────────
+
+    def _dub_toggle_find_panel(self) -> None:
+        if self._dub_find_panel.isVisible():
+            self._dub_close_find_panel()
+        else:
+            self._dub_open_find_panel()
+
+    def _dub_open_find_panel(self) -> None:
+        self._dub_find_panel.setVisible(True)
+        self._dub_find_input.setFocus()
+        self._dub_find_input.selectAll()
+        self._dub_find_cursor = None  # reset position tracker
+
+    def _dub_close_find_panel(self) -> None:
+        self._dub_find_panel.setVisible(False)
+        self._dub_find_status.setText("")
+        self._dub_find_cursor = None
+
+    def _dub_find_editors(self):
+        """Return list of (scene_id, QPlainTextEdit) in scene order."""
+        if not hasattr(self, "_dub_editors"):
+            return []
+        return sorted(self._dub_editors.items())
+
+    def _dub_search_flags(self):
+        import re
+        flags = 0 if self._dub_find_case.isChecked() else re.IGNORECASE
+        return flags
+
+    def _dub_find_in_text(self, text: str, query: str) -> list:
+        """Return list of (start, end) match spans."""
+        import re
+        if not query:
+            return []
+        pattern = re.escape(query)
+        if self._dub_find_word.isChecked():
+            pattern = r'\b' + pattern + r'\b'
+        flags = self._dub_search_flags()
+        return [(m.start(), m.end()) for m in re.finditer(pattern, text, flags)]
+
+    def _dub_find_next(self) -> None:
+        self._dub_find_step(forward=True)
+
+    def _dub_find_prev(self) -> None:
+        self._dub_find_step(forward=False)
+
+    def _dub_find_step(self, forward: bool) -> None:
+        query = self._dub_find_input.text()
+        if not query:
+            return
+        editors = self._dub_find_editors()
+        if not editors:
+            return
+
+        # Build flat list of all matches: (sid, editor, start, end)
+        all_matches = []
+        for sid, ed in editors:
+            for start, end in self._dub_find_in_text(ed.toPlainText(), query):
+                all_matches.append((sid, ed, start, end))
+
+        if not all_matches:
+            self._dub_find_status.setText("No matches")
+            self._dub_find_cursor = None
+            return
+        self._dub_find_status.setText(f"{len(all_matches)} match(es)")
+
+        # Advance the index
+        cur = getattr(self, "_dub_find_cursor", None)
+        if cur is None:
+            idx = 0 if forward else len(all_matches) - 1
+        else:
+            if forward:
+                idx = (cur + 1) % len(all_matches)
+            else:
+                idx = (cur - 1) % len(all_matches)
+
+        self._dub_find_cursor = idx
+        sid, ed, start, end = all_matches[idx]
+        self._dub_highlight_match(ed, start, end)
+
+    def _dub_highlight_match(self, ed, start: int, end: int) -> None:
+        from PyQt6.QtGui import QTextCursor
+        cursor = ed.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        ed.setTextCursor(cursor)
+        ed.setFocus()
+        ed.ensureCursorVisible()
+        # Scroll the card into the dubbing scroll area
+        card = ed.parentWidget()
+        if card and hasattr(self, "_dub_scroll_area"):
+            self._dub_scroll_area.ensureWidgetVisible(card)
+
+    def _dub_replace_one(self) -> None:
+        from PyQt6.QtGui import QTextCursor
+        query = self._dub_find_input.text()
+        replacement = self._dub_replace_input.text()
+        if not query:
+            return
+        # Replace current selection if it matches, then find next
+        for sid, ed in self._dub_find_editors():
+            if ed.hasFocus():
+                cursor = ed.textCursor()
+                if cursor.hasSelection():
+                    selected = cursor.selectedText()
+                    import re
+                    pattern = re.escape(query)
+                    if self._dub_find_word.isChecked():
+                        pattern = r'\b' + pattern + r'\b'
+                    flags = self._dub_search_flags()
+                    if re.fullmatch(pattern, selected, flags):
+                        cursor.insertText(replacement)
+                        self._dub_dirty[sid] = True
+                        self._dub_refresh_status()
+                break
+        self._dub_find_next()
+
+    def _dub_replace_all(self) -> None:
+        import re
+        query = self._dub_find_input.text()
+        replacement = self._dub_replace_input.text()
+        if not query:
+            return
+        pattern = re.escape(query)
+        if self._dub_find_word.isChecked():
+            pattern = r'\b' + pattern + r'\b'
+        flags = self._dub_search_flags()
+        count = 0
+        for sid, ed in self._dub_find_editors():
+            text = ed.toPlainText()
+            new_text, n = re.subn(pattern, replacement, text, flags=flags)
+            if n:
+                ed.setPlainText(new_text)
+                self._dub_dirty[sid] = True
+                self._dub_refresh_status()
+                count += n
+        self._dub_find_status.setText(f"Replaced {count} occurrence(s)")
 
     def _dub_export_word(self) -> None:
         project = self.project_path_input.text().strip()
@@ -1160,6 +1413,11 @@ class MainWindow(QMainWindow):
         # All scenes have audio; check if any text was edited after last dub
         any_dirty = any(self._dub_dirty.get(sid, False) for sid in self._dub_editors)
         return "stale" if any_dirty else "complete"
+
+    def _dub_refresh_status(self) -> None:
+        """Refresh dub-all button and save button after programmatic text changes."""
+        self._dub_update_dub_btn()
+        self._dub_update_save_btn()
 
     def _dub_update_dub_btn(self) -> None:
         if not hasattr(self, "_dub_all_btn"):
@@ -1451,7 +1709,7 @@ class MainWindow(QMainWindow):
         self._btn_sync_script = QPushButton("⟳ Sync to Dubbing")
         self._btn_sync_script.setToolTip(
             "Save script → re-split scenes → generate missing prompts (Ollama) → refresh Dubbing tab.\n"
-            "Images are NOT generated — run Draft Preview afterwards to check prompts first."
+            "Images are NOT generated — run Preview Images (stage 5) to check prompts first."
         )
         self._btn_sync_script.clicked.connect(self._sync_script_to_pipeline)
         btn_row.addStretch(1)
@@ -1539,7 +1797,7 @@ class MainWindow(QMainWindow):
             "  2. Generate missing prompts via Ollama\n"
             "  3. Refresh the Dubbing tab\n\n"
             "Existing scenes and prompts are preserved.\n"
-            "Images are NOT generated — run Draft Preview next to check prompts.\n\n"
+            "Images are NOT generated — run Preview Images (stage 5) to check prompts.\n\n"
             "Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -1581,7 +1839,8 @@ class MainWindow(QMainWindow):
         self.recent_projects_combo.blockSignals(False)
 
     def _on_pipeline_started(self) -> None:
-        self.btn_run_stage.setEnabled(False)
+        for btn in getattr(self, "_stage_btns", {}).values():
+            btn.setEnabled(False)
         self.btn_cancel_pipeline.setEnabled(True)
         self.pipeline_status_label.setText("Pipeline started")
         self.pipeline_progress.setValue(0)
@@ -1596,12 +1855,14 @@ class MainWindow(QMainWindow):
         self.log_output.appendPlainText(message)
 
     def _on_pipeline_finished(self, success: bool, payload: str) -> None:
-        self.btn_run_stage.setEnabled(True)
+        for btn in getattr(self, "_stage_btns", {}).values():
+            btn.setEnabled(True)
         self.btn_cancel_pipeline.setEnabled(False)
 
-        # Auto-refresh the draft grid whenever the draft stage completes.
-        # Draft/image generation is independent of dubbing — do not touch dubbing state.
-        if success and payload and os.path.isdir(payload) and "draft" in payload:
+        # Auto-refresh the preview grid whenever preview_images or final_images completes.
+        if success and payload and os.path.isdir(payload) and (
+            "draft" in payload or "images" in payload
+        ):
             self._refresh_draft_grid()
 
         # After a sync-triggered prompts run, refresh the Dubbing tab
@@ -1639,15 +1900,12 @@ class MainWindow(QMainWindow):
         self.sdxl_model_input.setText(str(settings.get("sdxl_base", "models/sd3")))
         self.flux_dev_model_input.setText(str(settings.get("flux_dev", "models/flux/FLUX.1-dev")))
         self.flux_schnell_model_input.setText(str(settings.get("flux_schnell", "models/flux/FLUX.1-schnell")))
-        idx = self.image_model_input.findData(str(settings.get("image_model", "sdxl")))
-        if idx >= 0:
-            self.image_model_input.setCurrentIndex(idx)
         self.svd_model_input.setText(str(settings.get("svd", "models/svd")))
         self.clip_engine_input.setCurrentText(str(settings.get("clip_engine", "svd")))
-        self.decode_chunk_size_input.setValue(int(settings.get("decode_chunk_size", 4)))
-        self.noise_aug_strength_input.setValue(float(settings.get("noise_aug_strength", 0.02)))
-        self.guidance_scale_input.setValue(float(settings.get("guidance_scale", 7.5)))
-        self.num_inference_steps_input.setValue(int(settings.get("num_inference_steps", 30)))
+        self.schnell_steps_input.setValue(int(settings.get("schnell_steps", 4)))
+        self.schnell_guidance_input.setValue(float(settings.get("schnell_guidance", 0.0)))
+        self.dev_steps_input.setValue(int(settings.get("dev_steps", 20)))
+        self.dev_guidance_input.setValue(float(settings.get("dev_guidance", 3.5)))
         w = int(settings.get("image_width", 1024))
         h = int(settings.get("image_height", 576))
         idx = self.image_resolution_input.findData((w, h))
@@ -1684,13 +1942,15 @@ class MainWindow(QMainWindow):
             "sdxl_base": self.sdxl_model_input.text().strip(),
             "flux_dev": self.flux_dev_model_input.text().strip(),
             "flux_schnell": self.flux_schnell_model_input.text().strip(),
-            "image_model": self.image_model_input.currentData() or "sdxl",
             "svd": self.svd_model_input.text().strip(),
             "clip_engine": self.clip_engine_input.currentText(),
-            "decode_chunk_size": self.decode_chunk_size_input.value(),
-            "noise_aug_strength": self.noise_aug_strength_input.value(),
-            "guidance_scale": self.guidance_scale_input.value(),
-            "num_inference_steps": self.num_inference_steps_input.value(),
+            "schnell_steps": self.schnell_steps_input.value(),
+            "schnell_guidance": self.schnell_guidance_input.value(),
+            "dev_steps": self.dev_steps_input.value(),
+            "dev_guidance": self.dev_guidance_input.value(),
+            "guidance_scale": self.schnell_guidance_input.value(),  # compat
+            "num_inference_steps": self.schnell_steps_input.value(),  # compat
+            "image_model": "flux-schnell",  # always schnell for preview now
             "image_width":  self.image_resolution_input.currentData()[0],
             "image_height": self.image_resolution_input.currentData()[1],
             "num_frames": self.num_frames_input.value(),
@@ -1845,23 +2105,46 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Delete failed", str(exc))
 
-    def _run_draft_preview(self):
-        path = self.project_path_input.text().strip()
-        if not path:
-            QMessageBox.warning(self, "No project", "Load or create a project first.")
-            return
-        self._save_script()  # always flush editor to disk before running
-        self.controller.set_project_path(path)
-        max_scenes = self._draft_max_scenes.value()
-        self.controller.run_pipeline("draft", extra_config={"draft_max_scenes": max_scenes})
-        self.tabs.setCurrentIndex(self.tabs.indexOf(self._draft_grid_widget.parent().parent()))
-
-    def run_selected_stage(self):
+    def run_stage(self, stage: str):
         path = self.project_path_input.text().strip()
         if path:
             self.controller.set_project_path(path)
-        stage = self.stage_selector.currentData()
         self.controller.run_pipeline(stage)
+
+    def run_selected_stage(self):
+        """Legacy — kept for any remaining references."""
+        pass
+
+    def _clear_preview_clips(self) -> None:
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Load a project first.")
+            return
+        clips_dir = os.path.join(project, "output", "draft_clips")
+        if not os.path.isdir(clips_dir):
+            QMessageBox.information(self, "No clips", "No draft_clips folder found.")
+            return
+        files = [f for f in os.listdir(clips_dir) if f.lower().endswith(".mp4")]
+        if not files:
+            QMessageBox.information(self, "No clips", "draft_clips folder is already empty.")
+            return
+        reply = QMessageBox.question(
+            self, "Clear Preview Clips",
+            f"Delete {len(files)} preview clip(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        errors = []
+        for f in files:
+            try:
+                os.remove(os.path.join(clips_dir, f))
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            QMessageBox.warning(self, "Some files not deleted", "\n".join(errors))
+        else:
+            self._append_log(f"Cleared {len(files)} preview clip(s) from output/draft_clips/.")
 
     def _clear_draft(self) -> None:
         project = self.project_path_input.text().strip()
