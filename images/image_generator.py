@@ -3,6 +3,7 @@ import gc
 from typing import Optional
 import torch
 from PIL import Image
+import gpu_registry
 
 # Reduce CUDA memory fragmentation
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -44,13 +45,16 @@ class ImageGenerator:
         self.width = width
         self.height = height
 
-        # FLUX.1-dev (~33 GB in bf16) does not fit fully on a 24 GB GPU, so
-        # default to model CPU offload for it. FLUX.1-schnell / SDXL fit natively.
+        # Enable CPU offload for all FLUX models on CUDA — the transformer alone
+        # is ~24 GiB in bfloat16 which exceeds 16 GiB GPUs without offloading.
         if enable_cpu_offload is None:
-            enable_cpu_offload = self.model_type == "flux-dev"
+            enable_cpu_offload = self.model_type.startswith("flux") and self.device == "cuda"
         self.enable_cpu_offload = enable_cpu_offload
 
         dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+
+        # Evict any previously loaded GPU model before loading this one
+        gpu_registry.evict()
 
         if not os.path.isdir(self.model_path):
             raise FileNotFoundError(
@@ -67,10 +71,16 @@ class ImageGenerator:
             )
             if self.device == "cuda":
                 if self.enable_cpu_offload:
-                    # Keeps peak VRAM well under 24 GB by streaming submodules.
-                    self.pipe.enable_model_cpu_offload()
+                    # sequential_cpu_offload moves one layer at a time to GPU (~1 GiB peak)
+                    # vs model_cpu_offload which moves the whole transformer (~24 GiB peak).
+                    self.pipe.enable_sequential_cpu_offload()
                 else:
                     self.pipe.to(self.device)
+                # Slice attention to reduce per-operation VRAM further
+                try:
+                    self.pipe.enable_attention_slicing(1)
+                except Exception:
+                    pass
                 # Reduce VAE memory during high-resolution decode.
                 self.pipe.vae.enable_tiling()
                 self.pipe.vae.enable_slicing()
@@ -81,10 +91,19 @@ class ImageGenerator:
             self.pipe = StableDiffusionXLPipeline.from_pretrained(
                 self.model_path,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-            ).to(self.device)
+            )
+            if self.device == "cuda":
+                self.pipe.enable_model_cpu_offload()
+                try:
+                    self.pipe.enable_attention_slicing(1)
+                except Exception:
+                    pass
 
         if self.output_dir:
             os.makedirs(self.output_dir, exist_ok=True)
+
+        # Register as the active GPU model
+        gpu_registry.register(self)
 
     # ---------------------------------------------------------
     # PUBLIC API
@@ -128,6 +147,35 @@ class ImageGenerator:
             gc.collect()
 
         return image
+
+    def unload(self) -> None:
+        """Fully release VRAM: remove offload hooks, move every component to CPU, then delete."""
+        if hasattr(self, "pipe") and self.pipe is not None:
+            try:
+                from accelerate.hooks import remove_hook_from_module
+                remove_hook_from_module(self.pipe, recurse=True)
+            except Exception:
+                pass
+            # Move each named component to CPU individually
+            for name in getattr(self.pipe, "components", {}):
+                component = getattr(self.pipe, name, None)
+                if component is not None and hasattr(component, "to"):
+                    try:
+                        component.to("cpu")
+                    except Exception:
+                        pass
+            # Move any remaining parameters/buffers
+            try:
+                self.pipe.to("cpu")
+            except Exception:
+                pass
+            del self.pipe
+            self.pipe = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            gc.collect()  # second pass after cache clear
 
     # ---------------------------------------------------------
     # BATCH GENERATION

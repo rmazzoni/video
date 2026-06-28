@@ -61,8 +61,49 @@ class PipelineWorker(QObject):
     def run(self):
         try:
             stage = (self.stage or "full").strip().lower()
-            if stage not in {"full", "narration", "scenes", "tts", "images", "clips", "assemble", "audio", "draft"}:
+            if stage not in {"full", "narration", "scenes", "prompts", "tts", "images", "clips", "assemble", "audio", "draft"}:
                 raise ValueError(f"Unknown stage: {stage}")
+
+            # Force-release any GPU memory left over from a previous pipeline run
+            # before loading new models.  This handles the case where unload() in
+            # a prior run failed to free everything (e.g. lingering Python refs).
+            import gc as _gc
+            _gc.collect()
+            try:
+                import torch as _t
+                if _t.cuda.is_available():
+                    _t.cuda.empty_cache()
+                    _t.cuda.synchronize()
+                    _gc.collect()
+                    alloc = _t.cuda.memory_allocated() / 1024**3
+                    if alloc > 0.5:
+                        self.log.emit(f"⚠ VRAM start: {alloc:.2f} GiB still allocated from previous run — forcing further cleanup")
+                        # Walk all live Python objects and delete any torch modules
+                        import sys
+                        for obj in list(_gc.get_objects()):
+                            try:
+                                if isinstance(obj, _t.nn.Module):
+                                    for p in list(obj.parameters()):
+                                        if p.is_cuda:
+                                            p.data = p.data.cpu()
+                            except Exception:
+                                pass
+                        _gc.collect()
+                        _t.cuda.empty_cache()
+                    alloc2 = _t.cuda.memory_allocated() / 1024**3
+                    self.log.emit(f"VRAM at stage start: {alloc2:.2f} GiB allocated")
+            except Exception:
+                pass
+
+            def _log_vram(label: str = "") -> None:
+                try:
+                    import torch as _t
+                    if _t.cuda.is_available():
+                        alloc = _t.cuda.memory_allocated() / 1024**3
+                        reserved = _t.cuda.memory_reserved() / 1024**3
+                        self.log.emit(f"VRAM {label}: {alloc:.2f} GiB allocated, {reserved:.2f} GiB reserved")
+                except Exception:
+                    pass
 
             input_text = os.path.join(self.project_path, "input", "narration.txt")
             input_audio = os.path.join(self.project_path, "input", "audio.wav")
@@ -82,7 +123,7 @@ class PipelineWorker(QObject):
             narration_text = ""
             scenes = []
 
-            if stage in {"full", "narration", "scenes", "tts", "images", "draft"}:
+            if stage in {"full", "narration", "scenes", "prompts", "tts", "images", "draft"}:
                 self._check_cancel()
                 self._emit_progress(5, "Loading narration")
                 narration_text = TranscriptLoader().load(input_text)
@@ -93,7 +134,7 @@ class PipelineWorker(QObject):
                     self.finished.emit(True, input_text)
                     return
 
-            if stage in {"full", "scenes", "tts", "images", "draft"}:
+            if stage in {"full", "scenes", "prompts", "tts", "images", "draft"}:
                 self._check_cancel()
                 self._emit_progress(15, "Splitting narration into scenes")
                 splitter = SceneSplitter(min_sentence_length=int(self.config.get("min_sentence_length", 20)))
@@ -111,6 +152,48 @@ class PipelineWorker(QObject):
                     self._emit_progress(100, "Scenes generated")
                     self.finished.emit(True, scenes_path)
                     return
+
+            if stage == "prompts":
+                self._check_cancel()
+                self._emit_progress(25, "Building prompts")
+                prompt_builder = PromptBuilder(
+                    style_preset=self.config.get("style_preset", "cinematic"),
+                    default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
+                    use_ollama=bool(self.config.get("use_ollama", False)),
+                    ollama_model=str(self.config.get("ollama_model", "llama3")),
+                    ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
+                )
+                if prompt_builder._enhancer:
+                    if prompt_builder._enhancer.is_available():
+                        self.log.emit("Ollama prompt enhancement: ACTIVE")
+                    else:
+                        self.log.emit("Ollama not available — using rule-based prompts.")
+                prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+                cached_prompts: dict = {}
+                if os.path.exists(prompts_path):
+                    with open(prompts_path, "r", encoding="utf-8") as fh:
+                        cached_prompts = yaml.safe_load(fh) or {}
+                    self.log.emit(f"Loaded {len(cached_prompts)} cached prompt(s).")
+                total_scenes = len(scenes)
+                new_count = 0
+                for index, scene in enumerate(scenes, start=1):
+                    self._check_cancel()
+                    scene_id = int(scene["id"])
+                    if scene_id in cached_prompts:
+                        self.log.emit(f"Scene {scene_id}: using cached prompt.")
+                    else:
+                        prompt = prompt_builder.build_prompt(scene)
+                        cached_prompts[scene_id] = prompt
+                        new_count += 1
+                        self.log.emit(f"Scene {scene_id}: generated prompt.")
+                        with open(prompts_path, "w", encoding="utf-8") as fh:
+                            yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
+                    self._emit_progress(30 + int((index / total_scenes) * 70),
+                                        f"Prompts {index}/{total_scenes}")
+                self.log.emit(f"Prompts done. {new_count} new, {total_scenes - new_count} cached.")
+                self._emit_progress(100, "Prompts ready")
+                self.finished.emit(True, prompts_path)
+                return
 
             if stage in {"full", "tts"}:
                 from narration.tts_engine import TTSEngine
@@ -172,6 +255,15 @@ class PipelineWorker(QObject):
                 draft_dir = os.path.join(self.project_path, "output", "draft")
                 os.makedirs(draft_dir, exist_ok=True)
 
+                # Use already-split scenes from scenes.yaml when available so
+                # that a "Sync to Dubbing" run is immediately reflected here
+                # without having to re-split from narration again.
+                if os.path.exists(scenes_path):
+                    with open(scenes_path, "r", encoding="utf-8") as fh:
+                        loaded = yaml.safe_load(fh) or {}
+                    scenes = loaded.get("scenes", scenes)
+                    self.log.emit(f"Draft: using {len(scenes)} scene(s) from scenes.yaml")
+
                 self._check_cancel()
                 self._emit_progress(25, "Building prompts for draft")
                 prompt_builder = PromptBuilder(
@@ -186,6 +278,21 @@ class PipelineWorker(QObject):
                         self.log.emit("Ollama prompt enhancement: ACTIVE")
                     else:
                         self.log.emit("Ollama not available — using rule-based prompts.")
+
+                # Unload Ollama from GPU before loading the image model
+                try:
+                    import urllib.request, json as _json
+                    _host = str(self.config.get("ollama_host", "http://localhost:11434"))
+                    _payload = _json.dumps({"model": str(self.config.get("ollama_model", "llama3")), "keep_alive": 0}).encode()
+                    req = urllib.request.Request(f"{_host}/api/generate",
+                                                 data=_payload,
+                                                 headers={"Content-Type": "application/json"},
+                                                 method="POST")
+                    urllib.request.urlopen(req, timeout=10)
+                    self.log.emit("Ollama model unloaded from GPU.")
+                except Exception as _e:
+                    self.log.emit(f"Ollama unload skipped ({_e})")
+
                 image_gen = ImageGenerator(
                     model_path=self._resolve_path(self.config.get("sdxl_base", "models/sd3")),
                     output_dir=draft_dir,
@@ -203,9 +310,11 @@ class PipelineWorker(QObject):
 
                 prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
                 cached_prompts: dict = {}
+                prompts_mtime: float = 0.0
                 if os.path.exists(prompts_path):
                     with open(prompts_path, "r", encoding="utf-8") as fh:
                         cached_prompts = yaml.safe_load(fh) or {}
+                    prompts_mtime = os.path.getmtime(prompts_path)
 
                 for index, scene in enumerate(scenes, start=1):
                     self._check_cancel()
@@ -215,9 +324,18 @@ class PipelineWorker(QObject):
                          if f.startswith(f"scene_{scene_id:03d}") and f.lower().endswith((".png", ".jpg", ".jpeg"))),
                         None,
                     )
-                    if existing:
-                        self.log.emit(f"Skipping scene {scene_id} (draft already exists).")
+                    # Regenerate if: no draft image, OR prompt was updated after
+                    # the draft image was generated (prompt edited via Sync).
+                    prompt_newer = (
+                        existing and prompts_mtime > os.path.getmtime(existing)
+                        and scene_id in cached_prompts
+                    )
+                    if existing and not prompt_newer:
+                        self.log.emit(f"Skipping scene {scene_id} (draft up to date).")
                     else:
+                        if prompt_newer:
+                            self.log.emit(f"Scene {scene_id}: prompt updated — regenerating draft.")
+                            os.remove(existing)
                         if scene_id in cached_prompts:
                             prompt = cached_prompts[scene_id]
                             self.log.emit(f"Scene {scene_id}: using cached prompt.")
@@ -231,6 +349,9 @@ class PipelineWorker(QObject):
                     self._emit_progress(step, f"Draft image {index}/{total_scenes}")
 
                 self._emit_progress(100, "Draft preview ready")
+                _log_vram("before draft unload")
+                image_gen.unload()
+                _log_vram("after draft unload")
                 self.finished.emit(True, draft_dir)
                 return
 
@@ -241,28 +362,71 @@ class PipelineWorker(QObject):
                 self._emit_progress(25, "Building prompts")
 
                 # Check how many images still need generating
-                existing_images = {
-                    int(f.split("_")[1].split(".")[0])
-                    for f in os.listdir(images_dir)
-                    if f.startswith("scene_") and f.lower().endswith((".png", ".jpg", ".jpeg"))
-                }
+                existing_images = set()
+                if os.path.isdir(images_dir):
+                    for f in os.listdir(images_dir):
+                        if f.startswith("scene_") and f.lower().endswith((".png", ".jpg", ".jpeg")):
+                            try:
+                                existing_images.add(int(f.split("_")[1].split(".")[0]))
+                            except (IndexError, ValueError):
+                                pass
                 scenes_needing_images = [s for s in scenes if int(s["id"]) not in existing_images]
 
                 if not scenes_needing_images:
                     self.log.emit("All images already exist — skipping image generation.")
+                    image_gen = None
                 else:
-                    prompt_builder = PromptBuilder(
-                        style_preset=self.config.get("style_preset", "cinematic"),
-                        default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
-                        use_ollama=bool(self.config.get("use_ollama", False)),
-                        ollama_model=str(self.config.get("ollama_model", "llama3")),
-                        ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
-                    )
-                    if prompt_builder._enhancer:
-                        if prompt_builder._enhancer.is_available():
+                    # Load cached prompts first — only invoke Ollama for missing ones
+                    prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+                    cached_prompts: dict = {}
+                    if os.path.exists(prompts_path):
+                        with open(prompts_path, "r", encoding="utf-8") as fh:
+                            cached_prompts = yaml.safe_load(fh) or {}
+                        self.log.emit(f"Loaded {len(cached_prompts)} cached prompt(s) from prompts.yaml")
+
+                    scenes_missing_prompts = [
+                        s for s in scenes_needing_images
+                        if int(s["id"]) not in cached_prompts
+                    ]
+
+                    ollama_was_used = False
+                    if scenes_missing_prompts:
+                        prompt_builder = PromptBuilder(
+                            style_preset=self.config.get("style_preset", "cinematic"),
+                            default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
+                            use_ollama=bool(self.config.get("use_ollama", False)),
+                            ollama_model=str(self.config.get("ollama_model", "llama3")),
+                            ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
+                        )
+                        ollama_active = bool(getattr(prompt_builder, "_enhancer", None) and prompt_builder._enhancer.is_available())
+                        if ollama_active:
                             self.log.emit("Ollama prompt enhancement: ACTIVE")
+                            ollama_was_used = True
                         else:
                             self.log.emit("Ollama not available — using rule-based prompts.")
+                        for scene in scenes_missing_prompts:
+                            scene_id = int(scene["id"])
+                            cached_prompts[scene_id] = prompt_builder.build_prompt(scene)
+                        with open(prompts_path, "w", encoding="utf-8") as fh:
+                            yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
+                        self.log.emit(f"Generated {len(scenes_missing_prompts)} new prompt(s).")
+                    else:
+                        self.log.emit("All prompts already cached — Ollama not needed.")
+
+                    # Unload Ollama from GPU before loading the image model
+                    if ollama_was_used:
+                        try:
+                            import urllib.request, json as _json
+                            _host = str(self.config.get("ollama_host", "http://localhost:11434"))
+                            _payload = _json.dumps({"model": str(self.config.get("ollama_model", "llama3")), "keep_alive": 0}).encode()
+                            req = urllib.request.Request(f"{_host}/api/generate",
+                                                         data=_payload,
+                                                         headers={"Content-Type": "application/json"},
+                                                         method="POST")
+                            urllib.request.urlopen(req, timeout=10)
+                            self.log.emit("Ollama model unloaded from GPU.")
+                        except Exception as _e:
+                            self.log.emit(f"Ollama unload skipped ({_e})")
 
                     self._check_cancel()
                     self._emit_progress(30, "Generating scene images")
@@ -287,25 +451,16 @@ class PipelineWorker(QObject):
                         height=int(self.config.get("image_height", 1024)),
                     )
 
-                    prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
-                    cached_prompts: dict = {}
-                    if os.path.exists(prompts_path):
-                        with open(prompts_path, "r", encoding="utf-8") as fh:
-                            cached_prompts = yaml.safe_load(fh) or {}
-                        self.log.emit(f"Loaded {len(cached_prompts)} cached prompt(s) from prompts.yaml")
-
                     total_scenes = len(scenes_needing_images)
                     for index, scene in enumerate(scenes_needing_images, start=1):
                         self._check_cancel()
                         scene_id = int(scene["id"])
-                        if scene_id in cached_prompts:
-                            prompt = cached_prompts[scene_id]
-                            self.log.emit(f"Scene {scene_id}: using cached prompt.")
+                        prompt = cached_prompts.get(scene_id) or cached_prompts.get(str(scene_id), "")
+                        if not prompt:
+                            prompt = scene.get("text", "")
+                            self.log.emit(f"Scene {scene_id}: no cached prompt, using raw text.")
                         else:
-                            prompt = prompt_builder.build_prompt(scene)
-                            cached_prompts[scene_id] = prompt
-                            with open(prompts_path, "w", encoding="utf-8") as fh:
-                                yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
+                            self.log.emit(f"Scene {scene_id}: using cached prompt.")
                         image_gen.generate_image(prompt, scene_id)
                         if stage == "full":
                             step = 30 + int((index / total_scenes) * 25)
@@ -315,12 +470,40 @@ class PipelineWorker(QObject):
 
                 if stage == "images":
                     self._emit_progress(100, "Image generation complete")
+                    if image_gen is not None:
+                        _log_vram("before images unload")
+                        image_gen.unload()
+                        _log_vram("after images unload")
                     self.finished.emit(True, images_dir)
                     return
+
+                # Full run: unload image generator before generating clips
+                if image_gen is not None:
+                    _log_vram("before full-run image unload")
+                    image_gen.unload()
+                    _log_vram("after full-run image unload")
 
             if stage in {"full", "clips"}:
                 self._check_cancel()
                 self._emit_progress(55 if stage == "full" else 10, "Generating video clips")
+
+                # Warn if any dubbed audio is older than dubbing.yaml by more than 60 s
+                # (a small window accounts for saves that happen right after dubbing)
+                dubbing_yaml = os.path.join(self.project_path, "output", "dubbing.yaml")
+                if os.path.exists(dubbing_yaml):
+                    dub_mtime = os.path.getmtime(dubbing_yaml)
+                    stale = [
+                        f for f in os.listdir(tts_dir)
+                        if f.startswith("scene_") and f.endswith(".mp3")
+                        and (dub_mtime - os.path.getmtime(os.path.join(tts_dir, f))) > 60
+                    ] if os.path.isdir(tts_dir) else []
+                    if stale:
+                        self.log.emit(
+                            f"⚠ Warning: {len(stale)} audio file(s) predate the last dubbing.yaml save "
+                            f"and may be out of sync with the current text. "
+                            f"Run 'Dub All' in the Dubbing tab to regenerate them."
+                        )
+
                 image_paths = self._scene_image_candidates(images_dir)
                 if not image_paths:
                     raise FileNotFoundError(
@@ -376,12 +559,21 @@ class PipelineWorker(QObject):
                         model_path=self._resolve_path(self.config.get("svd", "models/svd")),
                         output_dir=clips_dir,
                         num_frames=int(self.config.get("num_frames", 14)),
-                        motion_bucket_id=int(self.config.get("motion_bucket_id", 127)),
+                        motion_bucket_id=int(self.config.get("motion_bucket_id", 40)),
                         fps=int(self.config.get("fps", 8)),
                         decode_chunk_size=int(self.config.get("decode_chunk_size", 4)),
-                        noise_aug_strength=float(self.config.get("noise_aug_strength", 0.02)),
+                        noise_aug_strength=float(self.config.get("noise_aug_strength", 0.0)),
                         seed=int(self.config.get("seed", 42)),
                     )
+
+                # Load per-scene SVD overrides (motion_bucket_id, noise_aug_strength).
+                # Format: scene_id: {motion_bucket_id: 20, noise_aug_strength: 0.0}
+                overrides_path = os.path.join(self.project_path, "output", "scene_overrides.yaml")
+                scene_overrides: dict = {}
+                if os.path.exists(overrides_path):
+                    with open(overrides_path, "r", encoding="utf-8") as fh:
+                        scene_overrides = yaml.safe_load(fh) or {}
+                    self.log.emit(f"Loaded scene overrides for {len(scene_overrides)} scene(s).")
 
                 total_images = len(image_paths)
                 for index, image_path in enumerate(image_paths, start=1):
@@ -393,16 +585,21 @@ class PipelineWorker(QObject):
                         action = f"Skipped clip {index}/{total_images}"
                     else:
                         # Match clip length to the scene's narration duration.
-                        if clip_engine == "ken_burns" and scene_id in scene_timings:
-                            generator.duration = float(scene_timings[scene_id])
+                        target_dur = float(scene_timings[scene_id]) if scene_id in scene_timings else None
+                        if clip_engine == "ken_burns" and target_dur is not None:
+                            generator.duration = target_dur
                             self.log.emit(f"Scene {scene_id}: clip duration = {generator.duration:.1f}s (from TTS)")
-                            generator.generate_clip(image_path, scene_id)
-                        elif clip_engine != "ken_burns" and scene_id in scene_timings:
-                            target = float(scene_timings[scene_id])
-                            self.log.emit(f"Scene {scene_id}: retiming clip to {target:.1f}s (from TTS)")
-                            generator.generate_clip(image_path, scene_id, target_duration=target)
-                        else:
-                            generator.generate_clip(image_path, scene_id)
+                        elif target_dur is not None:
+                            self.log.emit(f"Scene {scene_id}: target duration = {target_dur:.1f}s (from TTS)")
+                        ov = scene_overrides.get(scene_id, scene_overrides.get(str(scene_id), {}))
+                        if ov:
+                            self.log.emit(f"Scene {scene_id}: applying overrides {ov}")
+                        generator.generate_clip(
+                            image_path, scene_id,
+                            motion_bucket_id=ov.get("motion_bucket_id") if ov else None,
+                            noise_aug_strength=ov.get("noise_aug_strength") if ov else None,
+                            target_duration=target_dur,
+                        )
                         action = f"Generated clip {index}/{total_images}"
                     if stage == "full":
                         step = 55 + int((index / total_images) * 25)
@@ -412,8 +609,16 @@ class PipelineWorker(QObject):
 
                 if stage == "clips":
                     self._emit_progress(100, "Clip generation complete")
+                    _log_vram("before clips unload")
+                    generator.unload()
+                    _log_vram("after clips unload")
                     self.finished.emit(True, clips_dir)
                     return
+
+                # Full run: unload clip generator before assembling
+                _log_vram("before full-run clip unload")
+                generator.unload()
+                _log_vram("after full-run clip unload")
 
             if stage in {"full", "assemble"}:
                 from video.clip_assembler import ClipAssembler
@@ -421,7 +626,10 @@ class PipelineWorker(QObject):
                 self._check_cancel()
                 base = 82 if stage == "full" else 20
                 self._emit_progress(base, "Loading clips…")
-                assembler = ClipAssembler(final_video_path, fps=int(self.config.get("fps", 24)))
+                out_w = int(self.config.get("output_width", 1920))
+                out_h = int(self.config.get("output_height", 1080))
+                assembler = ClipAssembler(final_video_path, fps=int(self.config.get("fps", 24)),
+                                          target_resolution=(out_w, out_h))
 
                 def _on_clip_loaded(loaded, total):
                     step = base + int((loaded / total) * 15)
@@ -507,6 +715,7 @@ class PipelineController(QObject):
     PIPELINE_STAGES: List[Tuple[str, str]] = [
         ("Full Pipeline",          "full"),
         ("Draft Preview",          "draft"),
+        ("Build Prompts",           "prompts"),
         ("Load Narration",         "narration"),
         ("Split Scenes",           "scenes"),
         ("Synthesise Audio (TTS)", "tts"),
@@ -521,6 +730,8 @@ class PipelineController(QObject):
         "aspect_ratio": "16:9",
         "seed": 42,
         "fps": 8,
+        "output_width": 1920,
+        "output_height": 1080,
         "scene_split_method": "paragraph",
         "min_sentence_length": 20,
         "sdxl_base": "models/sd3",
@@ -539,7 +750,7 @@ class PipelineController(QObject):
         "fade_out": 0.5,
         "clip_engine": "svd",
         "decode_chunk_size": 4,
-        "noise_aug_strength": 0.02,
+        "noise_aug_strength": 0.0,
         "tts_voice": "it-IT-DiegoNeural",
         "tts_rate": "+0%",
         "tts_pitch": "+0Hz",

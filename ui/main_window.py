@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QCheckBox,
 )
-from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut
+from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject
 from ui.pipeline_controller import PipelineController
 
@@ -43,6 +43,35 @@ class _ClickableImageLabel(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self._image_path)
         super().mousePressEvent(event)
+
+
+class _SpellHighlighter(QSyntaxHighlighter):
+    """Underlines misspelled words in red using pyspellchecker."""
+
+    def __init__(self, parent, language: str = "it"):
+        super().__init__(parent)
+        self._fmt = QTextCharFormat()
+        self._fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+        self._fmt.setUnderlineColor(QColor("#FF5555"))
+        self._checker = None
+        self.set_language(language)
+
+    def set_language(self, language: str) -> None:
+        try:
+            from spellchecker import SpellChecker
+            self._checker = SpellChecker(language=language)
+        except Exception:
+            self._checker = None
+        self.rehighlight()
+
+    def highlightBlock(self, text: str) -> None:
+        if not self._checker or not text.strip():
+            return
+        import re
+        for m in re.finditer(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", text):
+            word = m.group()
+            if self._checker.unknown([word]):
+                self.setFormat(m.start(), len(word), self._fmt)
 
 
 class MainWindow(QMainWindow):
@@ -243,17 +272,10 @@ class MainWindow(QMainWindow):
         self.num_inference_steps_input = QSpinBox()
         self.num_inference_steps_input.setRange(1, 200)
 
-        self.image_width_input = QSpinBox()
-        self.image_width_input.setRange(256, 2048)
-        self.image_width_input.setSingleStep(64)
-        self.image_width_input.setValue(1344)
-        self.image_width_input.setToolTip("Image width in pixels (SDXL 16:9 native: 1344)")
-
-        self.image_height_input = QSpinBox()
-        self.image_height_input.setRange(256, 2048)
-        self.image_height_input.setSingleStep(64)
-        self.image_height_input.setValue(768)
-        self.image_height_input.setToolTip("Image height in pixels (SDXL 16:9 native: 768)")
+        self.image_resolution_input = QComboBox()
+        self.image_resolution_input.addItem("1024 × 576  (16:9 — fits 16 GiB GPU)", (1024, 576))
+        self.image_resolution_input.addItem("1344 × 768  (16:9 — requires 24 GiB GPU)", (1344, 768))
+        self.image_resolution_input.setToolTip("Output image resolution for FLUX / SDXL")
 
         self.num_frames_input = QSpinBox()
         self.num_frames_input.setRange(1, 120)
@@ -292,8 +314,7 @@ class MainWindow(QMainWindow):
         form.addRow("SVD model path", self.svd_model_input)
         form.addRow("Guidance scale", self.guidance_scale_input)
         form.addRow("Inference steps", self.num_inference_steps_input)
-        form.addRow("Image width (px)", self.image_width_input)
-        form.addRow("Image height (px)", self.image_height_input)
+        form.addRow("Image resolution", self.image_resolution_input)
         form.addRow("SVD video frames", self.num_frames_input)
         form.addRow("SVD motion bucket id", self.motion_bucket_id_input)
         form.addRow("SVD decode chunk size", self.decode_chunk_size_input)
@@ -607,18 +628,28 @@ class MainWindow(QMainWindow):
         final_images = _images_from(images_dir)
         draft_images = _images_from(draft_dir)
 
-        if final_images:
-            active_dir = images_dir
-            images = final_images
-            source_label = "final images"
-        elif draft_images:
-            active_dir = draft_dir
-            images = draft_images
-            source_label = "draft images"
-        else:
-            active_dir = draft_dir
-            images = []
-            source_label = ""
+        # Build a merged per-scene list: prefer final image, fall back to draft.
+        # Keys are scene ids so every scene appears exactly once.
+        def _scene_id_from(fname: str) -> int:
+            try:
+                return int(fname.split("_")[1].split(".")[0])
+            except Exception:
+                return 0
+
+        scene_entries: dict = {}  # scene_id -> (dir, fname)
+        for fname in draft_images:
+            sid = _scene_id_from(fname)
+            scene_entries[sid] = (draft_dir, fname)
+        for fname in final_images:  # final overwrites draft when both exist
+            sid = _scene_id_from(fname)
+            scene_entries[sid] = (images_dir, fname)
+
+        n_final = sum(1 for d, _ in scene_entries.values() if d == images_dir)
+        n_draft = len(scene_entries) - n_final
+        source_label = (
+            f"{n_final} final + {n_draft} draft" if n_final and n_draft
+            else ("final images" if n_final else "draft images")
+        )
 
         # clear existing cards
         while self._draft_grid_layout.count() > 1:
@@ -626,7 +657,7 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
 
-        if not images:
+        if not scene_entries:
             self._draft_status_label.setText("No images found. Run Draft Preview or Generate Images first.")
             return
 
@@ -641,13 +672,13 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        images = [fname for _, (_, fname) in sorted(scene_entries.items())]
         self._draft_status_label.setText(f"{len(images)} image(s) — showing {source_label}")
 
         for fname in images:
-            try:
-                scene_id = int(fname.split("_")[1].split(".")[0])
-            except Exception:
-                scene_id = 0
+            sid = _scene_id_from(fname)
+            active_dir, fname = scene_entries[sid]
+            scene_id = sid
 
             card = QWidget()
             card.setStyleSheet("background:#1D1B20; border:1px solid #36343B; border-radius:4px;")
@@ -738,9 +769,33 @@ class MainWindow(QMainWindow):
         self._dub_save_btn.setToolTip("Save all dubbed text to dubbing.yaml  (Ctrl+S)")
         self._dub_save_btn.clicked.connect(self._dub_save)
 
+        btn_export_word = QPushButton("📄 Export Word")
+        btn_export_word.setToolTip("Export all dubbed text to a .docx file in the project output folder")
+        btn_export_word.clicked.connect(self._dub_export_word)
+
+        # Spell-check language toggle
+        self._dub_spell_lang = "it"
+        self._dub_spell_highlighters: dict = {}  # sid → _SpellHighlighter
+        btn_spell_it = QPushButton("🇮🇹 IT")
+        btn_spell_en = QPushButton("🇬🇧 EN")
+        btn_spell_off = QPushButton("Spell ✕")
+        for b in (btn_spell_it, btn_spell_en, btn_spell_off):
+            b.setFixedHeight(28)
+            b.setCheckable(True)
+        btn_spell_it.setChecked(True)
+        self._dub_spell_btns = {"it": btn_spell_it, "en": btn_spell_en, "off": btn_spell_off}
+        btn_spell_it.clicked.connect(lambda: self._dub_set_spell_lang("it"))
+        btn_spell_en.clicked.connect(lambda: self._dub_set_spell_lang("en"))
+        btn_spell_off.clicked.connect(lambda: self._dub_set_spell_lang("off"))
+
         bar.addWidget(btn_load)
         bar.addWidget(self._dub_all_btn)
         bar.addWidget(self._dub_save_btn)
+        bar.addWidget(btn_export_word)
+        bar.addStretch(1)
+        bar.addWidget(btn_spell_it)
+        bar.addWidget(btn_spell_en)
+        bar.addWidget(btn_spell_off)
         root.addLayout(bar)
 
         # ── Progress bar (shown only during Dub All) ──────────────────────────
@@ -781,6 +836,10 @@ class MainWindow(QMainWindow):
     def _dub_scenes_yaml_path(self) -> str:
         project = self.project_path_input.text().strip()
         return os.path.join(project, "output", "scenes.yaml") if project else ""
+
+    def _dub_bookmark_path(self) -> str:
+        project = self.project_path_input.text().strip()
+        return os.path.join(project, "output", "dubbing_bookmark.yaml") if project else ""
 
     def _dub_state(self, sid: int) -> str:
         """Return 'not_dubbed', 'to_redub', or 'dubbed' for a scene."""
@@ -832,6 +891,53 @@ class MainWindow(QMainWindow):
             existing = _yaml.safe_load(Path(dub_path).read_text(encoding="utf-8")) or {}
         self._dub_populate(scenes, existing)
 
+    def _dub_export_word(self) -> None:
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Open a project first.")
+            return
+        editors: dict = getattr(self, "_dub_editors", {})
+        if not editors:
+            QMessageBox.warning(self, "Nothing to export", "Load scenes in the Dubbing tab first.")
+            return
+        try:
+            from docx import Document
+            from docx.shared import Pt, RGBColor
+        except ImportError:
+            QMessageBox.critical(self, "Missing dependency",
+                                 "python-docx is not installed.\nRun: pip install python-docx")
+            return
+
+        doc = Document()
+        doc.core_properties.title = os.path.basename(project)
+
+        style = doc.styles["Normal"]
+        style.font.name = "Calibri"
+        style.font.size = Pt(11)
+
+        heading = doc.add_heading(os.path.basename(project), level=1)
+        heading.runs[0].font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+
+        for sid in sorted(editors.keys()):
+            text = editors[sid].toPlainText().strip()
+            doc.add_paragraph(text)
+
+        out_dir = os.path.join(project, "output")
+        os.makedirs(out_dir, exist_ok=True)
+        project_name = os.path.basename(project).replace(" ", "_")
+        out_path = os.path.join(out_dir, f"{project_name}_dubbing.docx")
+        try:
+            doc.save(out_path)
+        except PermissionError:
+            QMessageBox.warning(self, "Export failed",
+                                f"Could not write:\n{out_path}\n\nClose the file in Word and try again.")
+            return
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Exported")
+        msg.setText(f"Word file saved to:\n{out_path}")
+        msg.setIcon(QMessageBox.Icon.NoIcon)
+        msg.exec()
+
     def _dub_populate(self, scenes: list, existing: dict = None, from_disk: bool = False) -> None:
         existing = existing or {}
         while self._dub_cards_layout.count() > 1:
@@ -842,6 +948,18 @@ class MainWindow(QMainWindow):
         self._dub_cards:   dict       = {}   # sid → card QWidget
         self._dub_preview_btns: dict  = {}   # sid → QPushButton
         self._dub_dirty:   dict       = {}   # sid → bool (text changed after last dub)
+        self._dub_spell_highlighters  = {}   # sid → _SpellHighlighter
+        # Load bookmark from disk for this project
+        self._dub_bookmarks: dict = {}
+        bm_path = self._dub_bookmark_path()
+        if bm_path and os.path.exists(bm_path):
+            try:
+                import yaml as _yaml
+                bm_data = _yaml.safe_load(Path(bm_path).read_text(encoding="utf-8")) or {}
+                if bm_data.get("bookmarked_scene"):
+                    self._dub_bookmarks[int(bm_data["bookmarked_scene"])] = True
+            except Exception:
+                pass
 
         for scene in scenes:
             sid      = int(scene["id"])
@@ -868,8 +986,17 @@ class MainWindow(QMainWindow):
             preview_btn.setToolTip("Synthesise and play this segment")
             preview_btn.clicked.connect(lambda _, s=sid: self._dub_preview_segment(s))
 
+            bm_btn = QPushButton("🔖")
+            bm_btn.setFixedSize(28, 28)
+            bm_btn.setCheckable(True)
+            bm_btn.setChecked(self._dub_bookmarks.get(sid, False))
+            bm_btn.setToolTip("Toggle bookmark (Ctrl+B cycles through bookmarks)")
+            self._dub_apply_bookmark_style(bm_btn, bm_btn.isChecked())
+            bm_btn.toggled.connect(lambda checked, s=sid, b=bm_btn: self._dub_toggle_bookmark(s, checked, b))
+
             hdr.addWidget(id_lbl)
             hdr.addWidget(char_lbl, 1)
+            hdr.addWidget(bm_btn)
             hdr.addWidget(preview_btn)
             cl.addLayout(hdr)
 
@@ -891,7 +1018,7 @@ class MainWindow(QMainWindow):
             ed.setStyleSheet(
                 "QPlainTextEdit { background:#1D1B20; color:#E6E1E5; "
                 "border:1px solid #36343B; border-radius:2px; padding:4px; "
-                "font-family:'Segoe UI',sans-serif; font-size:13px; }"
+                "font-family:'Segoe UI',sans-serif; font-size:15px; }"
                 "QPlainTextEdit:focus { border:1px solid #96BDE2; }"
             )
 
@@ -908,9 +1035,24 @@ class MainWindow(QMainWindow):
             self._dub_editors[sid]      = ed
             self._dub_cards[sid]        = card
             self._dub_preview_btns[sid] = preview_btn
-            self._dub_dirty[sid]        = False
+            # Attach spell-check highlighter — block signals so rehighlight()
+            # does not fire textChanged and spuriously mark the scene as dirty.
+            lang = getattr(self, "_dub_spell_lang", "it")
+            if lang != "off":
+                ed.blockSignals(True)
+                hl = _SpellHighlighter(ed.document(), language=lang)
+                ed.blockSignals(False)
+                self._dub_spell_highlighters[sid] = hl
+            self._dub_dirty[sid] = False  # must be set AFTER highlighter creation
             self._dub_cards_layout.insertWidget(self._dub_cards_layout.count() - 1, card)
             self._dub_apply_card_state(sid)
+
+        # Ctrl+B shortcut (created once)
+        if not getattr(self, "_dub_bm_shortcut_installed", False):
+            from PyQt6.QtGui import QShortcut, QKeySequence
+            sc = QShortcut(QKeySequence("Ctrl+B"), self)
+            sc.activated.connect(self._dub_goto_next_bookmark)
+            self._dub_bm_shortcut_installed = True
 
         self._dub_status_label.setText(f"{len(scenes)} scene(s) loaded.")
         self._dub_has_unsaved = not from_disk
@@ -924,20 +1066,100 @@ class MainWindow(QMainWindow):
         self._dub_update_save_btn()
         self._dub_update_dub_btn()
 
+    def _dub_apply_bookmark_style(self, btn, active: bool) -> None:
+        if active:
+            btn.setStyleSheet(
+                "QPushButton { background:#4A3800; color:#FFD600; border:1px solid #FFD600; "
+                "border-radius:3px; font-size:14px; min-width:28px; min-height:28px; padding:0; }"
+                "QPushButton:hover { background:#5A4A00; }"
+            )
+        else:
+            btn.setStyleSheet(
+                "QPushButton { background:#2A2830; color:#8E8B90; border:1px solid #36343B; "
+                "border-radius:3px; font-size:14px; min-width:28px; min-height:28px; padding:0; }"
+                "QPushButton:hover { background:#36343B; }"
+            )
+
+    def _dub_toggle_bookmark(self, sid: int, checked: bool, btn) -> None:
+        if checked:
+            # Remove any existing bookmark from other cards
+            for other_sid, active in list(self._dub_bookmarks.items()):
+                if active and other_sid != sid:
+                    self._dub_bookmarks[other_sid] = False
+                    # Update the button visually
+                    other_card = self._dub_cards.get(other_sid)
+                    if other_card:
+                        for child in other_card.findChildren(QPushButton):
+                            if child.isCheckable() and child.text() == "🔖":
+                                child.blockSignals(True)
+                                child.setChecked(False)
+                                child.blockSignals(False)
+                                self._dub_apply_bookmark_style(child, False)
+        self._dub_bookmarks[sid] = checked
+        self._dub_apply_bookmark_style(btn, checked)
+        # Persist to disk
+        bm_path = self._dub_bookmark_path()
+        if bm_path:
+            import yaml as _yaml
+            data = {"bookmarked_scene": sid if checked else None}
+            Path(bm_path).write_text(_yaml.dump(data, allow_unicode=True), encoding="utf-8")
+
+    def _dub_goto_next_bookmark(self) -> None:
+        bookmarked = [sid for sid, v in getattr(self, "_dub_bookmarks", {}).items() if v]
+        if not bookmarked:
+            return
+        target = bookmarked[0]
+        card = getattr(self, "_dub_cards", {}).get(target)
+        if not card:
+            return
+        parent = card.parent()
+        while parent:
+            from PyQt6.QtWidgets import QScrollArea
+            if isinstance(parent, QScrollArea):
+                parent.ensureWidgetVisible(card)
+                break
+            parent = parent.parent()
+
+    def _dub_set_spell_lang(self, lang: str) -> None:
+        self._dub_spell_lang = lang
+        # Update toggle button checked states
+        for key, btn in getattr(self, "_dub_spell_btns", {}).items():
+            btn.blockSignals(True)
+            btn.setChecked(key == lang)
+            btn.blockSignals(False)
+        editors = getattr(self, "_dub_editors", {})
+        hls = getattr(self, "_dub_spell_highlighters", {})
+        if lang == "off":
+            # Remove all highlighters
+            for hl in hls.values():
+                hl.setDocument(None)
+            self._dub_spell_highlighters = {}
+        else:
+            # Update existing or create new highlighters
+            for sid, ed in editors.items():
+                ed.blockSignals(True)
+                if sid in hls:
+                    hls[sid].set_language(lang)
+                else:
+                    hls[sid] = _SpellHighlighter(ed.document(), language=lang)
+                ed.blockSignals(False)
+
     def _dub_dubbing_status(self) -> str:
-        """Compute overall dubbing status: none / all_stale / stale / complete."""
+        """Compute overall dubbing status for the Dub All button.
+        'complete'  — every scene has audio and text is unchanged since last dub
+        'stale'     — every scene has audio but at least one text was edited (orange)
+        'all_stale' — at least one scene has no audio at all (red)
+        'none'      — no scenes loaded
+        """
         if not hasattr(self, "_dub_editors") or not self._dub_editors:
             return "none"
-        dubbed_clean = sum(
-            1 for sid in self._dub_editors
-            if os.path.exists(self._dub_audio_path(sid)) and not self._dub_dirty.get(sid, True)
-        )
         total = len(self._dub_editors)
-        if dubbed_clean == total:
-            return "complete"
-        if dubbed_clean == 0:
-            return "all_stale"
-        return "stale"
+        has_audio = sum(1 for sid in self._dub_editors if os.path.exists(self._dub_audio_path(sid)))
+        if has_audio < total:
+            return "all_stale"   # red — missing audio
+        # All scenes have audio; check if any text was edited after last dub
+        any_dirty = any(self._dub_dirty.get(sid, False) for sid in self._dub_editors)
+        return "stale" if any_dirty else "complete"
 
     def _dub_update_dub_btn(self) -> None:
         if not hasattr(self, "_dub_all_btn"):
@@ -963,6 +1185,7 @@ class MainWindow(QMainWindow):
 
     def _dub_preview_segment(self, sid: int, auto_next: int = None, silent: bool = False) -> None:
         """Synthesise and play a single segment, save its audio file."""
+        self._dub_save()
         ed = self._dub_editors.get(sid)
         if not ed:
             return
@@ -1044,7 +1267,7 @@ class MainWindow(QMainWindow):
                 self._seg_player = QMediaPlayer(self)
                 ao = QAudioOutput(self); self._seg_player.setAudioOutput(ao)
                 self._seg_audio_out = ao; ao.setVolume(1.0)
-                self._seg_player.setSource(QUrl.fromLocalFile(audio_path))
+                self._seg_player.setSource(QUrl.fromLocalFile(os.path.abspath(audio_path)))
                 self._seg_player.play()
             if auto_next is not None:
                 self._dub_all_next(auto_next)
@@ -1096,8 +1319,15 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_dub_editors") or not self._dub_editors:
             QMessageBox.warning(self, "No segments", "Load scenes first.")
             return
-        ids = sorted(self._dub_editors.keys())
-        self._dub_all_queue = ids[:]
+        # Only queue segments that have no audio yet or whose text has changed
+        ids = sorted(
+            sid for sid in self._dub_editors
+            if not os.path.exists(self._dub_audio_path(sid)) or self._dub_dirty.get(sid, False)
+        )
+        if not ids:
+            self._dub_status_label.setText("All segments already dubbed and up to date.")
+            return
+        self._dub_all_queue = ids
         self._dub_all_total = len(ids)
         self._dub_all_btn.setEnabled(False)
         self._dub_progress.setVisible(True)
@@ -1210,19 +1440,50 @@ class MainWindow(QMainWindow):
         self._script_editor.setStyleSheet(
             "QPlainTextEdit { font-family: 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.5; }"
         )
+        self._script_editor.textChanged.connect(self._on_script_text_changed)
         root.addWidget(self._script_editor, 1)
 
         btn_row = QHBoxLayout()
-        btn_save_script = QPushButton("Save Script")
-        btn_save_script.clicked.connect(self._save_script)
+        self._btn_save_script = QPushButton("Save Script")
+        self._btn_save_script.clicked.connect(self._save_script)
         btn_reload_script = QPushButton("Reload from Disk")
         btn_reload_script.clicked.connect(self._reload_script)
+        self._btn_sync_script = QPushButton("⟳ Sync to Dubbing")
+        self._btn_sync_script.setToolTip(
+            "Save script → re-split scenes → generate missing prompts (Ollama) → refresh Dubbing tab.\n"
+            "Images are NOT generated — run Draft Preview afterwards to check prompts first."
+        )
+        self._btn_sync_script.clicked.connect(self._sync_script_to_pipeline)
         btn_row.addStretch(1)
         btn_row.addWidget(btn_reload_script)
-        btn_row.addWidget(btn_save_script)
+        btn_row.addWidget(self._btn_save_script)
+        btn_row.addWidget(self._btn_sync_script)
         root.addLayout(btn_row)
 
+        self._script_dirty = False
+        self._script_set_saved_style()
         return page
+
+    def _script_set_saved_style(self) -> None:
+        self._btn_save_script.setStyleSheet(
+            "QPushButton { background:#1e4620; color:#4CAF50; font-weight:bold; "
+            "border:1px solid #4CAF50; border-radius:4px; padding:4px 14px; }"
+            "QPushButton:hover { background:#27ae60; color:white; }"
+        )
+        self._btn_save_script.setText("Save Script")
+
+    def _script_set_dirty_style(self) -> None:
+        self._btn_save_script.setStyleSheet(
+            "QPushButton { background:#4a1010; color:#e74c3c; font-weight:bold; "
+            "border:1px solid #e74c3c; border-radius:4px; padding:4px 14px; }"
+            "QPushButton:hover { background:#c0392b; color:white; }"
+        )
+        self._btn_save_script.setText("Save Script ●")
+
+    def _on_script_text_changed(self) -> None:
+        if not self._script_dirty:
+            self._script_dirty = True
+            self._script_set_dirty_style()
 
     def _script_file_path(self) -> str:
         project = self.project_path_input.text().strip()
@@ -1235,11 +1496,18 @@ class MainWindow(QMainWindow):
         if not path:
             return
         if os.path.exists(path):
+            # Block textChanged so reload doesn't trigger dirty flag
+            self._script_editor.blockSignals(True)
             self._script_editor.setPlainText(Path(path).read_text(encoding="utf-8"))
+            self._script_editor.blockSignals(False)
             self._script_path_label.setText(path)
         else:
+            self._script_editor.blockSignals(True)
             self._script_editor.clear()
+            self._script_editor.blockSignals(False)
             self._script_path_label.setText(f"{path}  (not found)")
+        self._script_dirty = False
+        self._script_set_saved_style()
 
     def _save_script(self) -> None:
         path = self._script_file_path()
@@ -1250,8 +1518,42 @@ class MainWindow(QMainWindow):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             Path(path).write_text(self._script_editor.toPlainText(), encoding="utf-8")
             self._script_path_label.setText(f"Saved: {path}")
+            self._script_dirty = False
+            self._script_set_saved_style()
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
+
+    def _sync_script_to_pipeline(self) -> None:
+        """Save → split scenes → refresh Dubbing → run missing prompts+images."""
+        # 1. Save first
+        self._save_script()
+        if self._script_dirty:
+            return  # save failed
+
+        # 2. Re-split scenes via pipeline (runs synchronously is not possible;
+        #    run it as a pipeline stage so the user sees progress)
+        reply = QMessageBox.question(
+            self, "Sync to Dubbing",
+            "This will:\n"
+            "  1. Re-split scenes from the saved script\n"
+            "  2. Generate missing prompts via Ollama\n"
+            "  3. Refresh the Dubbing tab\n\n"
+            "Existing scenes and prompts are preserved.\n"
+            "Images are NOT generated — run Draft Preview next to check prompts.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Switch to Pipeline tab so the user can see progress
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "Pipeline":
+                self.tabs.setCurrentIndex(i)
+                break
+
+        self._sync_pending = True
+        self.controller.run_pipeline("prompts")  # narration → scenes → prompts only (no images)
 
     def _wire_signals(self) -> None:
         self.controller.project_changed.connect(self._on_project_changed)
@@ -1297,9 +1599,15 @@ class MainWindow(QMainWindow):
         self.btn_run_stage.setEnabled(True)
         self.btn_cancel_pipeline.setEnabled(False)
 
-        # Auto-refresh the draft grid whenever the draft stage completes
+        # Auto-refresh the draft grid whenever the draft stage completes.
+        # Draft/image generation is independent of dubbing — do not touch dubbing state.
         if success and payload and os.path.isdir(payload) and "draft" in payload:
             self._refresh_draft_grid()
+
+        # After a sync-triggered prompts run, refresh the Dubbing tab
+        if success and hasattr(self, "_sync_pending") and self._sync_pending:
+            self._sync_pending = False
+            self._dub_refresh()
 
         if success:
             self.pipeline_status_label.setText("Pipeline complete")
@@ -1340,8 +1648,10 @@ class MainWindow(QMainWindow):
         self.noise_aug_strength_input.setValue(float(settings.get("noise_aug_strength", 0.02)))
         self.guidance_scale_input.setValue(float(settings.get("guidance_scale", 7.5)))
         self.num_inference_steps_input.setValue(int(settings.get("num_inference_steps", 30)))
-        self.image_width_input.setValue(int(settings.get("image_width", 1344)))
-        self.image_height_input.setValue(int(settings.get("image_height", 768)))
+        w = int(settings.get("image_width", 1024))
+        h = int(settings.get("image_height", 576))
+        idx = self.image_resolution_input.findData((w, h))
+        self.image_resolution_input.setCurrentIndex(idx if idx >= 0 else 0)
         self.num_frames_input.setValue(int(settings.get("num_frames", 14)))
         self.motion_bucket_id_input.setValue(int(settings.get("motion_bucket_id", 127)))
         self.audio_volume_input.setValue(float(settings.get("audio_volume", 1.0)))
@@ -1372,7 +1682,8 @@ class MainWindow(QMainWindow):
             "scene_split_method": self.scene_split_method_input.currentText(),
             "min_sentence_length": self.min_sentence_length_input.value(),
             "sdxl_base": self.sdxl_model_input.text().strip(),
-            "flux_dev": self.flux_model_input.text().strip(),
+            "flux_dev": self.flux_dev_model_input.text().strip(),
+            "flux_schnell": self.flux_schnell_model_input.text().strip(),
             "image_model": self.image_model_input.currentData() or "sdxl",
             "svd": self.svd_model_input.text().strip(),
             "clip_engine": self.clip_engine_input.currentText(),
@@ -1380,8 +1691,8 @@ class MainWindow(QMainWindow):
             "noise_aug_strength": self.noise_aug_strength_input.value(),
             "guidance_scale": self.guidance_scale_input.value(),
             "num_inference_steps": self.num_inference_steps_input.value(),
-            "image_width": self.image_width_input.value(),
-            "image_height": self.image_height_input.value(),
+            "image_width":  self.image_resolution_input.currentData()[0],
+            "image_height": self.image_resolution_input.currentData()[1],
             "num_frames": self.num_frames_input.value(),
             "motion_bucket_id": self.motion_bucket_id_input.value(),
             "audio_volume": self.audio_volume_input.value(),
@@ -1394,6 +1705,9 @@ class MainWindow(QMainWindow):
             "tts_rate": f"{self.tts_rate_input.value():+d}%",
             "tts_pitch": f"{self.tts_pitch_input.value():+d}Hz",
             "tts_volume": f"{self.tts_volume_input.value():+d}%",
+            # pass-through: no dedicated UI widget, preserve current config value
+            "output_width": int(self.controller.config.get("output_width", 1920)),
+            "output_height": int(self.controller.config.get("output_height", 1080)),
         }
 
     def select_project(self):
@@ -1615,4 +1929,6 @@ class MainWindow(QMainWindow):
         try:
             self.controller.save_settings(self._collect_settings_from_form())
         except Exception as exc:
-            QMessageBox.critical(self, "Save settings failed", str(exc))
+            import traceback, sys
+            traceback.print_exc(file=sys.stderr)
+            QMessageBox.critical(self, "Save settings failed", traceback.format_exc())

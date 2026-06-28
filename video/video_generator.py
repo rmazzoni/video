@@ -4,7 +4,10 @@ from typing import Optional
 from diffusers import StableVideoDiffusionPipeline
 import torch
 from PIL import Image
+import gpu_registry
 
+# Reduce CUDA memory fragmentation
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 class VideoGenerator:
     """
@@ -44,8 +47,10 @@ class VideoGenerator:
         self.decode_chunk_size = decode_chunk_size
         self.noise_aug_strength = noise_aug_strength
 
+        # Evict any previously loaded GPU model before loading this one
+        gpu_registry.evict()
+
         # Load SVD model — keep on CPU initially, offload layers to GPU on demand
-        # so the full model weight (~8 GB) never sits entirely on the GPU at once.
         self.pipe = StableVideoDiffusionPipeline.from_pretrained(
             self.model_path,
             torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
@@ -59,17 +64,30 @@ class VideoGenerator:
         if self.output_dir:
             os.makedirs(self.output_dir, exist_ok=True)
 
+        # Register as the active GPU model
+        gpu_registry.register(self)
+
     # ---------------------------------------------------------
     # PUBLIC API
     # ---------------------------------------------------------
 
-    def generate_clip(self, image_path: str, scene_id: int, target_duration: Optional[float] = None) -> str:
+    def generate_clip(
+        self,
+        image_path: str,
+        scene_id: int,
+        target_duration: Optional[float] = None,
+        motion_bucket_id: Optional[int] = None,
+        noise_aug_strength: Optional[float] = None,
+    ) -> str:
         """
         Generates a short video clip from a single image.
-        If target_duration is given, the clip is retimed (sped up or slowed
-        down) so its playback length matches that duration in seconds.
+        motion_bucket_id and noise_aug_strength override the instance defaults
+        when provided (useful for per-scene tuning).
         Returns the output video file path.
         """
+
+        effective_motion = motion_bucket_id if motion_bucket_id is not None else self.motion_bucket_id
+        effective_noise  = noise_aug_strength if noise_aug_strength is not None else self.noise_aug_strength
 
         # Load image
         image = Image.open(image_path).convert("RGB")
@@ -89,9 +107,9 @@ class VideoGenerator:
         result = self.pipe(
             image,
             num_frames=self.num_frames,
-            motion_bucket_id=self.motion_bucket_id,
+            motion_bucket_id=effective_motion,
             decode_chunk_size=self.decode_chunk_size,
-            noise_aug_strength=self.noise_aug_strength,
+            noise_aug_strength=effective_noise,
             generator=generator,
         )
 
@@ -107,11 +125,39 @@ class VideoGenerator:
             torch.cuda.empty_cache()
             gc.collect()
 
-        # Retime the clip to match the narration duration for this scene.
+        # Pad the clip to match the dubbed audio duration (freeze last frame).
         if target_duration and target_duration > 0:
-            self._retime_video(output_path, target_duration)
+            self._pad_to_duration(output_path, target_duration)
 
         return output_path
+
+    def unload(self) -> None:
+        """Fully release VRAM: remove offload hooks, move every component to CPU, then delete."""
+        if hasattr(self, "pipe") and self.pipe is not None:
+            try:
+                from accelerate.hooks import remove_hook_from_module
+                remove_hook_from_module(self.pipe, recurse=True)
+            except Exception:
+                pass
+            # Move each named component to CPU individually
+            for name in getattr(self.pipe, "components", {}):
+                component = getattr(self.pipe, name, None)
+                if component is not None and hasattr(component, "to"):
+                    try:
+                        component.to("cpu")
+                    except Exception:
+                        pass
+            try:
+                self.pipe.to("cpu")
+            except Exception:
+                pass
+            del self.pipe
+            self.pipe = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            gc.collect()
 
     # ---------------------------------------------------------
     # INTERNAL HELPERS
@@ -131,40 +177,41 @@ class VideoGenerator:
             writer.append_data(frame)
         writer.close()
 
-    def _retime_video(self, video_path: str, target_duration: float) -> None:
+    def _pad_to_duration(self, video_path: str, target_duration: float) -> None:
         """
-        Re-encode the given clip so its total playback length equals
-        target_duration seconds, using ffmpeg's setpts filter. The motion is
-        slowed down or sped up to fill the whole scene narration, avoiding the
-        last-frame freeze used during final assembly.
+        Extend the clip to target_duration by freezing its last frame.
+        Replaces the original file in-place.
         """
         import subprocess
 
-        native_duration = self.num_frames / float(self.fps)
-        if native_duration <= 0:
-            return
-        factor = target_duration / native_duration
-        # Skip negligible changes to avoid a pointless re-encode.
-        if abs(factor - 1.0) < 0.02:
+        # Get actual clip duration
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True
+        )
+        try:
+            clip_dur = float(probe.stdout.strip())
+        except ValueError:
             return
 
-        tmp_path = video_path + ".retimed.mp4"
-        # Use a smooth output frame rate so the stretched clip plays evenly.
-        out_fps = max(int(round(self.num_frames / target_duration)), 24)
-        cmd = [
-            "ffmpeg", "-y", "-i", video_path,
-            "-filter:v", f"setpts={factor:.6f}*PTS",
-            "-r", str(out_fps),
-            "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            tmp_path,
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            # Leave the original clip in place if retiming fails.
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-            raise RuntimeError(f"ffmpeg retime failed:\n{result.stderr[-2000:]}")
-        os.replace(tmp_path, video_path)
+        pad = round(target_duration - clip_dur, 3)
+        if pad <= 0.05:
+            return   # already long enough
+
+        tmp = video_path + ".padded.mp4"
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", video_path,
+             "-vf", f"tpad=stop_mode=clone:stop_duration={pad}",
+             "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+             "-an", tmp],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and os.path.exists(tmp):
+            os.replace(tmp, video_path)
+        else:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
     # ---------------------------------------------------------
     # BATCH GENERATION
