@@ -32,6 +32,7 @@ class ImageGenerator:
         seed: Optional[int] = None,
         width: int = 1344,
         height: int = 768,
+        enable_cpu_offload: Optional[bool] = None,
     ):
         self.model_path = model_path
         self.model_type = model_type.lower()
@@ -43,17 +44,38 @@ class ImageGenerator:
         self.width = width
         self.height = height
 
+        # FLUX.1-dev (~33 GB in bf16) does not fit fully on a 24 GB GPU, so
+        # default to model CPU offload for it. FLUX.1-schnell / SDXL fit natively.
+        if enable_cpu_offload is None:
+            enable_cpu_offload = self.model_type == "flux-dev"
+        self.enable_cpu_offload = enable_cpu_offload
+
         dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+
+        if not os.path.isdir(self.model_path):
+            raise FileNotFoundError(
+                f"Model directory not found: '{self.model_path}'. "
+                f"The '{self.model_type}' model has not been downloaded. "
+                f"Download it into this folder or choose a different image model in Settings."
+            )
 
         if self.model_type.startswith("flux"):
             from diffusers import FluxPipeline
             self.pipe = FluxPipeline.from_pretrained(
                 self.model_path,
                 torch_dtype=dtype,
-            ).to(self.device)
-            # Enable memory efficient attention for large images
-            if hasattr(self.pipe, "enable_model_cpu_offload") and self.device == "cuda":
-                pass  # 24 GB can hold it all; skip offload for speed
+            )
+            if self.device == "cuda":
+                if self.enable_cpu_offload:
+                    # Keeps peak VRAM well under 24 GB by streaming submodules.
+                    self.pipe.enable_model_cpu_offload()
+                else:
+                    self.pipe.to(self.device)
+                # Reduce VAE memory during high-resolution decode.
+                self.pipe.vae.enable_tiling()
+                self.pipe.vae.enable_slicing()
+            else:
+                self.pipe.to(self.device)
         else:
             from diffusers import StableDiffusionXLPipeline
             self.pipe = StableDiffusionXLPipeline.from_pretrained(

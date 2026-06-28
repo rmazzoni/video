@@ -138,7 +138,11 @@ class PromptBuilder:
 
     def _get_default_camera_direction(self) -> str:
         """
-        Default cinematic camera motion.
-        Later you can make this dynamic based on emotion or scene type.
+        Default cinematic camera framing. Biases towards showing characters
+        facing the camera rather than from behind.
         """
-        return "cinematic composition, subtle camera motion, soft depth of field"
+        return (
+            "cinematic composition, characters facing the camera, "
+            "front or three-quarter view, faces clearly visible, "
+            "medium shot, soft depth of field"
+        )

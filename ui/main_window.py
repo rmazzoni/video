@@ -200,7 +200,14 @@ class MainWindow(QMainWindow):
         self.min_sentence_length_input.setRange(1, 500)
 
         self.sdxl_model_input = QLineEdit()
+        self.flux_model_input = QLineEdit()
         self.svd_model_input = QLineEdit()
+
+        from images.image_generator import MODEL_TYPES
+        self.image_model_input = QComboBox()
+        for key, label in MODEL_TYPES.items():
+            self.image_model_input.addItem(label, key)
+        self.image_model_input.setToolTip("Image generation model architecture")
 
         self.clip_engine_input = QComboBox()
         self.clip_engine_input.addItems(["ken_burns", "svd"])
@@ -209,18 +216,23 @@ class MainWindow(QMainWindow):
             "svd: Stable Video Diffusion (GPU, slow, more realistic motion)"
         )
 
-        self.ken_burns_duration_input = QDoubleSpinBox()
-        self.ken_burns_duration_input.setRange(1.0, 30.0)
-        self.ken_burns_duration_input.setDecimals(1)
-        self.ken_burns_duration_input.setSingleStep(0.5)
-        self.ken_burns_duration_input.setValue(4.0)
-        form.addRow("Ken Burns duration (s)", self.ken_burns_duration_input)
+        self.decode_chunk_size_input = QSpinBox()
+        self.decode_chunk_size_input.setRange(1, 25)
+        self.decode_chunk_size_input.setValue(4)
+        self.decode_chunk_size_input.setToolTip(
+            "SVD only: how many frames the VAE decodes at once.\n"
+            "Lower = less VRAM (use 2 if you hit out-of-memory), higher = faster."
+        )
 
-        self.ken_burns_fps_input = QSpinBox()
-        self.ken_burns_fps_input.setRange(12, 60)
-        self.ken_burns_fps_input.setValue(24)
-        self.ken_burns_fps_input.setToolTip("Frames per second for Ken Burns clips (24 = smooth, 30 = very smooth)")
-        form.addRow("Ken Burns FPS", self.ken_burns_fps_input)
+        self.noise_aug_strength_input = QDoubleSpinBox()
+        self.noise_aug_strength_input.setRange(0.0, 1.0)
+        self.noise_aug_strength_input.setDecimals(3)
+        self.noise_aug_strength_input.setSingleStep(0.01)
+        self.noise_aug_strength_input.setValue(0.02)
+        self.noise_aug_strength_input.setToolTip(
+            "SVD only: how far the clip may drift from the still image.\n"
+            "Lower (e.g. 0.0-0.02) = fewer hallucinations / steadier; higher = more motion."
+        )
 
         self.guidance_scale_input = QDoubleSpinBox()
         self.guidance_scale_input.setRange(1.0, 30.0)
@@ -244,9 +256,11 @@ class MainWindow(QMainWindow):
 
         self.num_frames_input = QSpinBox()
         self.num_frames_input.setRange(1, 120)
+        self.num_frames_input.setToolTip("SVD only: frames generated per clip (SVD-XT native: 25)")
 
         self.motion_bucket_id_input = QSpinBox()
         self.motion_bucket_id_input.setRange(0, 255)
+        self.motion_bucket_id_input.setToolTip("SVD only: motion intensity (0 = still, 127 = default, 255 = max)")
 
         self.audio_volume_input = QDoubleSpinBox()
         self.audio_volume_input.setRange(0.0, 3.0)
@@ -270,15 +284,18 @@ class MainWindow(QMainWindow):
         form.addRow("Scene split method", self.scene_split_method_input)
         form.addRow("Min sentence length", self.min_sentence_length_input)
         form.addRow("SD model path", self.sdxl_model_input)
+        form.addRow("FLUX model path", self.flux_model_input)
+        form.addRow("Image model type", self.image_model_input)
         form.addRow("Clip engine", self.clip_engine_input)
-        form.addRow("Ken Burns duration (s)", self.ken_burns_duration_input)
         form.addRow("SVD model path", self.svd_model_input)
         form.addRow("Guidance scale", self.guidance_scale_input)
         form.addRow("Inference steps", self.num_inference_steps_input)
         form.addRow("Image width (px)", self.image_width_input)
         form.addRow("Image height (px)", self.image_height_input)
-        form.addRow("Video frames", self.num_frames_input)
-        form.addRow("Motion bucket id", self.motion_bucket_id_input)
+        form.addRow("SVD video frames", self.num_frames_input)
+        form.addRow("SVD motion bucket id", self.motion_bucket_id_input)
+        form.addRow("SVD decode chunk size", self.decode_chunk_size_input)
+        form.addRow("SVD noise aug strength", self.noise_aug_strength_input)
         form.addRow("Audio volume", self.audio_volume_input)
         form.addRow("Audio fade in", self.fade_in_input)
         form.addRow("Audio fade out", self.fade_out_input)
@@ -1310,10 +1327,14 @@ class MainWindow(QMainWindow):
         self.scene_split_method_input.setCurrentText(str(settings.get("scene_split_method", "paragraph")))
         self.min_sentence_length_input.setValue(int(settings.get("min_sentence_length", 20)))
         self.sdxl_model_input.setText(str(settings.get("sdxl_base", "models/sd3")))
+        self.flux_model_input.setText(str(settings.get("flux_dev", "models/flux/FLUX.1-dev")))
+        idx = self.image_model_input.findData(str(settings.get("image_model", "sdxl")))
+        if idx >= 0:
+            self.image_model_input.setCurrentIndex(idx)
         self.svd_model_input.setText(str(settings.get("svd", "models/svd")))
-        self.clip_engine_input.setCurrentText(str(settings.get("clip_engine", "ken_burns")))
-        self.ken_burns_duration_input.setValue(float(settings.get("ken_burns_duration", 4.0)))
-        self.ken_burns_fps_input.setValue(int(settings.get("ken_burns_fps", 24)))
+        self.clip_engine_input.setCurrentText(str(settings.get("clip_engine", "svd")))
+        self.decode_chunk_size_input.setValue(int(settings.get("decode_chunk_size", 4)))
+        self.noise_aug_strength_input.setValue(float(settings.get("noise_aug_strength", 0.02)))
         self.guidance_scale_input.setValue(float(settings.get("guidance_scale", 7.5)))
         self.num_inference_steps_input.setValue(int(settings.get("num_inference_steps", 30)))
         self.image_width_input.setValue(int(settings.get("image_width", 1344)))
@@ -1348,10 +1369,12 @@ class MainWindow(QMainWindow):
             "scene_split_method": self.scene_split_method_input.currentText(),
             "min_sentence_length": self.min_sentence_length_input.value(),
             "sdxl_base": self.sdxl_model_input.text().strip(),
+            "flux_dev": self.flux_model_input.text().strip(),
+            "image_model": self.image_model_input.currentData() or "sdxl",
             "svd": self.svd_model_input.text().strip(),
             "clip_engine": self.clip_engine_input.currentText(),
-            "ken_burns_duration": self.ken_burns_duration_input.value(),
-            "ken_burns_fps": self.ken_burns_fps_input.value(),
+            "decode_chunk_size": self.decode_chunk_size_input.value(),
+            "noise_aug_strength": self.noise_aug_strength_input.value(),
             "guidance_scale": self.guidance_scale_input.value(),
             "num_inference_steps": self.num_inference_steps_input.value(),
             "image_width": self.image_width_input.value(),

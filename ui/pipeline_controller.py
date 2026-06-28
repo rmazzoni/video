@@ -267,10 +267,16 @@ class PipelineWorker(QObject):
                     self._check_cancel()
                     self._emit_progress(30, "Generating scene images")
 
-                    self._check_cancel()
-                    self._emit_progress(30, "Generating scene images")
+                    model_type = str(self.config.get("image_model", "sdxl"))
+                    if model_type.startswith("flux"):
+                        model_path = self.config.get("flux_dev", "models/flux/FLUX.1-dev")
+                    else:
+                        model_path = self.config.get("sdxl_base", "models/sd3")
+                    self.log.emit(f"Image model: {model_type} ({model_path})")
+
                     image_gen = ImageGenerator(
-                        model_path=self._resolve_path(self.config.get("sdxl_base", "models/sd3")),
+                        model_path=self._resolve_path(model_path),
+                        model_type=model_type,
                         output_dir=images_dir,
                         guidance_scale=float(self.config.get("guidance_scale", 7.5)),
                         num_inference_steps=int(self.config.get("num_inference_steps", 30)),
@@ -370,6 +376,8 @@ class PipelineWorker(QObject):
                         num_frames=int(self.config.get("num_frames", 14)),
                         motion_bucket_id=int(self.config.get("motion_bucket_id", 127)),
                         fps=int(self.config.get("fps", 8)),
+                        decode_chunk_size=int(self.config.get("decode_chunk_size", 4)),
+                        noise_aug_strength=float(self.config.get("noise_aug_strength", 0.02)),
                         seed=int(self.config.get("seed", 42)),
                     )
 
@@ -382,11 +390,17 @@ class PipelineWorker(QObject):
                         self.log.emit(f"Skipping clip {scene_id} (already exists).")
                         action = f"Skipped clip {index}/{total_images}"
                     else:
-                        # Use audio duration for this scene if available (Ken Burns only)
+                        # Match clip length to the scene's narration duration.
                         if clip_engine == "ken_burns" and scene_id in scene_timings:
                             generator.duration = float(scene_timings[scene_id])
                             self.log.emit(f"Scene {scene_id}: clip duration = {generator.duration:.1f}s (from TTS)")
-                        generator.generate_clip(image_path, scene_id)
+                            generator.generate_clip(image_path, scene_id)
+                        elif clip_engine != "ken_burns" and scene_id in scene_timings:
+                            target = float(scene_timings[scene_id])
+                            self.log.emit(f"Scene {scene_id}: retiming clip to {target:.1f}s (from TTS)")
+                            generator.generate_clip(image_path, scene_id, target_duration=target)
+                        else:
+                            generator.generate_clip(image_path, scene_id)
                         action = f"Generated clip {index}/{total_images}"
                     if stage == "full":
                         step = 55 + int((index / total_images) * 25)
@@ -405,7 +419,7 @@ class PipelineWorker(QObject):
                 self._check_cancel()
                 base = 82 if stage == "full" else 20
                 self._emit_progress(base, "Loading clips…")
-                assembler = ClipAssembler(final_video_path, fps=int(self.config.get("ken_burns_fps", 24)))
+                assembler = ClipAssembler(final_video_path, fps=int(self.config.get("fps", 24)))
 
                 def _on_clip_loaded(loaded, total):
                     step = base + int((loaded / total) * 15)
@@ -513,14 +527,15 @@ class PipelineController(QObject):
         "num_inference_steps": 30,
         "image_width": 1344,
         "image_height": 768,
+        "image_model": "sdxl",
         "num_frames": 14,
         "motion_bucket_id": 127,
         "audio_volume": 1.0,
         "fade_in": 0.5,
         "fade_out": 0.5,
-        "clip_engine": "ken_burns",
-        "ken_burns_duration": 4.0,
-        "ken_burns_fps": 24,
+        "clip_engine": "svd",
+        "decode_chunk_size": 4,
+        "noise_aug_strength": 0.02,
         "tts_voice": "it-IT-DiegoNeural",
         "tts_rate": "+0%",
         "tts_pitch": "+0Hz",
