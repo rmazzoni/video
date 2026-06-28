@@ -200,7 +200,8 @@ class MainWindow(QMainWindow):
         self.min_sentence_length_input.setRange(1, 500)
 
         self.sdxl_model_input = QLineEdit()
-        self.flux_model_input = QLineEdit()
+        self.flux_dev_model_input = QLineEdit()
+        self.flux_schnell_model_input = QLineEdit()
         self.svd_model_input = QLineEdit()
 
         from images.image_generator import MODEL_TYPES
@@ -284,7 +285,8 @@ class MainWindow(QMainWindow):
         form.addRow("Scene split method", self.scene_split_method_input)
         form.addRow("Min sentence length", self.min_sentence_length_input)
         form.addRow("SD model path", self.sdxl_model_input)
-        form.addRow("FLUX model path", self.flux_model_input)
+        form.addRow("FLUX dev model path", self.flux_dev_model_input)
+        form.addRow("FLUX schnell model path", self.flux_schnell_model_input)
         form.addRow("Image model type", self.image_model_input)
         form.addRow("Clip engine", self.clip_engine_input)
         form.addRow("SVD model path", self.svd_model_input)
@@ -1327,7 +1329,8 @@ class MainWindow(QMainWindow):
         self.scene_split_method_input.setCurrentText(str(settings.get("scene_split_method", "paragraph")))
         self.min_sentence_length_input.setValue(int(settings.get("min_sentence_length", 20)))
         self.sdxl_model_input.setText(str(settings.get("sdxl_base", "models/sd3")))
-        self.flux_model_input.setText(str(settings.get("flux_dev", "models/flux/FLUX.1-dev")))
+        self.flux_dev_model_input.setText(str(settings.get("flux_dev", "models/flux/FLUX.1-dev")))
+        self.flux_schnell_model_input.setText(str(settings.get("flux_schnell", "models/flux/FLUX.1-schnell")))
         idx = self.image_model_input.findData(str(settings.get("image_model", "sdxl")))
         if idx >= 0:
             self.image_model_input.setCurrentIndex(idx)

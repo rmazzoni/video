@@ -268,7 +268,9 @@ class PipelineWorker(QObject):
                     self._emit_progress(30, "Generating scene images")
 
                     model_type = str(self.config.get("image_model", "sdxl"))
-                    if model_type.startswith("flux"):
+                    if model_type == "flux-schnell":
+                        model_path = self.config.get("flux_schnell", "models/flux/FLUX.1-schnell")
+                    elif model_type == "flux-dev":
                         model_path = self.config.get("flux_dev", "models/flux/FLUX.1-dev")
                     else:
                         model_path = self.config.get("sdxl_base", "models/sd3")
@@ -523,6 +525,8 @@ class PipelineController(QObject):
         "min_sentence_length": 20,
         "sdxl_base": "models/sd3",
         "svd": "models/svd",
+        "flux_dev": "models/flux/FLUX.1-dev",
+        "flux_schnell": "models/flux/FLUX.1-schnell",
         "guidance_scale": 7.5,
         "num_inference_steps": 30,
         "image_width": 1344,
