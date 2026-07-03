@@ -790,7 +790,7 @@ class MainWindow(QMainWindow):
                 cell_lay.setSpacing(2)
 
                 img_lbl = _ClickableImageLabel(img_path)
-                img_lbl.clicked.connect(self._open_image_viewer)
+                img_lbl.clicked.connect(self._open_lightbox_viewer)
                 img_lbl.setFixedSize(THUMB_W, THUMB_H)
                 img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 if os.path.exists(img_path):
@@ -828,6 +828,14 @@ class MainWindow(QMainWindow):
             scene_vlay.addLayout(thumb_row)
             self._lightbox_grid_layout.insertWidget(
                 self._lightbox_grid_layout.count() - 1, scene_card)
+
+        # Build ordered flat list used by the navigable viewer.
+        self._lightbox_image_list = [
+            os.path.join(lightbox_dir, f"scene_{sid:03d}_{vk}.png")
+            for sid in sorted(scene_files.keys())
+            for vk, _ in VARIANT_ORDER
+            if os.path.exists(os.path.join(lightbox_dir, f"scene_{sid:03d}_{vk}.png"))
+        ]
 
     def _lightbox_set_all(self, checked: bool) -> None:
         for sid_dict in self._lightbox_checkboxes.values():
@@ -899,6 +907,347 @@ class MainWindow(QMainWindow):
         lbl.setToolTip("Click to close")
         lay.addWidget(lbl)
         dlg.exec()
+
+    def _open_lightbox_viewer(self, image_path: str) -> None:
+        """Navigable lightbox viewer. Left/Right arrow keys browse all lightbox images."""
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox
+        )
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QKeyEvent
+
+        image_list: list = getattr(self, "_lightbox_image_list", [])
+        if not image_list:
+            self._open_image_viewer(image_path)
+            return
+
+        try:
+            start_idx = image_list.index(image_path)
+        except ValueError:
+            start_idx = 0
+
+        screen = self.screen().availableGeometry()
+        max_w = int(screen.width()  * 0.88)
+        max_h = int(screen.height() * 0.80)
+
+        dlg = QDialog(self)
+        dlg.setModal(True)
+        dlg.setStyleSheet(
+            "QDialog   { background:#0F0D13; }"
+            "QLabel    { color:#E6E1E5; background:transparent; border:none; }"
+            "QCheckBox { color:#E6E1E5; font-size:13px; spacing:6px; }"
+            "QCheckBox::indicator { width:16px; height:16px; }"
+        )
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+
+        img_lbl = QLabel()
+        img_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(img_lbl, 1)
+
+        # ── Selection checkbox row ────────────────────────────────────────────
+        chk_row = QHBoxLayout()
+        chk_row.addStretch(1)
+        sel_chk = QCheckBox("Include in Final Clips")
+        sel_chk.setFocusPolicy(_Qt.FocusPolicy.NoFocus)
+        chk_row.addWidget(sel_chk)
+        chk_row.addStretch(1)
+        lay.addLayout(chk_row)
+
+        # ── Navigation row ────────────────────────────────────────────────────
+        nav_row = QHBoxLayout()
+        btn_prev = QPushButton("◀  Prev")
+        btn_next = QPushButton("Next  ▶")
+        info_lbl = QLabel()
+        info_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+        info_lbl.setStyleSheet("color:#8E8B90; font-size:11px;")
+        for btn in (btn_prev, btn_next):
+            btn.setStyleSheet(
+                "QPushButton { background:#36343B; color:#E6E1E5; border:none;"
+                " border-radius:4px; padding:5px 18px; }"
+                "QPushButton:hover { background:#4a4850; }"
+                "QPushButton:disabled { color:#555; }"
+            )
+            btn.setFocusPolicy(_Qt.FocusPolicy.NoFocus)
+        nav_row.addWidget(btn_prev)
+        nav_row.addStretch(1)
+        nav_row.addWidget(info_lbl, 2)
+        nav_row.addStretch(1)
+        nav_row.addWidget(btn_next)
+        lay.addLayout(nav_row)
+
+        state = {"idx": start_idx}
+
+        def _grid_checkbox(path: str):
+            """Return the grid QCheckBox for this image path, or None."""
+            fname = os.path.basename(path)
+            try:
+                sid = int(fname.split("_")[1])
+            except Exception:
+                return None
+            return (getattr(self, "_lightbox_checkboxes", {})
+                    .get(sid, {}).get(fname))
+
+        # Sync the viewer checkbox → grid checkbox (one direction)
+        def _on_viewer_chk(checked: int):
+            grid_chk = _grid_checkbox(image_list[state["idx"]])
+            if grid_chk is not None and grid_chk.isEnabled():
+                grid_chk.setChecked(bool(checked))
+
+        sel_chk.stateChanged.connect(_on_viewer_chk)
+
+        def _load(idx: int):
+            idx = max(0, min(len(image_list) - 1, idx))
+            state["idx"] = idx
+            path = image_list[idx]
+            px = QPixmap(path)
+            if not px.isNull():
+                scaled = px.scaled(max_w, max_h,
+                                   _Qt.AspectRatioMode.KeepAspectRatio,
+                                   _Qt.TransformationMode.SmoothTransformation)
+                img_lbl.setPixmap(scaled)
+                dlg.resize(max(scaled.width() + 16, 480),
+                            scaled.height() + 90)
+            else:
+                img_lbl.setText("(cannot load image)")
+            name = os.path.basename(path)
+            dlg.setWindowTitle(name)
+            info_lbl.setText(
+                f"{name}   [{idx + 1} / {len(image_list)}]"
+                "   ◀ ▶  or  ← →  to navigate   ·  Esc to close"
+            )
+            btn_prev.setEnabled(idx > 0)
+            btn_next.setEnabled(idx < len(image_list) - 1)
+
+            # Mirror grid checkbox state into viewer checkbox (block signal to avoid loop)
+            grid_chk = _grid_checkbox(path)
+            sel_chk.blockSignals(True)
+            if grid_chk is not None:
+                sel_chk.setChecked(grid_chk.isChecked())
+                sel_chk.setEnabled(grid_chk.isEnabled())
+            else:
+                sel_chk.setChecked(False)
+                sel_chk.setEnabled(False)
+            sel_chk.blockSignals(False)
+
+        btn_prev.clicked.connect(lambda: _load(state["idx"] - 1))
+        btn_next.clicked.connect(lambda: _load(state["idx"] + 1))
+
+        def _key(event: QKeyEvent):
+            key = event.key()
+            if key in (_Qt.Key.Key_Right, _Qt.Key.Key_Down):
+                _load(state["idx"] + 1)
+            elif key in (_Qt.Key.Key_Left, _Qt.Key.Key_Up):
+                _load(state["idx"] - 1)
+            elif key == _Qt.Key.Key_Escape:
+                dlg.accept()
+            else:
+                QDialog.keyPressEvent(dlg, event)
+
+        dlg.keyPressEvent = _key
+        _load(start_idx)
+        dlg.exec()
+
+    def _open_draft_zoom_dialog(self, image_path: str) -> None:
+        """Zoom dialog for a draft image: shows zoomed image, narration text (read-only),
+        editable prompt and a Save / Redo button that regenerates just that image."""
+        import yaml
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+            QTextEdit, QPushButton, QFrame,
+        )
+
+        fname = os.path.basename(image_path)
+        try:
+            scene_id = int(fname.split("_")[1].split(".")[0])
+        except Exception:
+            scene_id = None
+
+        project = self.project_path_input.text().strip()
+        scenes_yaml  = os.path.join(project, "output", "scenes.yaml")
+        prompts_yaml = os.path.join(project, "output", "prompts.yaml")
+
+        # Load narration text
+        scene_text = ""
+        if scene_id is not None and os.path.exists(scenes_yaml):
+            try:
+                data = yaml.safe_load(Path(scenes_yaml).read_text(encoding="utf-8"))
+                for s in (data or {}).get("scenes", []):
+                    if s["id"] == scene_id:
+                        scene_text = s.get("text", "")
+                        break
+            except Exception:
+                pass
+
+        # Load prompt
+        prompts: dict = {}
+        current_prompt = ""
+        if scene_id is not None and os.path.exists(prompts_yaml):
+            try:
+                prompts = yaml.safe_load(Path(prompts_yaml).read_text(encoding="utf-8")) or {}
+                current_prompt = prompts.get(scene_id) or prompts.get(str(scene_id)) or ""
+            except Exception:
+                pass
+
+        pixmap = QPixmap(image_path)
+        if pixmap.isNull():
+            return
+
+        screen = self.screen().availableGeometry()
+        img_max_w = int(screen.width()  * 0.60)
+        img_max_h = int(screen.height() * 0.45)
+        scaled = pixmap.scaled(img_max_w, img_max_h,
+                               Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Scene {scene_id}  —  {fname}")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(max(scaled.width(), 620))
+        dlg.setStyleSheet(
+            "QDialog { background:#1D1B20; }"
+            "QLabel  { color:#E6E1E5; background:transparent; border:none; }"
+        )
+
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(8)
+        lay.setContentsMargins(14, 14, 14, 14)
+
+        # ── Zoomed image ─────────────────────────────────────────────────────
+        img_lbl = QLabel()
+        img_lbl.setPixmap(scaled)
+        img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(img_lbl)
+
+        def _sep():
+            f = QFrame()
+            f.setFrameShape(QFrame.Shape.HLine)
+            f.setStyleSheet("QFrame { color:#36343B; background:#36343B; max-height:1px; }")
+            return f
+
+        lay.addWidget(_sep())
+
+        # ── Narration text (read-only) ────────────────────────────────────────
+        narr_hdr = QLabel("Narration")
+        narr_hdr.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px;")
+        lay.addWidget(narr_hdr)
+
+        narr_view = QTextEdit()
+        narr_view.setPlainText(scene_text)
+        narr_view.setReadOnly(True)
+        narr_view.setFixedHeight(70)
+        narr_view.setStyleSheet(
+            "QTextEdit { background:#0F0D13; color:#E6E1E5; border:1px solid #36343B;"
+            " border-radius:3px; font-size:12px; padding:4px; }"
+        )
+        lay.addWidget(narr_view)
+
+        lay.addWidget(_sep())
+
+        # ── Prompt (editable) ────────────────────────────────────────────────
+        prompt_hdr = QLabel("Image Prompt  (edit then click  Save & Redo  to regenerate)")
+        prompt_hdr.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px;")
+        lay.addWidget(prompt_hdr)
+
+        prompt_edit = QTextEdit()
+        prompt_edit.setPlainText(current_prompt)
+        prompt_edit.setFixedHeight(110)
+        prompt_edit.setStyleSheet(
+            "QTextEdit { background:#0F0D13; color:#E6E1E5; border:1px solid #36343B;"
+            " border-radius:3px; font-size:12px; padding:4px; }"
+            "QTextEdit:focus { border:1px solid #96BDE2; }"
+        )
+        lay.addWidget(prompt_edit)
+
+        # ── Button row ───────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+
+        btn_close = QPushButton("Close")
+        btn_close.setStyleSheet(
+            "QPushButton { background:#36343B; color:#E6E1E5; border:none;"
+            " border-radius:4px; padding:6px 20px; }"
+            "QPushButton:hover { background:#4a4850; }"
+        )
+        btn_close.clicked.connect(dlg.reject)
+
+        btn_save = QPushButton("\U0001f4be  Save & Redo Image")
+        btn_save.setToolTip("Save the edited prompt and regenerate this draft image only")
+        btn_save.setStyleSheet(
+            "QPushButton { background:#2A6099; color:white; font-weight:bold;"
+            " border:none; border-radius:4px; padding:6px 20px; }"
+            "QPushButton:hover { background:#3578B8; }"
+        )
+
+        btn_save_clip = QPushButton("\U0001f3ac  Save & Redo Image + Clip")
+        btn_save_clip.setToolTip(
+            "Save the edited prompt, regenerate the draft image, then regenerate the preview clip")
+        btn_save_clip.setStyleSheet(
+            "QPushButton { background:#256040; color:white; font-weight:bold;"
+            " border:none; border-radius:4px; padding:6px 20px; }"
+            "QPushButton:hover { background:#2e7a50; }"
+        )
+
+        def _persist_prompt_and_delete_image():
+            """Save prompt to yaml and delete the draft image. Returns True on success."""
+            new_prompt = prompt_edit.toPlainText().strip()
+            if scene_id is None:
+                return False
+            prompts[scene_id] = new_prompt
+            prompts.pop(str(scene_id), None)
+            try:
+                with open(prompts_yaml, "w", encoding="utf-8") as fh:
+                    yaml.safe_dump(prompts, fh, allow_unicode=True, sort_keys=False)
+            except Exception as exc:
+                QMessageBox.warning(dlg, "Save failed", str(exc))
+                return False
+            if os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except Exception as exc:
+                    QMessageBox.warning(dlg, "Delete failed", str(exc))
+                    return False
+            return True
+
+        def _save_and_redo():
+            if not _persist_prompt_and_delete_image():
+                return
+            dlg.accept()
+            self.run_stage("preview_images")
+
+        def _save_and_redo_clip():
+            if not _persist_prompt_and_delete_image():
+                return
+            # Also delete the matching draft clip so preview_clips regenerates it.
+            clip_path = os.path.join(
+                self.project_path_input.text().strip(),
+                "output", "draft_clips", f"scene_{scene_id:03d}.mp4"
+            )
+            if os.path.exists(clip_path):
+                try:
+                    os.remove(clip_path)
+                except Exception as exc:
+                    QMessageBox.warning(dlg, "Delete clip failed", str(exc))
+                    return
+            dlg.accept()
+            # Chain: run preview_images, then automatically run preview_clips after.
+            def _chain(success: bool, payload: str):
+                self.controller.pipeline_finished.disconnect(_chain)
+                if success:
+                    self.run_stage("preview_clips")
+            self.controller.pipeline_finished.connect(_chain)
+            self.run_stage("preview_images")
+
+        btn_save.clicked.connect(_save_and_redo)
+        btn_save_clip.clicked.connect(_save_and_redo_clip)
+        btn_row.addWidget(btn_close)
+        btn_row.addWidget(btn_save)
+        btn_row.addWidget(btn_save_clip)
+        lay.addLayout(btn_row)
+
+        dlg.exec()
+        self._refresh_draft_grid()
 
     def _refresh_draft_grid(self) -> None:
         project = self.project_path_input.text().strip()
@@ -974,7 +1323,7 @@ class MainWindow(QMainWindow):
             card_layout.setSpacing(12)
 
             img_label = _ClickableImageLabel(os.path.join(active_dir, fname))
-            img_label.clicked.connect(self._open_image_viewer)
+            img_label.clicked.connect(self._open_draft_zoom_dialog)
             img_label.setFixedSize(160, 90)
             img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             pixmap = QPixmap(os.path.join(active_dir, fname))
@@ -985,6 +1334,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 img_label.setText("(no image)")
+            img_label.setToolTip("Click to zoom, edit prompt or regenerate")
             card_layout.addWidget(img_label)
 
             text_block = QVBoxLayout()
