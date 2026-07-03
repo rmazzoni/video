@@ -78,6 +78,7 @@ class VideoGenerator:
         target_duration: Optional[float] = None,
         motion_bucket_id: Optional[int] = None,
         noise_aug_strength: Optional[float] = None,
+        filename_suffix: str = "",
     ) -> str:
         """
         Generates a short video clip from a single image.
@@ -116,7 +117,7 @@ class VideoGenerator:
         frames = result.frames[0]  # list of PIL images
 
         # Save as MP4
-        output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}.mp4")
+        output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4")
         self._save_frames_as_video(frames, output_path)
 
         # Free GPU memory before next clip
@@ -153,10 +154,11 @@ class VideoGenerator:
                 pass
             del self.pipe
             self.pipe = None
+        gpu_registry.deregister()
         gc.collect()
         if torch.cuda.is_available():
+            torch.cuda.synchronize()   # wait for all pending kernels first
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
             gc.collect()
 
     # ---------------------------------------------------------

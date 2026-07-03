@@ -1,5 +1,6 @@
 import os
-from moviepy import VideoFileClip, AudioFileClip
+import subprocess
+import tempfile
 
 
 class AudioSync:
@@ -31,7 +32,9 @@ class AudioSync:
 
     def merge(self, video_path: str, audio_path: str) -> str:
         """
-        Merges the narration audio with the final video.
+        Merges the narration audio with the final video using ffmpeg directly.
+        Avoids MoviePy's audio-frame iterator which over-reads past clip duration
+        on long files, causing 'Accessing time t=X seconds' errors.
         Returns the output file path.
         """
 
@@ -42,77 +45,53 @@ class AudioSync:
             raise FileNotFoundError(f"Audio not found: {audio_path}")
 
         print("Loading video...")
-        video = VideoFileClip(video_path)
-
         print("Loading audio...")
-        audio = AudioFileClip(audio_path)
-        if self.audio_volume != 1.0:
-            audio = audio.with_volume_scaled(self.audio_volume)
-
-        # Apply fades using MoviePy v2 effects
-        if self.fade_in > 0:
-            from moviepy.audio.fx import AudioFadeIn
-            audio = audio.with_effects([AudioFadeIn(self.fade_in)])
-        if self.fade_out > 0:
-            from moviepy.audio.fx import AudioFadeOut
-            audio = audio.with_effects([AudioFadeOut(self.fade_out)])
-
-        # If audio is longer than video, freeze the last frame to fill the gap
-        # rather than cutting the audio short.
-        if audio.duration > video.duration:
-            from moviepy.video.fx import Freeze
-            extra = audio.duration - video.duration
-            # Freeze the very last frame for the extra duration
-            freeze_t = max(video.duration - 0.04, 0)
-            video = video.with_effects([Freeze(t=freeze_t, freeze_duration=extra)])
-
-        audio = self._match_audio_to_video(audio, video.duration)
-
         print("Merging audio with video...")
-        final = video.with_audio(audio)
 
-        final.write_videofile(
+        # Probe audio duration for fade-out start calculation
+        audio_duration = None
+        if self.fade_out > 0:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+                capture_output=True, text=True,
+            )
+            try:
+                audio_duration = float(probe.stdout.strip())
+            except ValueError:
+                audio_duration = None
+
+        # Build audio filter chain
+        audio_filters = []
+        if self.audio_volume != 1.0:
+            audio_filters.append(f"volume={self.audio_volume}")
+        if self.fade_in > 0:
+            audio_filters.append(f"afade=t=in:st=0:d={self.fade_in}")
+        if self.fade_out > 0 and audio_duration is not None:
+            fade_start = max(audio_duration - self.fade_out, 0)
+            audio_filters.append(f"afade=t=out:st={fade_start}:d={self.fade_out}")
+
+        cmd = ["ffmpeg", "-y", "-i", video_path, "-i", audio_path]
+
+        if audio_filters:
+            cmd += ["-af", ",".join(audio_filters)]
+
+        cmd += [
+            "-c:v", "copy",       # never re-encode video
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",          # stop at the shorter stream (prevents overrun)
+            "-map", "0:v:0",
+            "-map", "1:a:0",
             self.output_path,
-            codec="libx264",
-            audio_codec="aac",
-            fps=video.fps,
-        )
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg audio merge failed:\n{result.stderr[-2000:]}"
+            )
 
         return self.output_path
 
-    # ---------------------------------------------------------
-    # INTERNAL HELPERS
-    # ---------------------------------------------------------
 
-    def _match_audio_to_video(self, audio, video_duration: float):
-        """
-        Ensures audio matches the video duration.
-        - If audio is longer → cut it
-        - If audio is shorter → pad with silence
-        """
-
-        if audio.duration > video_duration:
-            return audio.subclipped(0, video_duration)
-
-        if audio.duration < video_duration:
-            return audio.with_duration(video_duration)
-
-        return audio
-
-    def _generate_silence(self, duration: float):
-        """
-        Generates a temporary silent audio file.
-        MoviePy doesn't have built-in silence, so we create one.
-        """
-        import numpy as np
-        import soundfile as sf
-        import tempfile
-
-        samplerate = 44100
-        samples = int(duration * samplerate)
-        silence = np.zeros(samples)
-
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        sf.write(temp_file.name, silence, samplerate)
-
-        return temp_file.name

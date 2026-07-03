@@ -137,5 +137,25 @@ class ClipAssembler:
             f for f in os.listdir(clips_dir)
             if f.lower().endswith(".mp4") and f.startswith("scene_")
         ]
-        files.sort(key=lambda f: int(f.split("_")[1].split(".")[0]))
+
+        def _sort_key(fname: str) -> tuple:
+            # Strip extension first so 'scene_001.mp4' and 'scene_001_v00.mp4'
+            # both parse correctly.
+            name = os.path.splitext(fname)[0]   # e.g. 'scene_001_v00'
+            parts = name.split("_")             # ['scene', '001', 'v00']
+            try:
+                sid = int(parts[1])
+            except (IndexError, ValueError):
+                sid = 0
+            vidx = 0
+            if len(parts) > 2:
+                v_part = parts[2]
+                if v_part.startswith("v"):
+                    try:
+                        vidx = int(v_part[1:])
+                    except ValueError:
+                        pass
+            return (sid, vidx)
+
+        files.sort(key=_sort_key)
         return [os.path.join(clips_dir, f) for f in files]

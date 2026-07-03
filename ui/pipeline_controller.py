@@ -63,8 +63,7 @@ class PipelineWorker(QObject):
             stage = (self.stage or "full").strip().lower()
             if stage not in {"narration", "scenes", "prompts", "tts",
                              "preview_images", "preview_clips", "preview_video",
-                             "final_images", "final_clips", "final_video"}:
-                raise ValueError(f"Unknown stage: {stage}")
+                             "final_images", "final_clips", "final_video"}:                raise ValueError(f"Unknown stage: {stage}")
 
             # Force-release any GPU memory left over from a previous pipeline run
             # before loading new models.  This handles the case where unload() in
@@ -115,6 +114,7 @@ class PipelineWorker(QObject):
             draft_clips_dir = os.path.join(self.project_path, "output", "draft_clips")
             preview_dir = os.path.join(self.project_path, "output", "preview")
             images_dir = os.path.join(self.project_path, "output", "images")
+            lightbox_dir = os.path.join(self.project_path, "output", "lightbox")
             clips_dir = os.path.join(self.project_path, "output", "clips")
             final_dir = os.path.join(self.project_path, "output", "final")
             scenes_path = os.path.join(self.project_path, "output", "scenes.yaml")
@@ -127,6 +127,7 @@ class PipelineWorker(QObject):
             os.makedirs(draft_clips_dir, exist_ok=True)
             os.makedirs(preview_dir, exist_ok=True)
             os.makedirs(images_dir, exist_ok=True)
+            os.makedirs(lightbox_dir, exist_ok=True)
             os.makedirs(clips_dir, exist_ok=True)
             os.makedirs(final_dir, exist_ok=True)
 
@@ -369,13 +370,13 @@ class PipelineWorker(QObject):
                               resolution: tuple):
                 from video.clip_assembler import ClipAssembler
                 from video.audio_sync import AudioSync
-                from moviepy import AudioFileClip, concatenate_audioclips
+                from moviepy import AudioFileClip
 
-                self._emit_progress(82, "Assembling clipsâ€¦")
+                self._emit_progress(82, "Assembling clips...")
                 assembler = ClipAssembler(video_out, fps=int(self.config.get("fps", 24)),
                                           target_resolution=resolution)
                 assembler.assemble(clips_d)
-                self._emit_progress(92, "Merging audioâ€¦")
+                self._emit_progress(92, "Merging audio...")
 
                 tts_files = sorted([
                     os.path.join(tts_dir, f)
@@ -384,12 +385,23 @@ class PipelineWorker(QObject):
                 ]) if os.path.isdir(tts_dir) else []
 
                 if tts_files:
-                    clips_a = [AudioFileClip(p) for p in tts_files]
-                    combined = concatenate_audioclips(clips_a)
+                    # Use ffmpeg concat demuxer directly to avoid MoviePy's
+                    # frame-iterator over-read bug on long audio files.
+                    import subprocess, tempfile
                     combined_path = os.path.join(os.path.dirname(audio_out), "narration_combined.mp3")
-                    combined.write_audiofile(combined_path, logger=None)
-                    for c in clips_a: c.close()
-                    combined.close()
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
+                                                    delete=False, encoding="utf-8") as flist:
+                        for p in tts_files:
+                            flist.write(f"file '{p.replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'\n")
+                        flist_path = flist.name
+                    try:
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                             "-i", flist_path, "-c", "copy", combined_path],
+                            check=True, capture_output=True,
+                        )
+                    finally:
+                        os.unlink(flist_path)
                     audio_src = combined_path
                 elif os.path.exists(input_audio):
                     audio_src = input_audio
@@ -505,12 +517,12 @@ class PipelineWorker(QObject):
                 self.finished.emit(True, preview_with_audio_path)
                 return
 
-            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            # STAGE: final_images  â€” FLUX dev â†’ output/images/
-            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ─────────────────────────────────────────────────────────────────
+            # STAGE: final_images  – 3×Schnell + 3×Dev → output/lightbox/
+            # ─────────────────────────────────────────────────────────────────
             if stage == "final_images":
                 self._check_cancel()
-                self._emit_progress(10, "Generating final images (FLUX dev)")
+                self._emit_progress(5, "Generating lightbox images (3×Schnell + 3×Dev per scene)")
 
                 if os.path.exists(scenes_path):
                     with open(scenes_path, "r", encoding="utf-8") as fh:
@@ -522,47 +534,160 @@ class PipelineWorker(QObject):
                     with open(prompts_path, "r", encoding="utf-8") as fh:
                         cached_prompts = yaml.safe_load(fh) or {}
 
-                existing_images: set = set()
-                if os.path.isdir(images_dir):
-                    for f in os.listdir(images_dir):
-                        if f.startswith("scene_") and f.lower().endswith((".png", ".jpg", ".jpeg")):
-                            try:
-                                existing_images.add(int(f.split("_")[1].split(".")[0]))
-                            except (IndexError, ValueError):
-                                pass
+                base_seed = int(self.config.get("seed", 42))
+                seed_offsets = [-1, 0, 1]
+                model_variants = [
+                    ("flux-schnell", "schnell"),
+                    ("flux-dev",     "dev"),
+                ]
 
-                scenes_needed = [s for s in scenes if int(s["id"]) not in existing_images]
-                if not scenes_needed:
-                    self.log.emit("All final images already exist â€” skipping.")
-                    self._emit_progress(100, "Final images up to date")
-                    self.finished.emit(True, images_dir)
-                    return
+                def _variant_path(sid, model_key, v_idx):
+                    return os.path.join(lightbox_dir, f"scene_{sid:03d}_{model_key}_v{v_idx}.png")
 
-                image_gen = _make_image_gen("flux-dev", images_dir)
-                total = len(scenes_needed)
-                for idx, scene in enumerate(scenes_needed, 1):
-                    self._check_cancel()
+                scenes_all = [int(s["id"]) for s in scenes]
+                total_ops = len(scenes_all) * len(model_variants) * len(seed_offsets)
+                done_ops = 0
+
+                # ── Reuse existing draft images as schnell_v2 (base seed) ──────
+                # Draft images (output/draft/scene_NNN.png) were already generated
+                # by stage 5 using flux-schnell at the base seed.  Copy them to the
+                # lightbox as schnell_v2 instead of regenerating.
+                import shutil as _shutil
+                copied_drafts = 0
+                for scene in scenes:
                     sid = int(scene["id"])
-                    prompt = cached_prompts.get(sid) or cached_prompts.get(str(sid)) or scene.get("text", "")
-                    self.log.emit(f"Scene {sid}: generating final imageâ€¦")
-                    image_gen.generate_image(prompt, sid)
-                    self._emit_progress(10 + int((idx / total) * 85), f"Final image {idx}/{total}")
+                    dst = _variant_path(sid, "schnell", 2)   # v2 = base seed
+                    if os.path.exists(dst):
+                        continue
+                    # Try each supported extension
+                    for ext in ("png", "jpg", "jpeg"):
+                        src = os.path.join(draft_dir, f"scene_{sid:03d}.{ext}")
+                        if os.path.exists(src):
+                            _shutil.copy2(src, dst)
+                            self.log.emit(f"Scene {sid}: copied draft -> lightbox schnell_v2")
+                            copied_drafts += 1
+                            break
+                if copied_drafts:
+                    self.log.emit(f"Reused {copied_drafts} draft image(s) as schnell_v2.")
 
-                _log_vram("before final_images unload")
-                image_gen.unload()
-                _log_vram("after final_images unload")
-                self._emit_progress(100, "Final images complete")
-                self.finished.emit(True, images_dir)
+                for model_type, model_key in model_variants:
+                    self._check_cancel()
+                    work = []
+                    for scene in scenes:
+                        sid = int(scene["id"])
+                        for v_idx, offset in enumerate(seed_offsets, 1):
+                            out = _variant_path(sid, model_key, v_idx)
+                            if not os.path.exists(out):
+                                work.append((sid, v_idx, base_seed + offset, scene))
+                    if not work:
+                        done_ops += len(scenes_all) * len(seed_offsets)
+                        self.log.emit(f"{model_key}: all variants already exist — skipping.")
+                        self._emit_progress(10 + int((done_ops / total_ops) * 85),
+                                            f"{model_key}: skipped (all exist)")
+                        continue
+
+                    image_gen = _make_image_gen(model_type, lightbox_dir)
+                    for sid, v_idx, seed_val, scene in work:
+                        self._check_cancel()
+                        prompt = cached_prompts.get(sid) or cached_prompts.get(str(sid)) or scene.get("text", "")
+                        suffix = f"_{model_key}_v{v_idx}"
+                        self.log.emit(f"Scene {sid} [{model_key} v{v_idx} seed={seed_val}]: generating...")
+                        image_gen.generate_image(prompt, sid, seed_override=seed_val, filename_suffix=suffix)
+                        done_ops += 1
+                        self._emit_progress(10 + int((done_ops / total_ops) * 85),
+                                            f"Lightbox {done_ops}/{total_ops}")
+
+                    _log_vram(f"before {model_key} unload")
+                    image_gen.unload()
+                    _log_vram(f"after {model_key} unload")
+
+                self._emit_progress(100, "Lightbox images complete")
+                self.finished.emit(True, lightbox_dir)
                 return
 
-            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            # STAGE: final_clips  â€” SVD from final images â†’ output/clips/
-            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ─────────────────────────────────────────────────────────────────
+            # STAGE: final_clips  – SVD from lightbox selections → output/clips/
+            # ─────────────────────────────────────────────────────────────────
             if stage == "final_clips":
                 self._check_cancel()
-                self._emit_progress(5, "Generating final clips")
+                self._emit_progress(5, "Generating final clips from lightbox selections")
                 scene_timings = _load_scene_timings()
-                _run_clips(images_dir, clips_dir, scene_timings)
+
+                selections_path = os.path.join(self.project_path, "output", "lightbox_selections.yaml")
+                selections = {}
+                if os.path.exists(selections_path):
+                    with open(selections_path, "r", encoding="utf-8") as fh:
+                        raw = yaml.safe_load(fh) or {}
+                    selections = {int(k): v for k, v in raw.items() if isinstance(v, list) and v}
+
+                if not selections:
+                    self.log.emit("No lightbox selections found — using all available lightbox images.")
+                    for fname in sorted(os.listdir(lightbox_dir)):
+                        if not fname.lower().endswith(".png"):
+                            continue
+                        parts = fname.split("_")
+                        try:
+                            sid = int(parts[1])
+                        except (IndexError, ValueError):
+                            continue
+                        selections.setdefault(sid, []).append(fname)
+
+                if not selections:
+                    raise FileNotFoundError(
+                        "No lightbox images found. Run step 8 (Final Images) first.")
+
+                from video.video_generator import VideoGenerator
+                gen = VideoGenerator(
+                    model_path=self._resolve_path(self.config.get("svd", "models/svd")),
+                    output_dir=clips_dir,
+                    num_frames=int(self.config.get("num_frames", 25)),
+                    motion_bucket_id=int(self.config.get("motion_bucket_id", 40)),
+                    fps=int(self.config.get("fps", 8)),
+                    decode_chunk_size=int(self.config.get("decode_chunk_size", 4)),
+                    noise_aug_strength=float(self.config.get("noise_aug_strength", 0.0)),
+                    seed=int(self.config.get("seed", 42)),
+                )
+
+                overrides_path = os.path.join(self.project_path, "output", "scene_overrides.yaml")
+                scene_overrides = {}
+                if os.path.exists(overrides_path):
+                    with open(overrides_path, "r", encoding="utf-8") as fh:
+                        scene_overrides = yaml.safe_load(fh) or {}
+
+                all_work = []
+                for sid in sorted(selections.keys()):
+                    selected_fnames = selections[sid]
+                    n = len(selected_fnames)
+                    total_dur = float(scene_timings.get(sid, 0)) if scene_timings else 0
+                    per_clip_dur = (total_dur / n) if total_dur > 0 else None
+                    for v_idx, fname in enumerate(selected_fnames):
+                        img_path = os.path.join(lightbox_dir, fname)
+                        all_work.append((sid, v_idx, img_path, per_clip_dur))
+
+                total = len(all_work)
+                for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
+                    self._check_cancel()
+                    clip_suffix = f"_v{v_idx:02d}"
+                    existing = os.path.join(clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
+                    if os.path.exists(existing):
+                        self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (already exists).")
+                    else:
+                        ov = scene_overrides.get(sid, scene_overrides.get(str(sid), {}))
+                        if per_clip_dur:
+                            self.log.emit(f"Scene {sid} v{v_idx}: target duration = {per_clip_dur:.1f}s")
+                        gen.generate_clip(
+                            img_path, sid,
+                            motion_bucket_id=ov.get("motion_bucket_id") if ov else None,
+                            noise_aug_strength=ov.get("noise_aug_strength") if ov else None,
+                            target_duration=per_clip_dur,
+                            filename_suffix=clip_suffix,
+                        )
+                    step = 10 + int((idx / total) * 80)
+                    self._emit_progress(step, f"Clip {idx}/{total}")
+
+                _log_vram("before final clips unload")
+                gen.unload()
+                _log_vram("after final clips unload")
                 self._emit_progress(100, "Final clips complete")
                 self.finished.emit(True, clips_dir)
                 return

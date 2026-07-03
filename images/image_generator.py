@@ -109,10 +109,11 @@ class ImageGenerator:
     # PUBLIC API
     # ---------------------------------------------------------
 
-    def generate_image(self, prompt: str, scene_id: int) -> Image.Image:
+    def generate_image(self, prompt: str, scene_id: int, seed_override: Optional[int] = None, filename_suffix: str = "") -> Image.Image:
+        active_seed = seed_override if seed_override is not None else self.seed
         generator = None
-        if self.seed is not None:
-            generator = torch.Generator(device=self.device).manual_seed(self.seed)
+        if active_seed is not None:
+            generator = torch.Generator(device=self.device).manual_seed(active_seed)
 
         if self.model_type.startswith("flux"):
             # FLUX.1: no negative_prompt; guidance_scale=0 for schnell, ~3.5 for dev
@@ -138,7 +139,7 @@ class ImageGenerator:
         image = result.images[0]
 
         if self.output_dir:
-            output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}.png")
+            output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.png")
             image.save(output_path)
 
         # Free intermediate CUDA tensors between generations
@@ -171,7 +172,11 @@ class ImageGenerator:
                 pass
             del self.pipe
             self.pipe = None
+        gpu_registry.deregister()
         gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()   # wait for all pending kernels first
+            torch.cuda.empty_cache()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()

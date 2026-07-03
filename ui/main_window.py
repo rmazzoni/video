@@ -25,9 +25,35 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QCheckBox,
 )
-from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject
+from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect
 from ui.pipeline_controller import PipelineController
+
+
+class _DualColorProgressBar(QProgressBar):
+    """Progress bar whose percentage label switches from white to black at 50 %."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.isTextVisible():
+            return
+        text = self.text()
+        if not text:
+            return
+        rect = self.rect()
+        fill_ratio = (self.value() - self.minimum()) / max(self.maximum() - self.minimum(), 1)
+        fill_px = int(rect.width() * fill_ratio)
+
+        painter = QPainter(self)
+        painter.setFont(self.font())
+
+        # Left half (over the filled chunk) — black when >50 %, white when <=50 %
+        if fill_ratio > 0.5:
+            painter.setPen(QPen(Qt.GlobalColor.black))
+        else:
+            painter.setPen(QPen(QColor("#E6E1E5")))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+        painter.end()
 
 
 class _ClickableImageLabel(QLabel):
@@ -90,6 +116,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_script_tab(), "Script")
         self.tabs.addTab(self._build_dubbing_tab(), "Dubbing")
         self.tabs.addTab(self._build_draft_tab(), "Preview Images")
+        self.tabs.addTab(self._build_lightbox_tab(), "Lightbox")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         layout.addWidget(self.tabs)
 
@@ -147,7 +174,7 @@ class MainWindow(QMainWindow):
         recent_row.addWidget(btn_use_recent)
 
         self.pipeline_status_label = QLabel("Ready")
-        self.pipeline_progress = QProgressBar()
+        self.pipeline_progress = _DualColorProgressBar()
         self.pipeline_progress.setRange(0, 100)
         self.pipeline_progress.setValue(0)
 
@@ -163,7 +190,7 @@ class MainWindow(QMainWindow):
             ("5. Preview Images",  "preview_images"),
             ("6. Preview Clips",   "preview_clips"),
             ("7. Preview Video",   "preview_video"),
-            ("8. Final Images",    "final_images"),
+            ("8. Lightbox Images", "final_images"),
             ("9. Final Clips",     "final_clips"),
             ("10. Final Video",    "final_video"),
         ]
@@ -622,6 +649,219 @@ class MainWindow(QMainWindow):
         root.addWidget(scroll, 1)
 
         return page
+
+
+    # ── Lightbox tab ──────────────────────────────────────────────────────────
+
+    def _build_lightbox_tab(self) -> QWidget:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setSpacing(6)
+
+        header_row = QHBoxLayout()
+        self._lightbox_status_label = QLabel(
+            'Run "8. Final Images" to generate 6 variants per scene (3 Schnell + 3 Dev).')
+        self._lightbox_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
+        header_row.addWidget(self._lightbox_status_label, 1)
+
+        btn_run = QPushButton("\u25b6 Run Final Images")
+        btn_run.setToolTip("Generate 6 lightbox images per scene (stage 8)")
+        btn_run.clicked.connect(lambda: self.run_stage("final_images"))
+        btn_refresh = QPushButton("Refresh")
+        btn_refresh.clicked.connect(self._refresh_lightbox)
+        btn_save = QPushButton("\U0001f4be Save Selections")
+        btn_save.setToolTip("Save selected images to lightbox_selections.yaml")
+        btn_save.clicked.connect(self._save_lightbox_selections)
+        btn_select_all = QPushButton("Select All")
+        btn_select_all.clicked.connect(lambda: self._lightbox_set_all(True))
+        btn_deselect_all = QPushButton("Deselect All")
+        btn_deselect_all.clicked.connect(lambda: self._lightbox_set_all(False))
+        for b in (btn_run, btn_refresh, btn_save, btn_select_all, btn_deselect_all):
+            header_row.addWidget(b)
+        root.addLayout(header_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._lightbox_grid_widget = QWidget()
+        self._lightbox_grid_layout = QVBoxLayout(self._lightbox_grid_widget)
+        self._lightbox_grid_layout.setSpacing(14)
+        self._lightbox_grid_layout.addStretch(1)
+        scroll.setWidget(self._lightbox_grid_widget)
+        root.addWidget(scroll, 1)
+
+        self._lightbox_checkboxes: dict = {}
+        return page
+
+    def _refresh_lightbox(self) -> None:
+        import yaml as _yaml
+
+        project = self.project_path_input.text().strip()
+        lightbox_dir = os.path.join(project, "output", "lightbox") if project else ""
+
+        while self._lightbox_grid_layout.count() > 1:
+            item = self._lightbox_grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._lightbox_checkboxes.clear()
+
+        if not lightbox_dir or not os.path.isdir(lightbox_dir):
+            self._lightbox_status_label.setText(
+                'No lightbox folder found. Run "8. Final Images" first.')
+            return
+
+        scene_files: dict = {}
+        for fname in sorted(os.listdir(lightbox_dir)):
+            if not fname.lower().endswith(".png"):
+                continue
+            parts = fname.split("_")
+            try:
+                sid = int(parts[1])
+            except (IndexError, ValueError):
+                continue
+            scene_files.setdefault(sid, {})[fname] = fname
+
+        if not scene_files:
+            self._lightbox_status_label.setText(
+                'No lightbox images found. Run "8. Final Images" first.')
+            return
+
+        saved_selections: dict = {}
+        sel_path = os.path.join(project, "output", "lightbox_selections.yaml")
+        if os.path.exists(sel_path):
+            try:
+                data = _yaml.safe_load(Path(sel_path).read_text(encoding="utf-8")) or {}
+                saved_selections = {int(k): set(v) for k, v in data.items()}
+            except Exception:
+                pass
+
+        scenes_yaml = os.path.join(project, "output", "scenes.yaml")
+        scene_texts: dict = {}
+        if os.path.exists(scenes_yaml):
+            try:
+                data = _yaml.safe_load(Path(scenes_yaml).read_text(encoding="utf-8"))
+                for s in (data or {}).get("scenes", []):
+                    scene_texts[s["id"]] = s["text"]
+            except Exception:
+                pass
+
+        total_images = sum(len(v) for v in scene_files.values())
+        self._lightbox_status_label.setText(
+            f"{len(scene_files)} scene(s), {total_images} image(s) \u2014 check images to include in Final Clips")
+
+        VARIANT_ORDER = [
+            ("schnell_v1", "Schnell \u22121"),
+            ("schnell_v2", "Schnell \u25cf"),
+            ("schnell_v3", "Schnell +1"),
+            ("dev_v1",     "Dev \u22121"),
+            ("dev_v2",     "Dev \u25cf"),
+            ("dev_v3",     "Dev +1"),
+        ]
+        THUMB_W, THUMB_H = 180, 102
+
+        for sid in sorted(scene_files.keys()):
+            selected_set = saved_selections.get(sid, set())
+
+            scene_card = QWidget()
+            scene_card.setStyleSheet(
+                "background:#1D1B20; border:1px solid #36343B; border-radius:4px;")
+            scene_vlay = QVBoxLayout(scene_card)
+            scene_vlay.setContentsMargins(10, 8, 10, 8)
+            scene_vlay.setSpacing(4)
+
+            hdr = QLabel(f"Scene {sid}  \u2014  {scene_texts.get(sid, '')[:120]}")
+            hdr.setStyleSheet(
+                "color:#96BDE2; font-weight:bold; font-size:11px; background:transparent; border:none;")
+            hdr.setWordWrap(True)
+            scene_vlay.addWidget(hdr)
+
+            thumb_row = QHBoxLayout()
+            thumb_row.setSpacing(8)
+            self._lightbox_checkboxes[sid] = {}
+
+            for variant_key, variant_label in VARIANT_ORDER:
+                fname = f"scene_{sid:03d}_{variant_key}.png"
+                img_path = os.path.join(lightbox_dir, fname)
+
+                cell = QWidget()
+                cell.setStyleSheet("background:transparent; border:none;")
+                cell_lay = QVBoxLayout(cell)
+                cell_lay.setContentsMargins(0, 0, 0, 0)
+                cell_lay.setSpacing(2)
+
+                img_lbl = _ClickableImageLabel(img_path)
+                img_lbl.clicked.connect(self._open_image_viewer)
+                img_lbl.setFixedSize(THUMB_W, THUMB_H)
+                img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                if os.path.exists(img_path):
+                    px = QPixmap(img_path)
+                    if not px.isNull():
+                        img_lbl.setPixmap(px.scaled(
+                            THUMB_W, THUMB_H,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation))
+                    else:
+                        img_lbl.setText("(error)")
+                        img_lbl.setStyleSheet("color:#E73A4B; font-size:10px;")
+                else:
+                    img_lbl.setText("(missing)")
+                    img_lbl.setStyleSheet("color:#8E8B90; font-size:10px;")
+                cell_lay.addWidget(img_lbl)
+
+                lbl_row = QHBoxLayout()
+                lbl_row.setContentsMargins(0, 0, 0, 0)
+                vlbl = QLabel(variant_label)
+                vlbl.setStyleSheet(
+                    "color:#8E8B90; font-size:10px; background:transparent; border:none;")
+                chk = QCheckBox()
+                chk.setChecked(fname in selected_set or (not selected_set and os.path.exists(img_path)))
+                chk.setToolTip(f"Include {fname} in Final Clips")
+                chk.setEnabled(os.path.exists(img_path))
+                lbl_row.addWidget(vlbl, 1)
+                lbl_row.addWidget(chk)
+                cell_lay.addLayout(lbl_row)
+
+                self._lightbox_checkboxes[sid][fname] = chk
+                thumb_row.addWidget(cell)
+
+            thumb_row.addStretch(1)
+            scene_vlay.addLayout(thumb_row)
+            self._lightbox_grid_layout.insertWidget(
+                self._lightbox_grid_layout.count() - 1, scene_card)
+
+    def _lightbox_set_all(self, checked: bool) -> None:
+        for sid_dict in self._lightbox_checkboxes.values():
+            for chk in sid_dict.values():
+                if chk.isEnabled():
+                    chk.setChecked(checked)
+
+    def _save_lightbox_selections(self) -> None:
+        import yaml as _yaml
+
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Load a project first.")
+            return
+
+        if not self._lightbox_checkboxes:
+            QMessageBox.information(self, "Nothing to save",
+                                    "Refresh the Lightbox tab first to load images.")
+            return
+
+        selections: dict = {}
+        for sid, fname_dict in sorted(self._lightbox_checkboxes.items()):
+            chosen = [fname for fname, chk in sorted(fname_dict.items()) if chk.isChecked()]
+            if chosen:
+                selections[sid] = chosen
+
+        sel_path = os.path.join(project, "output", "lightbox_selections.yaml")
+        with open(sel_path, "w", encoding="utf-8") as fh:
+            _yaml.safe_dump(selections, fh, sort_keys=True, allow_unicode=True)
+
+        total = sum(len(v) for v in selections.values())
+        self._lightbox_status_label.setText(
+            f"Saved {total} selection(s) across {len(selections)} scene(s) \u2192 lightbox_selections.yaml")
+        self._append_log(f"Lightbox selections saved: {total} image(s) in {len(selections)} scene(s).")
 
     def _delete_draft_image(self, image_path: str, card: QWidget) -> None:
         try:
@@ -1830,6 +2070,7 @@ class MainWindow(QMainWindow):
         if project_changed:
             self._reload_script()
         self._refresh_draft_grid()
+        self._refresh_lightbox()
         self._dub_refresh()
 
     def _refresh_recent_projects(self, projects) -> None:
@@ -1864,6 +2105,10 @@ class MainWindow(QMainWindow):
             "draft" in payload or "images" in payload
         ):
             self._refresh_draft_grid()
+
+        # Auto-refresh the Lightbox tab when final_images completes.
+        if success and payload and os.path.isdir(payload) and "lightbox" in payload:
+            self._refresh_lightbox()
 
         # After a sync-triggered prompts run, refresh the Dubbing tab
         if success and hasattr(self, "_sync_pending") and self._sync_pending:
