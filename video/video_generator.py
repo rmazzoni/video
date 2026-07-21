@@ -135,31 +135,49 @@ class VideoGenerator:
     def unload(self) -> None:
         """Fully release VRAM: remove offload hooks, move every component to CPU, then delete."""
         if hasattr(self, "pipe") and self.pipe is not None:
+            # 1. Remove accelerate CPU-offload hooks (they keep CUDA streams alive)
             try:
                 from accelerate.hooks import remove_hook_from_module
                 remove_hook_from_module(self.pipe, recurse=True)
             except Exception:
                 pass
-            # Move each named component to CPU individually
-            for name in getattr(self.pipe, "components", {}):
+
+            # 2. Move each named sub-model to CPU explicitly
+            for name in list(getattr(self.pipe, "components", {}).keys()):
                 component = getattr(self.pipe, name, None)
                 if component is not None and hasattr(component, "to"):
                     try:
                         component.to("cpu")
                     except Exception:
                         pass
+                # Also delete the attribute so Python can GC the tensor data
+                try:
+                    setattr(self.pipe, name, None)
+                except Exception:
+                    pass
+
             try:
                 self.pipe.to("cpu")
             except Exception:
                 pass
+
             del self.pipe
             self.pipe = None
+
         gpu_registry.deregister()
+
+        # 3. Force Python GC twice — first pass releases tensor wrappers,
+        #    second pass catches cyclic references exposed by the first.
         gc.collect()
+        gc.collect()
+
         if torch.cuda.is_available():
-            torch.cuda.synchronize()   # wait for all pending kernels first
-            torch.cuda.empty_cache()
+            torch.cuda.synchronize()   # wait for all pending CUDA kernels
+            torch.cuda.empty_cache()   # release cached allocator blocks
+            # A final collect after empty_cache can free any remaining
+            # Python-held CUDA tensors that synchronize flushed.
             gc.collect()
+            torch.cuda.empty_cache()
 
     # ---------------------------------------------------------
     # INTERNAL HELPERS

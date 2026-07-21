@@ -40,17 +40,20 @@ class KenBurnsGenerator:
         fps: int = 24,
         duration: float = 4.0,
         seed: Optional[int] = None,
+        motion_style: str = "auto",
     ):
         """
         :param output_dir: where to save generated clips
         :param fps: frames per second
         :param duration: clip length in seconds
         :param seed: random seed for motion selection (None = random each time)
+        :param motion_style: "auto" = random pan/zoom, "static" = no motion
         """
         self.output_dir = output_dir
         self.fps = fps
         self.duration = duration
         self.seed = seed
+        self.motion_style = motion_style
 
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
@@ -59,68 +62,62 @@ class KenBurnsGenerator:
     # PUBLIC API
     # ---------------------------------------------------------
 
-    def generate_clip(self, image_path: str, scene_id: int) -> str:
+    def generate_clip(self, image_path: str, scene_id: int, filename_suffix: str = "") -> str:
         """
-        Generate a Ken Burns clip from a still image.
+        Generate a clip from a still image.
+        In "static" mode the image is held perfectly still for the full duration.
+        In "auto" mode a random pan/zoom motion is applied.
         Returns the output video file path.
         """
-        from moviepy import ImageClip, VideoClip
+        from moviepy import VideoClip
 
         image = Image.open(image_path).convert("RGB")
         img_w, img_h = image.size
         img_array = np.array(image)
-
-        rng = random.Random(self.seed if self.seed is not None else scene_id)
-        motion = rng.choice(_MOTIONS)
-
-        total_frames = int(self.fps * self.duration)
         out_w, out_h = self._output_size(img_w, img_h)
 
-        zoom_start = motion["zoom_start"]
-        zoom_end   = motion["zoom_end"]
-        pan_x      = motion["pan_x"]
-        pan_y      = motion["pan_y"]
-
-        def _ease(t: float) -> float:
-            """Smoothstep: ease-in-out so motion doesn't start/stop abruptly."""
-            return t * t * (3 - 2 * t)
-
-        def make_frame(t: float) -> np.ndarray:
-            progress = _ease(t / self.duration)  # 0 → 1, eased
-
-            zoom = zoom_start + (zoom_end - zoom_start) * progress
-
-            # Crop window relative to SOURCE image size
-            crop_w = img_w / zoom
-            crop_h = img_h / zoom
-            crop_w = max(1.0, min(crop_w, img_w))
-            crop_h = max(1.0, min(crop_h, img_h))
-
-            # Centre of crop, shifted by pan (float precision)
-            cx = img_w / 2 + pan_x * img_w * progress
-            cy = img_h / 2 + pan_y * img_h * progress
-
-            x1 = cx - crop_w / 2
-            y1 = cy - crop_h / 2
-            x1 = max(0.0, min(x1, img_w - crop_w))
-            y1 = max(0.0, min(y1, img_h - crop_h))
-
-            # Convert to integer only at the last moment
-            xi, yi = round(x1), round(y1)
-            cw, ch = round(crop_w), round(crop_h)
-            xi = max(0, min(xi, img_w - cw))
-            yi = max(0, min(yi, img_h - ch))
-
-            crop = img_array[yi:yi+ch, xi:xi+cw]
-            resized = np.array(
-                Image.fromarray(crop).resize((out_w, out_h), Image.LANCZOS)
+        if self.motion_style == "static":
+            # Resize once; every frame is identical
+            static_frame = np.array(
+                Image.fromarray(img_array).resize((out_w, out_h), Image.LANCZOS)
             )
-            return resized
+
+            def make_frame(_t: float) -> np.ndarray:
+                return static_frame
+        else:
+            rng = random.Random(self.seed if self.seed is not None else scene_id)
+            motion = rng.choice(_MOTIONS)
+
+            zoom_start = motion["zoom_start"]
+            zoom_end   = motion["zoom_end"]
+            pan_x      = motion["pan_x"]
+            pan_y      = motion["pan_y"]
+
+            def _ease(t: float) -> float:
+                return t * t * (3 - 2 * t)
+
+            def make_frame(t: float) -> np.ndarray:
+                progress = _ease(t / self.duration)
+                zoom = zoom_start + (zoom_end - zoom_start) * progress
+                crop_w = max(1.0, min(img_w / zoom, img_w))
+                crop_h = max(1.0, min(img_h / zoom, img_h))
+                cx = img_w / 2 + pan_x * img_w * progress
+                cy = img_h / 2 + pan_y * img_h * progress
+                x1 = max(0.0, min(cx - crop_w / 2, img_w - crop_w))
+                y1 = max(0.0, min(cy - crop_h / 2, img_h - crop_h))
+                xi, yi = round(x1), round(y1)
+                cw, ch = round(crop_w), round(crop_h)
+                xi = max(0, min(xi, img_w - cw))
+                yi = max(0, min(yi, img_h - ch))
+                crop = img_array[yi:yi+ch, xi:xi+cw]
+                return np.array(
+                    Image.fromarray(crop).resize((out_w, out_h), Image.LANCZOS)
+                )
 
         clip = VideoClip(make_frame, duration=self.duration)
         clip = clip.with_fps(self.fps)
 
-        output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}.mp4")
+        output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4")
         try:
             clip.write_videofile(
                 output_path,

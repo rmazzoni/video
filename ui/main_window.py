@@ -129,6 +129,25 @@ class _SpellHighlighter(QSyntaxHighlighter):
                 self.setFormat(m.start(), len(word), self._fmt)
 
 
+def _load_thumbnail(path: str, w: int, h: int) -> "QPixmap":
+    """Load an image from *path* scaled to at most w×h without reading the full
+    resolution into memory first.  Uses QImageReader's built-in scaled-read so
+    only the required pixel data is decoded — much faster than QPixmap(path).scaled(…)
+    for large source images."""
+    from PyQt6.QtGui import QImageReader
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    original = reader.size()
+    if original.isValid() and not original.isEmpty():
+        scaled = original.scaled(
+            w, h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+        )
+        reader.setScaledSize(scaled)
+    image = reader.read()
+    return QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -249,9 +268,13 @@ class MainWindow(QMainWindow):
         btn_clear_preview_clips = QPushButton("🗑 Clear Preview Clips")
         btn_clear_preview_clips.setToolTip("Delete all files in output/draft_clips/")
         btn_clear_preview_clips.clicked.connect(self._clear_preview_clips)
+        btn_clear_lightbox = QPushButton("🗑 Clear Lightbox")
+        btn_clear_lightbox.setToolTip("Delete all generated images in output/lightbox/")
+        btn_clear_lightbox.clicked.connect(self._clear_lightbox)
         extras_row.addStretch(1)
         extras_row.addWidget(btn_clear_draft)
         extras_row.addWidget(btn_clear_preview_clips)
+        extras_row.addWidget(btn_clear_lightbox)
         extras_row.addWidget(btn_clear_clips)
 
         self.log_output = QPlainTextEdit()
@@ -323,6 +346,13 @@ class MainWindow(QMainWindow):
         self.clip_engine_input.setToolTip(
             "ken_burns: CPU-only pan/zoom effect (fast, no VRAM)\n"
             "svd: Stable Video Diffusion (GPU, slow, more realistic motion)"
+        )
+
+        self.ken_burns_motion_input = QComboBox()
+        self.ken_burns_motion_input.addItems(["static", "auto"])
+        self.ken_burns_motion_input.setToolTip(
+            "static: image is held perfectly still (no zoom or pan)\n"
+            "auto: random cinematic pan/zoom applied to each clip"
         )
 
         self.decode_chunk_size_input = QSpinBox()
@@ -418,6 +448,7 @@ class MainWindow(QMainWindow):
         form.addRow("FLUX dev model path", self.flux_dev_model_input)
         form.addRow("SVD model path", self.svd_model_input)
         form.addRow("Clip engine", self.clip_engine_input)
+        form.addRow("Ken Burns motion", self.ken_burns_motion_input)
         form.addRow(QLabel("── FLUX Schnell (Preview Images) ──"))
         form.addRow("Schnell inference steps", self.schnell_steps_input)
         form.addRow("Schnell guidance scale", self.schnell_guidance_input)
@@ -1366,12 +1397,9 @@ class MainWindow(QMainWindow):
             img_label.clicked.connect(self._open_draft_zoom_dialog)
             img_label.setFixedSize(160, 90)
             img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            pixmap = QPixmap(os.path.join(active_dir, fname))
+            pixmap = _load_thumbnail(os.path.join(active_dir, fname), 160, 90)
             if not pixmap.isNull():
-                img_label.setPixmap(
-                    pixmap.scaled(160, 90, Qt.AspectRatioMode.KeepAspectRatio,
-                                  Qt.TransformationMode.SmoothTransformation)
-                )
+                img_label.setPixmap(pixmap)
             else:
                 img_label.setText("(no image)")
             img_label.setToolTip("Click to zoom, edit prompt or regenerate")
@@ -2625,11 +2653,15 @@ class MainWindow(QMainWindow):
         if success and payload and os.path.isdir(payload) and (
             "draft" in payload or "images" in payload
         ):
-            self._refresh_draft_grid()
+            # Defer so we never rebuild the grid inside a nested event-loop
+            # (e.g. while a zoom dialog is still open).
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self._refresh_draft_grid)
 
         # Auto-refresh the Lightbox tab when final_images completes.
         if success and payload and os.path.isdir(payload) and "lightbox" in payload:
-            self._refresh_lightbox()
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self._refresh_lightbox)
 
         # After a sync-triggered prompts run, refresh the Dubbing tab
         if success and hasattr(self, "_sync_pending") and self._sync_pending:
@@ -2666,7 +2698,8 @@ class MainWindow(QMainWindow):
         self.flux_dev_model_input.setText(str(settings.get("flux_dev", "models/flux/FLUX.1-dev")))
         self.flux_schnell_model_input.setText(str(settings.get("flux_schnell", "models/flux/FLUX.1-schnell")))
         self.svd_model_input.setText(str(settings.get("svd", "models/svd")))
-        self.clip_engine_input.setCurrentText(str(settings.get("clip_engine", "svd")))
+        self.clip_engine_input.setCurrentText(str(settings.get("clip_engine", "ken_burns")))
+        self.ken_burns_motion_input.setCurrentText(str(settings.get("ken_burns_motion", "static")))
         self.schnell_steps_input.setValue(int(settings.get("schnell_steps", 4)))
         self.schnell_guidance_input.setValue(float(settings.get("schnell_guidance", 0.0)))
         self.dev_steps_input.setValue(int(settings.get("dev_steps", 20)))
@@ -2709,6 +2742,7 @@ class MainWindow(QMainWindow):
             "flux_schnell": self.flux_schnell_model_input.text().strip(),
             "svd": self.svd_model_input.text().strip(),
             "clip_engine": self.clip_engine_input.currentText(),
+            "ken_burns_motion": self.ken_burns_motion_input.currentText(),
             "schnell_steps": self.schnell_steps_input.value(),
             "schnell_guidance": self.schnell_guidance_input.value(),
             "dev_steps": self.dev_steps_input.value(),
@@ -2910,6 +2944,39 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Some files not deleted", "\n".join(errors))
         else:
             self._append_log(f"Cleared {len(files)} preview clip(s) from output/draft_clips/.")
+
+    def _clear_lightbox(self) -> None:
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Load a project first.")
+            return
+        lightbox_dir = os.path.join(project, "output", "lightbox")
+        if not os.path.isdir(lightbox_dir):
+            QMessageBox.information(self, "No lightbox", "No lightbox folder found.")
+            return
+        files = [f for f in os.listdir(lightbox_dir)
+                 if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+        if not files:
+            QMessageBox.information(self, "No images", "Lightbox folder is already empty.")
+            return
+        reply = QMessageBox.question(
+            self, "Clear Lightbox",
+            f"Delete {len(files)} lightbox image(s)?\nThey will need to be regenerated with step 8.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        errors = []
+        for f in files:
+            try:
+                os.remove(os.path.join(lightbox_dir, f))
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            QMessageBox.warning(self, "Some files not deleted", "\n".join(errors))
+        else:
+            self._append_log(f"Cleared {len(files)} lightbox image(s) from output/lightbox/.")
+            self._refresh_lightbox()
 
     def _clear_draft(self) -> None:
         project = self.project_path_input.text().strip()

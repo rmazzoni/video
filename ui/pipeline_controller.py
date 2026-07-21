@@ -325,16 +325,41 @@ class PipelineWorker(QObject):
                 if not image_paths:
                     raise FileNotFoundError(f"No scene images found in {src_images_dir}.")
 
-                clip_engine = str(self.config.get("clip_engine", "svd")).strip().lower()
+                clip_engine = str(self.config.get("clip_engine", "ken_burns")).strip().lower()
 
                 if clip_engine == "ken_burns":
                     from video.ken_burns_generator import KenBurnsGenerator
                     default_dur = float(self.config.get("ken_burns_duration", 5.0))
+                    current_motion = str(self.config.get("ken_burns_motion", "static"))
+                    current_fps    = int(self.config.get("fps", 24))
+
+                    # ── Parameter sidecar ────────────────────────────────────
+                    # Store the generation params used last time so that a
+                    # settings change (e.g. auto→static) forces a full re-render
+                    # even when source images haven't been touched.
+                    sidecar_path = os.path.join(out_clips_dir, ".kb_params.yaml")
+                    prev_params: dict = {}
+                    if os.path.exists(sidecar_path):
+                        try:
+                            with open(sidecar_path, "r", encoding="utf-8") as _f:
+                                prev_params = yaml.safe_load(_f) or {}
+                        except Exception:
+                            pass
+                    cur_params = {"motion_style": current_motion, "fps": current_fps,
+                                  "engine": "ken_burns"}
+                    params_changed = (prev_params != cur_params)
+                    if params_changed:
+                        self.log.emit(
+                            f"Ken Burns params changed ({prev_params} → {cur_params}): "
+                            "all clips will be regenerated."
+                        )
+
                     gen_kb = KenBurnsGenerator(
                         output_dir=out_clips_dir,
-                        fps=int(self.config.get("fps", 24)),
+                        fps=current_fps,
                         duration=default_dur,
                         seed=int(self.config.get("seed", 42)),
+                        motion_style=current_motion,
                     )
                     total = len(image_paths)
                     failed_kb: list = []
@@ -342,12 +367,17 @@ class PipelineWorker(QObject):
                         self._check_cancel()
                         sid = self._extract_scene_id(img_path)
                         existing = os.path.join(out_clips_dir, f"scene_{sid:03d}.mp4")
-                        if os.path.exists(existing) and os.path.getmtime(existing) >= os.path.getmtime(img_path):
-                            self.log.emit(f"Skipping clip {sid} (already exists and up to date.).")
+                        up_to_date = (
+                            os.path.exists(existing)
+                            and os.path.getmtime(existing) >= os.path.getmtime(img_path)
+                            and not params_changed
+                        )
+                        if up_to_date:
+                            self.log.emit(f"Skipping clip {sid} (already exists and up to date).")
                         else:
                             target_dur = float(timings[sid]) if sid in timings else default_dur
                             gen_kb.duration = target_dur
-                            self.log.emit(f"Scene {sid}: Ken Burns clip, duration={target_dur:.1f}s")
+                            self.log.emit(f"Scene {sid}: Ken Burns clip [{current_motion}], duration={target_dur:.1f}s")
                             try:
                                 gen_kb.generate_clip(img_path, sid)
                             except Exception as _clip_err:
@@ -357,6 +387,13 @@ class PipelineWorker(QObject):
                         self._emit_progress(step, f"Clip {idx}/{total}")
                     if failed_kb:
                         self.log.emit(f"Ken Burns: {len(failed_kb)} clip(s) failed and were skipped: {failed_kb}")
+                    # Persist current params so the next run can detect changes
+                    try:
+                        os.makedirs(out_clips_dir, exist_ok=True)
+                        with open(sidecar_path, "w", encoding="utf-8") as _f:
+                            yaml.safe_dump(cur_params, _f)
+                    except Exception:
+                        pass
                 else:
                     from video.video_generator import VideoGenerator
                     gen = VideoGenerator(
@@ -677,23 +714,7 @@ class PipelineWorker(QObject):
                     raise FileNotFoundError(
                         "No lightbox images found. Run step 8 (Final Images) first.")
 
-                from video.video_generator import VideoGenerator
-                gen = VideoGenerator(
-                    model_path=self._resolve_path(self.config.get("svd", "models/svd")),
-                    output_dir=clips_dir,
-                    num_frames=int(self.config.get("num_frames", 25)),
-                    motion_bucket_id=int(self.config.get("motion_bucket_id", 40)),
-                    fps=int(self.config.get("fps", 8)),
-                    decode_chunk_size=int(self.config.get("decode_chunk_size", 4)),
-                    noise_aug_strength=float(self.config.get("noise_aug_strength", 0.0)),
-                    seed=int(self.config.get("seed", 42)),
-                )
-
-                overrides_path = os.path.join(self.project_path, "output", "scene_overrides.yaml")
-                scene_overrides = {}
-                if os.path.exists(overrides_path):
-                    with open(overrides_path, "r", encoding="utf-8") as fh:
-                        scene_overrides = yaml.safe_load(fh) or {}
+                clip_engine = str(self.config.get("clip_engine", "ken_burns")).strip().lower()
 
                 all_work = []
                 for sid in sorted(selections.keys()):
@@ -706,29 +727,92 @@ class PipelineWorker(QObject):
                         all_work.append((sid, v_idx, img_path, per_clip_dur))
 
                 total = len(all_work)
-                for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
-                    self._check_cancel()
-                    clip_suffix = f"_v{v_idx:02d}"
-                    existing = os.path.join(clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
-                    if os.path.exists(existing):
-                        self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (already exists).")
-                    else:
-                        ov = scene_overrides.get(sid, scene_overrides.get(str(sid), {}))
-                        if per_clip_dur:
-                            self.log.emit(f"Scene {sid} v{v_idx}: target duration = {per_clip_dur:.1f}s")
-                        gen.generate_clip(
-                            img_path, sid,
-                            motion_bucket_id=ov.get("motion_bucket_id") if ov else None,
-                            noise_aug_strength=ov.get("noise_aug_strength") if ov else None,
-                            target_duration=per_clip_dur,
-                            filename_suffix=clip_suffix,
-                        )
-                    step = 10 + int((idx / total) * 80)
-                    self._emit_progress(step, f"Clip {idx}/{total}")
+                failed_fc: list = []
 
-                _log_vram("before final clips unload")
-                gen.unload()
-                _log_vram("after final clips unload")
+                if clip_engine == "ken_burns":
+                    from video.ken_burns_generator import KenBurnsGenerator
+                    default_dur = float(self.config.get("ken_burns_duration", 5.0))
+                    gen_kb = KenBurnsGenerator(
+                        output_dir=clips_dir,
+                        fps=int(self.config.get("fps", 24)),
+                        duration=default_dur,
+                        seed=int(self.config.get("seed", 42)),
+                        motion_style=str(self.config.get("ken_burns_motion", "auto")),
+                    )
+                    for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
+                        self._check_cancel()
+                        clip_suffix = f"_v{v_idx:02d}"
+                        existing = os.path.join(clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
+                        if os.path.exists(existing) and os.path.getmtime(existing) >= os.path.getmtime(img_path):
+                            self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (up to date).")
+                        else:
+                            dur = per_clip_dur if per_clip_dur else default_dur
+                            gen_kb.duration = dur
+                            self.log.emit(f"Scene {sid} v{v_idx}: Ken Burns clip, duration={dur:.1f}s")
+                            try:
+                                gen_kb.generate_clip(img_path, sid,
+                                                     filename_suffix=clip_suffix)
+                            except Exception as _e:
+                                self.log.emit(f"WARNING: clip scene_{sid:03d}{clip_suffix} failed — {_e}")
+                                failed_fc.append(f"{sid}{clip_suffix}")
+                        step = 10 + int((idx / total) * 80)
+                        self._emit_progress(step, f"Clip {idx}/{total}")
+                    if failed_fc:
+                        self.log.emit(f"Ken Burns final: {len(failed_fc)} clip(s) failed: {failed_fc}")
+                else:
+                    from video.video_generator import VideoGenerator
+                    gen = VideoGenerator(
+                        model_path=self._resolve_path(self.config.get("svd", "models/svd")),
+                        output_dir=clips_dir,
+                        num_frames=int(self.config.get("num_frames", 25)),
+                        motion_bucket_id=int(self.config.get("motion_bucket_id", 40)),
+                        fps=int(self.config.get("fps", 8)),
+                        decode_chunk_size=int(self.config.get("decode_chunk_size", 4)),
+                        noise_aug_strength=float(self.config.get("noise_aug_strength", 0.0)),
+                        seed=int(self.config.get("seed", 42)),
+                    )
+                    overrides_path = os.path.join(self.project_path, "output", "scene_overrides.yaml")
+                    scene_overrides = {}
+                    if os.path.exists(overrides_path):
+                        with open(overrides_path, "r", encoding="utf-8") as fh:
+                            scene_overrides = yaml.safe_load(fh) or {}
+
+                    for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
+                        self._check_cancel()
+                        clip_suffix = f"_v{v_idx:02d}"
+                        existing = os.path.join(clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
+                        if os.path.exists(existing) and os.path.getmtime(existing) >= os.path.getmtime(img_path):
+                            self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (up to date).")
+                        else:
+                            ov = scene_overrides.get(sid, scene_overrides.get(str(sid), {}))
+                            if per_clip_dur:
+                                self.log.emit(f"Scene {sid} v{v_idx}: target duration = {per_clip_dur:.1f}s")
+                            try:
+                                gen.generate_clip(
+                                    img_path, sid,
+                                    motion_bucket_id=ov.get("motion_bucket_id") if ov else None,
+                                    noise_aug_strength=ov.get("noise_aug_strength") if ov else None,
+                                    target_duration=per_clip_dur,
+                                    filename_suffix=clip_suffix,
+                                )
+                            except Exception as _e:
+                                self.log.emit(f"WARNING: clip scene_{sid:03d}{clip_suffix} failed — {_e}")
+                                failed_fc.append(f"{sid}{clip_suffix}")
+                        step = 10 + int((idx / total) * 80)
+                        self._emit_progress(step, f"Clip {idx}/{total}")
+                    if failed_fc:
+                        self.log.emit(f"SVD final: {len(failed_fc)} clip(s) failed: {failed_fc}")
+                    _log_vram("before final clips unload")
+                    gen.unload()
+                    try:
+                        import time as _time
+                        _time.sleep(1)
+                        import torch as _t
+                        if _t.cuda.is_available():
+                            _t.cuda.empty_cache()
+                    except Exception:
+                        pass
+                    _log_vram("after final clips unload")
                 self._emit_progress(100, "Final clips complete")
                 self.finished.emit(True, clips_dir)
                 return
@@ -803,7 +887,8 @@ class PipelineController(QObject):
         "audio_volume": 1.0,
         "fade_in": 0.5,
         "fade_out": 0.5,
-        "clip_engine": "svd",
+        "clip_engine": "ken_burns",
+        "ken_burns_motion": "static",
         "decode_chunk_size": 4,
         "noise_aug_strength": 0.0,
         "tts_voice": "it-IT-DiegoNeural",
