@@ -74,18 +74,47 @@ class _ClickableImageLabel(QLabel):
 class _SpellHighlighter(QSyntaxHighlighter):
     """Underlines misspelled words in red using pyspellchecker."""
 
+    # Path to the custom-words file (resolved relative to this source file's
+    # grandparent directory, i.e. the repo root → config/).
+    _CUSTOM_WORDS_PATH = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config", "spell_custom_words.txt",
+    )
+    _custom_words: list = []   # loaded once, shared by all instances
+
+    @classmethod
+    def _load_custom_words(cls) -> list:
+        """Read the custom word list from disk (# comments stripped, blank lines skipped)."""
+        words: list = []
+        try:
+            with open(cls._CUSTOM_WORDS_PATH, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    word = line.split("#")[0].strip()
+                    if word:
+                        words.append(word.lower())
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        return words
+
     def __init__(self, parent, language: str = "it"):
         super().__init__(parent)
         self._fmt = QTextCharFormat()
         self._fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
         self._fmt.setUnderlineColor(QColor("#FF5555"))
         self._checker = None
+        # Load custom words once for the class
+        if not _SpellHighlighter._custom_words:
+            _SpellHighlighter._custom_words = _SpellHighlighter._load_custom_words()
         self.set_language(language)
 
     def set_language(self, language: str) -> None:
         try:
             from spellchecker import SpellChecker
             self._checker = SpellChecker(language=language)
+            if _SpellHighlighter._custom_words:
+                self._checker.word_frequency.load_words(_SpellHighlighter._custom_words)
         except Exception:
             self._checker = None
         self.rehighlight()
@@ -1408,36 +1437,38 @@ class MainWindow(QMainWindow):
         btn_load.setToolTip("Populate cards from scenes.yaml")
         btn_load.clicked.connect(self._dub_load_from_scenes)
 
+        self._dub_save_btn = QPushButton("💾 Save Dubbing")
+        self._dub_save_btn.setToolTip("Save all dubbed text to dubbing.yaml  (Ctrl+S)")
+        self._dub_save_btn.clicked.connect(self._dub_save)
+
         self._dub_all_btn = QPushButton("⏩ Dub All")
         self._dub_all_btn.setToolTip("Synthesise audio for all segments")
         self._dub_all_btn.clicked.connect(self._dub_all)
 
-        self._dub_save_btn = QPushButton("💾 Save Dubbing")
-        self._dub_save_btn.setToolTip("Save all dubbed text to dubbing.yaml  (Ctrl+S)")
-        self._dub_save_btn.clicked.connect(self._dub_save)
+        self._dub_play_btn = QPushButton("▶ Play")
+        self._dub_play_btn.setToolTip("Play all dubbed audio starting from the current scene")
+        self._dub_play_btn.clicked.connect(self._dub_play_from_current)
 
         btn_export_word = QPushButton("📄 Export Word")
         btn_export_word.setToolTip("Export all dubbed text to a .docx file in the project output folder")
         btn_export_word.clicked.connect(self._dub_export_word)
 
-        # Spell-check language toggle
+        # Spell-check language toggle (IT / EN — no Off button; spell check always on)
         self._dub_spell_lang = "it"
         self._dub_spell_highlighters: dict = {}  # sid → _SpellHighlighter
         btn_spell_it = QPushButton("🇮🇹 IT")
         btn_spell_en = QPushButton("🇬🇧 EN")
-        btn_spell_off = QPushButton("Spell ✕")
-        for b in (btn_spell_it, btn_spell_en, btn_spell_off):
+        for b in (btn_spell_it, btn_spell_en):
             b.setFixedHeight(28)
-            b.setCheckable(True)
-        btn_spell_it.setChecked(True)
-        self._dub_spell_btns = {"it": btn_spell_it, "en": btn_spell_en, "off": btn_spell_off}
+        self._dub_spell_btns = {"it": btn_spell_it, "en": btn_spell_en}
         btn_spell_it.clicked.connect(lambda: self._dub_set_spell_lang("it"))
         btn_spell_en.clicked.connect(lambda: self._dub_set_spell_lang("en"))
-        btn_spell_off.clicked.connect(lambda: self._dub_set_spell_lang("off"))
+        self._dub_update_spell_btn_style()
 
         bar.addWidget(btn_load)
-        bar.addWidget(self._dub_all_btn)
         bar.addWidget(self._dub_save_btn)
+        bar.addWidget(self._dub_all_btn)
+        bar.addWidget(self._dub_play_btn)
         bar.addWidget(btn_export_word)
         bar.addStretch(1)
 
@@ -1449,7 +1480,6 @@ class MainWindow(QMainWindow):
 
         bar.addWidget(btn_spell_it)
         bar.addWidget(btn_spell_en)
-        bar.addWidget(btn_spell_off)
         root.addLayout(bar)
 
         # ── Find / Replace panel (hidden by default) ──────────────────────────
@@ -1588,7 +1618,8 @@ class MainWindow(QMainWindow):
         btn.setText(icon)
         btn.setStyleSheet(
             f"QPushButton {{ background:{bg}; color:{col}; border:1px solid {border}; "
-            f"border-radius:3px; font-size:14px; min-width:28px; min-height:28px; padding:0; }}"
+            f"border-radius:3px; font-size:14px; "
+            f"min-width:28px; max-width:28px; min-height:28px; max-height:28px; padding:0; }}"
             f"QPushButton:hover {{ background:#2A282F; }}"
         )
 
@@ -1882,7 +1913,12 @@ class MainWindow(QMainWindow):
                 self._dub_apply_card_state(s)
                 self._dub_mark_unsaved()
 
+            def _on_focus_in(event, s=sid):
+                self._dub_focused_sid = s
+                QPlainTextEdit.focusInEvent(ed, event)
+
             ed.textChanged.connect(_on_text_changed)
+            ed.focusInEvent = _on_focus_in
 
             cl.addWidget(ed)
             self._dub_editors[sid]      = ed
@@ -1905,6 +1941,8 @@ class MainWindow(QMainWindow):
             from PyQt6.QtGui import QShortcut, QKeySequence
             sc = QShortcut(QKeySequence("Ctrl+B"), self)
             sc.activated.connect(self._dub_goto_next_bookmark)
+            sc_spell = QShortcut(QKeySequence("Ctrl+Q"), self)
+            sc_spell.activated.connect(self._dub_reload_custom_words)
             self._dub_bm_shortcut_installed = True
 
         self._dub_status_label.setText(f"{len(scenes)} scene(s) loaded.")
@@ -1973,29 +2011,119 @@ class MainWindow(QMainWindow):
                 break
             parent = parent.parent()
 
+    def _dub_reload_custom_words(self) -> None:
+        """Ctrl+Q — reload the custom word list from disk and rehighlight all editors."""
+        _SpellHighlighter._custom_words = _SpellHighlighter._load_custom_words()
+        for hl in getattr(self, "_dub_spell_highlighters", {}).values():
+            if hl._checker is not None and _SpellHighlighter._custom_words:
+                hl._checker.word_frequency.load_words(_SpellHighlighter._custom_words)
+            hl.rehighlight()
+        count = len(_SpellHighlighter._custom_words)
+        self._dub_status_label.setText(f"Custom word list reloaded — {count} word(s).")
+
+    def _dub_update_spell_btn_style(self) -> None:
+        """Color the active IT/EN button; dim the inactive one."""
+        active_ss   = ("QPushButton { background:#2A5298; color:#FFFFFF; border:1px solid #4A72B8; "
+                       "border-radius:3px; font-size:12px; padding:0 6px; }"
+                       "QPushButton:hover { background:#3A63A8; }")
+        inactive_ss = ("QPushButton { background:#2A2830; color:#8E8B90; border:1px solid #3A3840; "
+                       "border-radius:3px; font-size:12px; padding:0 6px; }"
+                       "QPushButton:hover { background:#3A3640; }")
+        for key, btn in getattr(self, "_dub_spell_btns", {}).items():
+            btn.setStyleSheet(active_ss if key == self._dub_spell_lang else inactive_ss)
+
     def _dub_set_spell_lang(self, lang: str) -> None:
         self._dub_spell_lang = lang
-        # Update toggle button checked states
-        for key, btn in getattr(self, "_dub_spell_btns", {}).items():
-            btn.blockSignals(True)
-            btn.setChecked(key == lang)
-            btn.blockSignals(False)
+        self._dub_update_spell_btn_style()
         editors = getattr(self, "_dub_editors", {})
         hls = getattr(self, "_dub_spell_highlighters", {})
-        if lang == "off":
-            # Remove all highlighters
-            for hl in hls.values():
-                hl.setDocument(None)
-            self._dub_spell_highlighters = {}
-        else:
-            # Update existing or create new highlighters
-            for sid, ed in editors.items():
-                ed.blockSignals(True)
-                if sid in hls:
-                    hls[sid].set_language(lang)
-                else:
-                    hls[sid] = _SpellHighlighter(ed.document(), language=lang)
-                ed.blockSignals(False)
+        # Update existing or create new highlighters (spell check always on)
+        for sid, ed in editors.items():
+            ed.blockSignals(True)
+            if sid in hls:
+                hls[sid].set_language(lang)
+            else:
+                hls[sid] = _SpellHighlighter(ed.document(), language=lang)
+            ed.blockSignals(False)
+
+    def _dub_play_from_current(self) -> None:
+        """Play all dubbed audio files sequentially, starting from the focused scene."""
+        project = self.project_path_input.text().strip()
+        if not project:
+            return
+        audio_dir = os.path.join(project, "output", "audio")
+        editors = getattr(self, "_dub_editors", {})
+        if not editors:
+            return
+
+        all_sids = sorted(editors.keys())
+        start_sid = getattr(self, "_dub_focused_sid", all_sids[0])
+        # Collect existing audio files from start_sid onward
+        queue = [
+            os.path.join(audio_dir, f"scene_{sid:03d}.mp3")
+            for sid in all_sids
+            if sid >= start_sid and os.path.exists(os.path.join(audio_dir, f"scene_{sid:03d}.mp3"))
+        ]
+        if not queue:
+            self._dub_status_label.setText("No audio files found from this scene onward.")
+            return
+
+        self._dub_play_queue = queue
+        self._dub_play_index = 0
+        self._dub_play_btn.setEnabled(False)
+        self._dub_play_btn.setText("⏹ Stop")
+        self._dub_play_btn.clicked.disconnect()
+        self._dub_play_btn.clicked.connect(self._dub_stop_playback)
+        self._dub_advance_playback()
+
+    def _dub_advance_playback(self) -> None:
+        queue = getattr(self, "_dub_play_queue", [])
+        idx   = getattr(self, "_dub_play_index", 0)
+        if idx >= len(queue):
+            self._dub_stop_playback()
+            return
+        from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+        from PyQt6.QtCore import QUrl
+        path = queue[idx]
+        self._dub_play_index = idx + 1
+        # Scroll the corresponding card into view
+        try:
+            fname = os.path.basename(path)          # scene_003.mp3
+            sid = int(fname.split("_")[1].split(".")[0])
+            card = self._dub_cards.get(sid)
+            if card and hasattr(self, "_dub_scroll_area"):
+                self._dub_scroll_area.ensureWidgetVisible(card)
+            total = len(queue)
+            self._dub_status_label.setText(
+                f"Playing scene {sid}  ({idx + 1}/{total})"
+            )
+        except Exception:
+            pass
+        if not hasattr(self, "_dub_full_player") or self._dub_full_player is None:
+            self._dub_full_player = QMediaPlayer(self)
+            self._dub_full_ao = QAudioOutput(self)
+            self._dub_full_player.setAudioOutput(self._dub_full_ao)
+            self._dub_full_ao.setVolume(1.0)
+            self._dub_full_player.playbackStateChanged.connect(self._dub_on_playback_state)
+        self._dub_full_player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
+        self._dub_full_player.play()
+
+    def _dub_on_playback_state(self, state) -> None:
+        from PyQt6.QtMultimedia import QMediaPlayer
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self._dub_advance_playback()
+
+    def _dub_stop_playback(self) -> None:
+        if hasattr(self, "_dub_full_player") and self._dub_full_player:
+            self._dub_full_player.stop()
+            self._dub_full_player.playbackStateChanged.disconnect()
+            self._dub_full_player = None
+        self._dub_play_queue = []
+        self._dub_play_btn.setEnabled(True)
+        self._dub_play_btn.setText("▶ Play")
+        self._dub_play_btn.clicked.disconnect()
+        self._dub_play_btn.clicked.connect(self._dub_play_from_current)
+        self._dub_status_label.setText("Playback stopped.")
 
     def _dub_dubbing_status(self) -> str:
         """Compute overall dubbing status for the Dub All button.
@@ -2187,14 +2315,23 @@ class MainWindow(QMainWindow):
             return
         self._dub_all_queue = ids
         self._dub_all_total = len(ids)
+        # Track progress relative to ALL segments so the bar shows meaningful
+        # movement even when only a few segments remain.
+        self._dub_all_grand_total = len(self._dub_editors)
+        self._dub_all_already_done = self._dub_all_grand_total - self._dub_all_total
         self._dub_all_btn.setEnabled(False)
         self._dub_progress.setVisible(True)
-        self._dub_progress.setValue(0)
+        start_pct = int(self._dub_all_already_done / self._dub_all_grand_total * 100)
+        self._dub_progress.setValue(start_pct)
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
         self._dub_all_next(-1)
 
     def _dub_all_next(self, last_done_index: int) -> None:
         done = last_done_index + 1
         total = self._dub_all_total
+        grand_total = getattr(self, "_dub_all_grand_total", total)
+        already_done = getattr(self, "_dub_all_already_done", 0)
         if done >= total:
             self._dub_all_btn.setEnabled(True)
             self._dub_progress.setVisible(False)
@@ -2203,7 +2340,8 @@ class MainWindow(QMainWindow):
             self._dub_update_dub_btn()
             self._dub_status_label.setText(f"Dub All complete — {total} segment(s) synthesised.")
             return
-        self._dub_progress.setValue(int(done / total * 100))
+        pct = int((already_done + done) / grand_total * 100)
+        self._dub_progress.setValue(pct)
         sid = self._dub_all_queue[done]
         self._dub_preview_segment(sid, auto_next=done, silent=True)
 

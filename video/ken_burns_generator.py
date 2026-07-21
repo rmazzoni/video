@@ -121,14 +121,19 @@ class KenBurnsGenerator:
         clip = clip.with_fps(self.fps)
 
         output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}.mp4")
-        clip.write_videofile(
-            output_path,
-            codec="libx264",
-            audio=False,
-            logger=None,
-            ffmpeg_params=["-crf", "14", "-preset", "slow", "-tune", "film"],
-        )
-        clip.close()
+        try:
+            clip.write_videofile(
+                output_path,
+                codec="libx264",
+                audio=False,
+                logger=None,
+                ffmpeg_params=["-crf", "14", "-preset", "slow", "-tune", "film"],
+            )
+        finally:
+            clip.close()
+            del clip
+            del img_array
+
         return output_path
 
     # ---------------------------------------------------------
