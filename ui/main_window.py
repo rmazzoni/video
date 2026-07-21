@@ -1094,12 +1094,22 @@ class MainWindow(QMainWindow):
         if pixmap.isNull():
             return
 
-        screen = self.screen().availableGeometry()
-        img_max_w = int(screen.width()  * 0.60)
-        img_max_h = int(screen.height() * 0.45)
+        screen = self.screen()
+        if screen is None:
+            screen = self.app.primaryScreen() if hasattr(self, 'app') else None
+        if screen is None:
+            from PyQt6.QtWidgets import QApplication
+            screen = QApplication.primaryScreen()
+        screen_geom = screen.availableGeometry() if screen is not None else None
+        if screen_geom is None:
+            img_max_w, img_max_h = 800, 450
+        else:
+            img_max_w = int(screen_geom.width()  * 0.60)
+            img_max_h = int(screen_geom.height() * 0.45)
         scaled = pixmap.scaled(img_max_w, img_max_h,
                                Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
+
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Scene {scene_id}  —  {fname}")
@@ -2469,7 +2479,6 @@ class MainWindow(QMainWindow):
             self.pipeline_status_label.setText("Pipeline complete")
             self.pipeline_progress.setValue(100)
             self._append_log(f"Finished: {payload}")
-            QMessageBox.information(self, "Pipeline complete", f"Final output:\n{payload}")
             return
 
         if "canceled" in payload.lower():
