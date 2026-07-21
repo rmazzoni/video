@@ -77,7 +77,7 @@ class _SpellHighlighter(QSyntaxHighlighter):
     # Path to the custom-words file (resolved relative to this source file's
     # grandparent directory, i.e. the repo root → config/).
     _CUSTOM_WORDS_PATH = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "config", "spell_custom_words.txt",
     )
     _custom_words: list = []   # loaded once, shared by all instances
@@ -134,7 +134,8 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("AI Cinematic Video Pipeline")
-        self.resize(980, 680)
+        self.resize(1100, 680)
+        self.setMinimumWidth(1000)
         self.controller = PipelineController()
 
         central = QWidget()
@@ -1465,21 +1466,26 @@ class MainWindow(QMainWindow):
         btn_spell_en.clicked.connect(lambda: self._dub_set_spell_lang("en"))
         self._dub_update_spell_btn_style()
 
+        btn_find = QPushButton("🔍 Find")
+        btn_find.setToolTip("Open Find / Replace panel  (Ctrl+F)")
+        btn_find.setFixedHeight(28)
+        btn_find.clicked.connect(self._dub_toggle_find_panel)
+
+        btn_spell_reload = QPushButton("↺ Words")
+        btn_spell_reload.setFixedHeight(28)
+        btn_spell_reload.setToolTip("Reload custom word list from disk (spell_custom_words.txt)")
+        btn_spell_reload.clicked.connect(self._dub_reload_custom_words)
+
         bar.addWidget(btn_load)
         bar.addWidget(self._dub_save_btn)
         bar.addWidget(self._dub_all_btn)
         bar.addWidget(self._dub_play_btn)
         bar.addWidget(btn_export_word)
-        bar.addStretch(1)
-
-        btn_find = QPushButton("🔍 Find")
-        btn_find.setToolTip("Open Find / Replace panel  (Ctrl+F)")
-        btn_find.setFixedHeight(28)
-        btn_find.clicked.connect(self._dub_toggle_find_panel)
         bar.addWidget(btn_find)
-
         bar.addWidget(btn_spell_it)
         bar.addWidget(btn_spell_en)
+        bar.addWidget(btn_spell_reload)
+        bar.addStretch(1)   # pushes status label to expand on the left
         root.addLayout(bar)
 
         # ── Find / Replace panel (hidden by default) ──────────────────────────
@@ -1941,8 +1947,7 @@ class MainWindow(QMainWindow):
             from PyQt6.QtGui import QShortcut, QKeySequence
             sc = QShortcut(QKeySequence("Ctrl+B"), self)
             sc.activated.connect(self._dub_goto_next_bookmark)
-            sc_spell = QShortcut(QKeySequence("Ctrl+Q"), self)
-            sc_spell.activated.connect(self._dub_reload_custom_words)
+
             self._dub_bm_shortcut_installed = True
 
         self._dub_status_label.setText(f"{len(scenes)} scene(s) loaded.")
@@ -2012,12 +2017,22 @@ class MainWindow(QMainWindow):
             parent = parent.parent()
 
     def _dub_reload_custom_words(self) -> None:
-        """Ctrl+Q — reload the custom word list from disk and rehighlight all editors."""
+        """Reload the custom word list from disk and rehighlight all editors."""
         _SpellHighlighter._custom_words = _SpellHighlighter._load_custom_words()
-        for hl in getattr(self, "_dub_spell_highlighters", {}).values():
+        editors = getattr(self, "_dub_editors", {})
+        for sid, hl in getattr(self, "_dub_spell_highlighters", {}).items():
             if hl._checker is not None and _SpellHighlighter._custom_words:
                 hl._checker.word_frequency.load_words(_SpellHighlighter._custom_words)
-            hl.rehighlight()
+            # Block the editor's signals so rehighlight() cannot trigger
+            # _on_text_changed and falsely mark every scene as dirty.
+            ed = editors.get(sid)
+            if ed:
+                ed.blockSignals(True)
+            try:
+                hl.rehighlight()
+            finally:
+                if ed:
+                    ed.blockSignals(False)
         count = len(_SpellHighlighter._custom_words)
         self._dub_status_label.setText(f"Custom word list reloaded — {count} word(s).")
 
@@ -2115,13 +2130,21 @@ class MainWindow(QMainWindow):
 
     def _dub_stop_playback(self) -> None:
         if hasattr(self, "_dub_full_player") and self._dub_full_player:
+            # Disconnect BEFORE stop() — stop() emits playbackStateChanged(Stopped)
+            # which would otherwise trigger _dub_advance_playback and start the next clip.
+            try:
+                self._dub_full_player.playbackStateChanged.disconnect()
+            except Exception:
+                pass
             self._dub_full_player.stop()
-            self._dub_full_player.playbackStateChanged.disconnect()
             self._dub_full_player = None
         self._dub_play_queue = []
         self._dub_play_btn.setEnabled(True)
         self._dub_play_btn.setText("▶ Play")
-        self._dub_play_btn.clicked.disconnect()
+        try:
+            self._dub_play_btn.clicked.disconnect()
+        except Exception:
+            pass
         self._dub_play_btn.clicked.connect(self._dub_play_from_current)
         self._dub_status_label.setText("Playback stopped.")
 
