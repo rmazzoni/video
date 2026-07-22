@@ -331,7 +331,7 @@ class PipelineWorker(QObject):
                     from video.ken_burns_generator import KenBurnsGenerator
                     default_dur = float(self.config.get("ken_burns_duration", 5.0))
                     current_motion = str(self.config.get("ken_burns_motion", "static"))
-                    current_fps    = int(self.config.get("fps", 24))
+                    current_fps    = 24  # Ken Burns always renders at 24fps for smooth motion
 
                     # ── Parameter sidecar ────────────────────────────────────
                     # Store the generation params used last time so that a
@@ -348,11 +348,10 @@ class PipelineWorker(QObject):
                     cur_params = {"motion_style": current_motion, "fps": current_fps,
                                   "engine": "ken_burns"}
                     params_changed = (prev_params != cur_params)
-                    if params_changed:
-                        self.log.emit(
-                            f"Ken Burns params changed ({prev_params} → {cur_params}): "
-                            "all clips will be regenerated."
-                        )
+                    self.log.emit(
+                        f"Ken Burns clip engine — motion_style={current_motion!r}  fps={current_fps}"
+                        + ("  ⚠ params changed, all clips will be regenerated" if params_changed else "")
+                    )
 
                     gen_kb = KenBurnsGenerator(
                         output_dir=out_clips_dir,

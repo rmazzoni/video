@@ -17,14 +17,14 @@ from PIL import Image
 # Available motion styles: (zoom_start, zoom_end, pan_x, pan_y)
 # pan values are fractions of the image width/height to shift across the clip
 _MOTIONS = [
-    {"name": "zoom_in",       "zoom_start": 1.0,   "zoom_end": 1.08,  "pan_x": 0.0,   "pan_y": 0.0},
-    {"name": "zoom_out",      "zoom_start": 1.08,  "zoom_end": 1.0,   "pan_x": 0.0,   "pan_y": 0.0},
-    {"name": "pan_right",     "zoom_start": 1.05,  "zoom_end": 1.05,  "pan_x": 0.03,  "pan_y": 0.0},
-    {"name": "pan_left",      "zoom_start": 1.05,  "zoom_end": 1.05,  "pan_x":-0.03,  "pan_y": 0.0},
-    {"name": "pan_up",        "zoom_start": 1.05,  "zoom_end": 1.05,  "pan_x": 0.0,   "pan_y":-0.02},
-    {"name": "pan_down",      "zoom_start": 1.05,  "zoom_end": 1.05,  "pan_x": 0.0,   "pan_y": 0.02},
-    {"name": "zoom_pan_right","zoom_start": 1.0,   "zoom_end": 1.07,  "pan_x": 0.02,  "pan_y": 0.0},
-    {"name": "zoom_pan_left", "zoom_start": 1.0,   "zoom_end": 1.07,  "pan_x":-0.02,  "pan_y": 0.0},
+    {"name": "zoom_in",       "zoom_start": 1.0,   "zoom_end": 1.35,  "pan_x": 0.0,   "pan_y": 0.0},
+    {"name": "zoom_out",      "zoom_start": 1.35,  "zoom_end": 1.0,   "pan_x": 0.0,   "pan_y": 0.0},
+    {"name": "pan_right",     "zoom_start": 1.15,  "zoom_end": 1.15,  "pan_x": 0.08,  "pan_y": 0.0},
+    {"name": "pan_left",      "zoom_start": 1.15,  "zoom_end": 1.15,  "pan_x":-0.08,  "pan_y": 0.0},
+    {"name": "zoom_pan_right","zoom_start": 1.0,   "zoom_end": 1.25,  "pan_x": 0.07,  "pan_y": 0.0},
+    {"name": "zoom_pan_left", "zoom_start": 1.0,   "zoom_end": 1.25,  "pan_x":-0.07,  "pan_y": 0.0},
+    {"name": "zoom_out_right","zoom_start": 1.35,  "zoom_end": 1.0,   "pan_x": 0.06,  "pan_y": 0.0},
+    {"name": "zoom_out_left", "zoom_start": 1.35,  "zoom_end": 1.0,   "pan_x":-0.06,  "pan_y": 0.0},
 ]
 
 
@@ -77,60 +77,101 @@ class KenBurnsGenerator:
         out_w, out_h = self._output_size(img_w, img_h)
 
         if self.motion_style == "static":
-            # Resize once; every frame is identical
-            static_frame = np.array(
-                Image.fromarray(img_array).resize((out_w, out_h), Image.LANCZOS)
-            )
-
-            def make_frame(_t: float) -> np.ndarray:
-                return static_frame
-        else:
-            rng = random.Random(self.seed if self.seed is not None else scene_id)
-            motion = rng.choice(_MOTIONS)
-
-            zoom_start = motion["zoom_start"]
-            zoom_end   = motion["zoom_end"]
-            pan_x      = motion["pan_x"]
-            pan_y      = motion["pan_y"]
-
-            def _ease(t: float) -> float:
-                return t * t * (3 - 2 * t)
-
-            def make_frame(t: float) -> np.ndarray:
-                progress = _ease(t / self.duration)
-                zoom = zoom_start + (zoom_end - zoom_start) * progress
-                crop_w = max(1.0, min(img_w / zoom, img_w))
-                crop_h = max(1.0, min(img_h / zoom, img_h))
-                cx = img_w / 2 + pan_x * img_w * progress
-                cy = img_h / 2 + pan_y * img_h * progress
-                x1 = max(0.0, min(cx - crop_w / 2, img_w - crop_w))
-                y1 = max(0.0, min(cy - crop_h / 2, img_h - crop_h))
-                xi, yi = round(x1), round(y1)
-                cw, ch = round(crop_w), round(crop_h)
-                xi = max(0, min(xi, img_w - cw))
-                yi = max(0, min(yi, img_h - ch))
-                crop = img_array[yi:yi+ch, xi:xi+cw]
-                return np.array(
-                    Image.fromarray(crop).resize((out_w, out_h), Image.LANCZOS)
+            # For a perfectly still clip bypass MoviePy entirely and ask ffmpeg
+            # to loop a single JPEG frame.  There are zero inter-frames, so
+            # there is no motion estimation, no deblocking smear and no codec
+            # shimmer — the image is bit-identical across the whole clip.
+            import subprocess, tempfile as _tf
+            still = Image.fromarray(img_array).resize((out_w, out_h), Image.LANCZOS)
+            with _tf.NamedTemporaryFile(suffix=".jpg", delete=False) as _tmp:
+                tmp_path = _tmp.name
+            try:
+                still.save(tmp_path, "JPEG", quality=95)
+                output_path = os.path.join(
+                    self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4"
                 )
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-loop", "1",
+                        "-i", tmp_path,
+                        "-t", str(round(self.duration, 3)),
+                        "-c:v", "libx264",
+                        "-tune", "stillimage",
+                        "-crf", "12",
+                        "-preset", "slow",
+                        "-pix_fmt", "yuv420p",
+                        "-r", str(self.fps),
+                        output_path,
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+            del img_array
+            return output_path
 
-        clip = VideoClip(make_frame, duration=self.duration)
-        clip = clip.with_fps(self.fps)
+        # ── Animated (auto) mode — ffmpeg zoompan filter ─────────────────────
+        # Mix global seed with scene_id so each scene gets a different motion
+        rng = random.Random((self.seed if self.seed is not None else 0) ^ (scene_id * 2654435761))
+        motion = rng.choice(_MOTIONS)
 
+        zoom_start = motion["zoom_start"]
+        zoom_end   = motion["zoom_end"]
+        pan_x      = motion["pan_x"]
+        pan_y      = motion["pan_y"]
+
+        import subprocess, tempfile as _tf
+
+        out_w, out_h = self._output_size(img_w, img_h)
+        # Save still as temp JPEG (same as static branch)
+        still = Image.fromarray(img_array).resize((out_w, out_h), Image.LANCZOS)
+        with _tf.NamedTemporaryFile(suffix=".jpg", delete=False) as _tmp:
+            tmp_path = _tmp.name
         output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4")
+        N = max(2, round(self.duration * self.fps))
+        # Linear zoom expression (ffmpeg zoompan 'on' = 1-based frame number)
+        denom = f"max({N}-1,1)"
+        z_expr  = f"{zoom_start}+({zoom_end}-{zoom_start})*(on-1)/{denom}"
+        # x,y: crop-window top-left in scaled image (iw=out_w after scale step)
+        # center shifts by pan fraction of image width/height
+        cx_expr = f"iw*(0.5+({pan_x})*(on-1)/{denom})"
+        cy_expr = f"ih*(0.5+({pan_y})*(on-1)/{denom})"
+        x_expr  = f"max(0,min({cx_expr}-iw/zoom/2,iw-iw/zoom))"
+        y_expr  = f"max(0,min({cy_expr}-ih/zoom/2,ih-ih/zoom))"
+        vf = (
+            f"scale={out_w}:{out_h},"
+            f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
+            f":d={N}:s={out_w}x{out_h}:fps={self.fps}"
+        )
         try:
-            clip.write_videofile(
-                output_path,
-                codec="libx264",
-                audio=False,
-                logger=None,
-                ffmpeg_params=["-crf", "14", "-preset", "slow", "-tune", "film"],
+            still.save(tmp_path, "JPEG", quality=95)
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-loop", "1", "-i", tmp_path,
+                    "-vf", vf,
+                    "-t", str(round(self.duration, 3)),
+                    "-c:v", "libx264",
+                    "-crf", "14",
+                    "-preset", "fast",
+                    "-pix_fmt", "yuv420p",
+                    "-r", str(self.fps),
+                    output_path,
+                ],
+                check=True,
+                capture_output=True,
             )
         finally:
-            clip.close()
-            del clip
-            del img_array
-
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+        del img_array
         return output_path
 
     # ---------------------------------------------------------
