@@ -1110,6 +1110,12 @@ class MainWindow(QMainWindow):
         _load(start_idx)
         dlg.exec()
 
+        # Auto-save selections after the viewer closes (X button or Esc) so
+        # that any checkbox changes made inside the viewer are persisted to
+        # lightbox_selections.yaml immediately — without requiring the user
+        # to manually click the Save button afterwards.
+        self._save_lightbox_selections()
+
     def _open_draft_zoom_dialog(self, image_path: str) -> None:
         """Zoom dialog for a draft image: shows zoomed image, narration text (read-only),
         editable prompt and a Save / Redo button that regenerates just that image."""
@@ -2644,10 +2650,37 @@ class MainWindow(QMainWindow):
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
 
+    @staticmethod
+    def _flush_cuda_main_thread() -> None:
+        """
+        Called from the main thread (via QTimer) after a GPU pipeline stage
+        completes.  Forces Python GC and synchronises the CUDA device so that
+        any deferred tensor destructions from the worker thread are finalised
+        here in the main thread — preventing the GPU from showing 100 %
+        utilisation after image generation has visually finished.
+        """
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                gc.collect()
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+
     def _on_pipeline_finished(self, success: bool, payload: str) -> None:
         for btn in getattr(self, "_stage_btns", {}).values():
             btn.setEnabled(True)
         self.btn_cancel_pipeline.setEnabled(False)
+
+        # Flush any leftover CUDA work from the worker thread on the main
+        # thread so the GPU drops back to idle without waiting for a window
+        # focus event to trigger the event-loop flush.
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._flush_cuda_main_thread)
 
         # Auto-refresh the preview grid whenever preview_images or final_images completes.
         if success and payload and os.path.isdir(payload) and (
@@ -2655,12 +2688,10 @@ class MainWindow(QMainWindow):
         ):
             # Defer so we never rebuild the grid inside a nested event-loop
             # (e.g. while a zoom dialog is still open).
-            from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, self._refresh_draft_grid)
 
         # Auto-refresh the Lightbox tab when final_images completes.
         if success and payload and os.path.isdir(payload) and "lightbox" in payload:
-            from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, self._refresh_lightbox)
 
         # After a sync-triggered prompts run, refresh the Dubbing tab

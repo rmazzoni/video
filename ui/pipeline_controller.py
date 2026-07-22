@@ -733,7 +733,7 @@ class PipelineWorker(QObject):
                     default_dur = float(self.config.get("ken_burns_duration", 5.0))
                     gen_kb = KenBurnsGenerator(
                         output_dir=clips_dir,
-                        fps=int(self.config.get("fps", 24)),
+                        fps=24,   # Ken Burns always renders at 24 fps; config "fps" is the SVD model rate
                         duration=default_dur,
                         seed=int(self.config.get("seed", 42)),
                         motion_style=str(self.config.get("ken_burns_motion", "auto")),

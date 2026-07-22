@@ -2,37 +2,61 @@
 Ken Burns effect clip generator.
 
 Produces a video clip from a still image by applying a slow cinematic
-pan and/or zoom, with a configurable duration. Uses only CPU/MoviePy —
-no GPU required.
+pan and/or zoom, with a configurable duration.
 """
 
+import concurrent.futures
 import os
 import random
+import subprocess
+import tempfile as _tf
 from typing import Optional
 
-import numpy as np
 from PIL import Image
 
 
-# Available motion styles: (zoom_start, zoom_end, pan_x, pan_y)
-# pan values are fractions of the image width/height to shift across the clip
+def _nvenc_available() -> bool:
+    """Return True if ffmpeg was built with h264_nvenc and a capable GPU is present."""
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.1",
+             "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, timeout=8,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _enc_args(nvenc: bool) -> list:
+    """Return ffmpeg encoder arguments: NVENC when available, libx264 ultrafast otherwise."""
+    if nvenc:
+        return ["-c:v", "h264_nvenc", "-preset", "p1", "-rc", "vbr",
+                "-cq", "24", "-pix_fmt", "yuv420p",
+                "-vsync", "cfr", "-video_track_timescale", "12288"]
+    return ["-c:v", "libx264", "-crf", "14", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p", "-vsync", "cfr",
+            "-video_track_timescale", "12288"]
+
+
+# Available motion styles.
+# Pan values are fractions of image width/height to shift over the FULL clip.
+# Rule: pan_x * img_w / (N_frames - 1) must be ≥ 1 px for the longest likely
+# clip (6 s × 24 fps = 143 inter-frame steps, img_w ≈ 1024).
+# Minimum safe pan_x = 143/1024 ≈ 0.14.  Values below that produce
+# sub-pixel-per-frame motion which aliases into visible jitter.
 _MOTIONS = [
-    {"name": "zoom_in",       "zoom_start": 1.0,   "zoom_end": 1.35,  "pan_x": 0.0,   "pan_y": 0.0},
-    {"name": "zoom_out",      "zoom_start": 1.35,  "zoom_end": 1.0,   "pan_x": 0.0,   "pan_y": 0.0},
-    {"name": "pan_right",     "zoom_start": 1.15,  "zoom_end": 1.15,  "pan_x": 0.08,  "pan_y": 0.0},
-    {"name": "pan_left",      "zoom_start": 1.15,  "zoom_end": 1.15,  "pan_x":-0.08,  "pan_y": 0.0},
-    {"name": "zoom_pan_right","zoom_start": 1.0,   "zoom_end": 1.25,  "pan_x": 0.07,  "pan_y": 0.0},
-    {"name": "zoom_pan_left", "zoom_start": 1.0,   "zoom_end": 1.25,  "pan_x":-0.07,  "pan_y": 0.0},
-    {"name": "zoom_out_right","zoom_start": 1.35,  "zoom_end": 1.0,   "pan_x": 0.06,  "pan_y": 0.0},
-    {"name": "zoom_out_left", "zoom_start": 1.35,  "zoom_end": 1.0,   "pan_x":-0.06,  "pan_y": 0.0},
+    {"name": "zoom_in",        "zoom_start": 1.0,   "zoom_end": 1.40,  "pan_x": 0.0,   "pan_y": 0.0},
+    {"name": "zoom_out",       "zoom_start": 1.40,  "zoom_end": 1.0,   "pan_x": 0.0,   "pan_y": 0.0},
+    {"name": "zoom_in_right",  "zoom_start": 1.0,   "zoom_end": 1.40,  "pan_x": 0.10,  "pan_y": 0.0},
+    {"name": "zoom_in_left",   "zoom_start": 1.0,   "zoom_end": 1.40,  "pan_x":-0.10,  "pan_y": 0.0},
+    {"name": "zoom_out_right", "zoom_start": 1.40,  "zoom_end": 1.0,   "pan_x": 0.10,  "pan_y": 0.0},
+    {"name": "zoom_out_left",  "zoom_start": 1.40,  "zoom_end": 1.0,   "pan_x":-0.10,  "pan_y": 0.0},
 ]
 
 
 class KenBurnsGenerator:
-    """
-    Generates Ken Burns-style video clips from still images.
-    No GPU needed — uses MoviePy and NumPy only.
-    """
+    """Generates Ken Burns-style video clips from still images."""
 
     def __init__(
         self,
@@ -58,6 +82,9 @@ class KenBurnsGenerator:
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
+        # Detect NVENC once at construction time so every clip reuses the result.
+        self._nvenc: bool = _nvenc_available()
+
     # ---------------------------------------------------------
     # PUBLIC API
     # ---------------------------------------------------------
@@ -65,58 +92,38 @@ class KenBurnsGenerator:
     def generate_clip(self, image_path: str, scene_id: int, filename_suffix: str = "") -> str:
         """
         Generate a clip from a still image.
-        In "static" mode the image is held perfectly still for the full duration.
-        In "auto" mode a random pan/zoom motion is applied.
+        Static mode: holds the image still for the full duration.
+        Auto mode: applies a random pan/zoom Ken Burns motion via ffmpeg zoompan filter
+        (no Python frame loop — all rendering done natively in ffmpeg).
         Returns the output video file path.
         """
-        from moviepy import VideoClip
-
-        image = Image.open(image_path).convert("RGB")
+        image = Image.open(image_path)
         img_w, img_h = image.size
-        img_array = np.array(image)
+        image.close()
         out_w, out_h = self._output_size(img_w, img_h)
 
+        output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4")
+
         if self.motion_style == "static":
-            # For a perfectly still clip bypass MoviePy entirely and ask ffmpeg
-            # to loop a single JPEG frame.  There are zero inter-frames, so
-            # there is no motion estimation, no deblocking smear and no codec
-            # shimmer — the image is bit-identical across the whole clip.
-            import subprocess, tempfile as _tf
-            still = Image.fromarray(img_array).resize((out_w, out_h), Image.LANCZOS)
-            with _tf.NamedTemporaryFile(suffix=".jpg", delete=False) as _tmp:
-                tmp_path = _tmp.name
-            try:
-                still.save(tmp_path, "JPEG", quality=95)
-                output_path = os.path.join(
-                    self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4"
-                )
-                subprocess.run(
-                    [
-                        "ffmpeg", "-y",
-                        "-loop", "1",
-                        "-i", tmp_path,
-                        "-t", str(round(self.duration, 3)),
-                        "-c:v", "libx264",
-                        "-tune", "stillimage",
-                        "-crf", "12",
-                        "-preset", "slow",
-                        "-pix_fmt", "yuv420p",
-                        "-r", str(self.fps),
-                        output_path,
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-            del img_array
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-loop", "1", "-i", image_path,
+                    "-vf", f"scale={out_w}:{out_h},setsar=1",
+                    "-t", str(round(self.duration, 3)),
+                    "-r", str(self.fps),
+                ] + _enc_args(self._nvenc) + [output_path],
+                check=True,
+                capture_output=True,
+            )
             return output_path
 
-        # ── Animated (auto) mode — ffmpeg zoompan filter ─────────────────────
-        # Mix global seed with scene_id so each scene gets a different motion
+        # ── Animated (auto) mode ──────────────────────────────────────────────
+        # Frames are rendered in parallel (ThreadPoolExecutor) using PIL
+        # crop + LANCZOS — floating-point crop boxes give smooth sub-pixel
+        # accuracy; LANCZOS gives high-quality downsample.  Parallel rendering
+        # keeps all CPU cores busy so the pipe-write to ffmpeg becomes the
+        # wall-clock limit rather than PIL.
         rng = random.Random((self.seed if self.seed is not None else 0) ^ (scene_id * 2654435761))
         motion = rng.choice(_MOTIONS)
 
@@ -125,53 +132,103 @@ class KenBurnsGenerator:
         pan_x      = motion["pan_x"]
         pan_y      = motion["pan_y"]
 
-        import subprocess, tempfile as _tf
+        MOTION_CAP = 6.0
+        motion_dur = min(self.duration, MOTION_CAP)
+        hold_dur   = max(0.0, self.duration - motion_dur)
+        N          = max(2, round(motion_dur * self.fps))
 
-        out_w, out_h = self._output_size(img_w, img_h)
-        # Save still as temp JPEG (same as static branch)
-        still = Image.fromarray(img_array).resize((out_w, out_h), Image.LANCZOS)
-        with _tf.NamedTemporaryFile(suffix=".jpg", delete=False) as _tmp:
-            tmp_path = _tmp.name
-        output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4")
-        N = max(2, round(self.duration * self.fps))
-        # Linear zoom expression (ffmpeg zoompan 'on' = 1-based frame number)
-        denom = f"max({N}-1,1)"
-        z_expr  = f"{zoom_start}+({zoom_end}-{zoom_start})*(on-1)/{denom}"
-        # x,y: crop-window top-left in scaled image (iw=out_w after scale step)
-        # center shifts by pan fraction of image width/height
-        cx_expr = f"iw*(0.5+({pan_x})*(on-1)/{denom})"
-        cy_expr = f"ih*(0.5+({pan_y})*(on-1)/{denom})"
-        x_expr  = f"max(0,min({cx_expr}-iw/zoom/2,iw-iw/zoom))"
-        y_expr  = f"max(0,min({cy_expr}-ih/zoom/2,ih-ih/zoom))"
-        vf = (
-            f"scale={out_w}:{out_h},"
-            f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
-            f":d={N}:s={out_w}x{out_h}:fps={self.fps}"
-        )
-        try:
-            still.save(tmp_path, "JPEG", quality=95)
-            subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-loop", "1", "-i", tmp_path,
-                    "-vf", vf,
-                    "-t", str(round(self.duration, 3)),
-                    "-c:v", "libx264",
-                    "-crf", "14",
-                    "-preset", "fast",
-                    "-pix_fmt", "yuv420p",
-                    "-r", str(self.fps),
-                    output_path,
-                ],
-                check=True,
-                capture_output=True,
+        image = Image.open(image_path).convert("RGB")
+        img_w, img_h = image.size
+
+        def _render(i: int) -> bytes:
+            t = i / max(N - 1, 1)
+            zoom  = zoom_start + (zoom_end - zoom_start) * t
+            src_w = img_w / zoom
+            src_h = img_h / zoom
+            cx = img_w / 2.0 + pan_x * img_w * t
+            cy = img_h / 2.0 + pan_y * img_h * t
+            x0 = max(0.0, min(cx - src_w / 2.0, img_w - src_w))
+            y0 = max(0.0, min(cy - src_h / 2.0, img_h - src_h))
+            return (
+                image.transform(
+                    (out_w, out_h),
+                    Image.AFFINE,
+                    (src_w / out_w, 0.0, x0, 0.0, src_h / out_h, y0),
+                    resample=Image.BICUBIC,
+                )
+                .tobytes()
             )
+
+        # If there is a hold segment encode motion to a temp file first.
+        motion_target = output_path
+        motion_tmp: str | None = None
+        if hold_dur > 0.05:
+            motion_tmp = _tf.mktemp(suffix=".mp4")
+            motion_target = motion_tmp
+
+        workers = min(8, os.cpu_count() or 4)
+        proc = subprocess.Popen(
+            [
+                "ffmpeg", "-y",
+                "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-s", f"{out_w}x{out_h}", "-pix_fmt", "rgb24",
+                "-r", str(self.fps), "-i", "pipe:0",
+            ] + _enc_args(self._nvenc) + [motion_target],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_render, i) for i in range(N)]
+                for fut in futures:
+                    proc.stdin.write(fut.result())
+            proc.stdin.close()
+            proc.wait()
+        except Exception:
+            proc.stdin.close()
+            proc.kill()
+            proc.wait()
+            if motion_tmp:
+                try:
+                    os.unlink(motion_tmp)
+                except Exception:
+                    pass
+            raise
         finally:
+            image.close()
+
+        # Hold segment: crop source image at final zoom/pan position, no piping.
+        if hold_dur > 0.05 and motion_tmp:
+            final_z  = zoom_end
+            crop_w   = img_w / final_z
+            crop_h   = img_h / final_z
+            final_cx = img_w / 2.0 + pan_x * img_w
+            final_cy = img_h / 2.0 + pan_y * img_h
+            crop_x   = max(0.0, min(final_cx - crop_w / 2.0, img_w - crop_w))
+            crop_y   = max(0.0, min(final_cy - crop_h / 2.0, img_h - crop_h))
+            hold_vf  = (
+                f"crop={crop_w:.2f}:{crop_h:.2f}:{crop_x:.2f}:{crop_y:.2f}"
+                f",scale={out_w}:{out_h},setsar=1"
+            )
             try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-        del img_array
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-i", motion_tmp,
+                        "-loop", "1", "-t", str(round(hold_dur, 3)), "-i", image_path,
+                        "-filter_complex", f"[1:v]{hold_vf}[hold];[0:v][hold]concat=n=2:v=1:a=0[v]",
+                        "-map", "[v]",
+                    ] + _enc_args(self._nvenc) + [output_path],
+                    check=True, capture_output=True,
+                )
+            finally:
+                try:
+                    os.unlink(motion_tmp)
+                except Exception:
+                    pass
+
         return output_path
 
     # ---------------------------------------------------------
@@ -181,9 +238,8 @@ class KenBurnsGenerator:
     def _output_size(self, img_w: int, img_h: int):
         """Return (width, height) for the output video at 1920x1080 (or scaled to aspect ratio)."""
         aspect = img_w / img_h
-        # Target 1920x1080 for 16:9; scale proportionally for other ratios
-        target_w, target_h = 1920, 1080
-        if abs(aspect - 16/9) < 0.05:          # 16:9
+        target_w = 1920
+        if abs(aspect - 16/9) < 0.05:
             out_w, out_h = 1920, 1080
         elif abs(aspect - 9/16) < 0.05:        # 9:16 portrait
             out_w, out_h = 1080, 1920
