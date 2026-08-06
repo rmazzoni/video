@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QCheckBox,
 )
-from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen
+from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect
 from ui.pipeline_controller import PipelineController
 
@@ -74,29 +74,63 @@ class _ClickableImageLabel(QLabel):
 class _SpellHighlighter(QSyntaxHighlighter):
     """Underlines misspelled words in red using pyspellchecker."""
 
+    _ITALIAN_ELISIONS = {
+        "all", "bell", "c", "coll", "d", "dall", "dell", "gl", "l",
+        "m", "n", "nell", "quest", "quell", "s", "senz", "sott", "sull", "t",
+        "un",
+    }
+
     # Path to the custom-words file (resolved relative to this source file's
     # grandparent directory, i.e. the repo root → config/).
     _CUSTOM_WORDS_PATH = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "config", "spell_custom_words.txt",
     )
-    _custom_words: list = []   # loaded once, shared by all instances
+    _custom_words: set[str] = set()   # loaded once, shared by all instances
 
     @classmethod
-    def _load_custom_words(cls) -> list:
-        """Read the custom word list from disk (# comments stripped, blank lines skipped)."""
-        words: list = []
+    def _load_custom_words(cls) -> set[str]:
+        """Read the custom word list and remove duplicate entries in place."""
+        words: set[str] = set()
         try:
-            with open(cls._CUSTOM_WORDS_PATH, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    word = line.split("#")[0].strip()
-                    if word:
-                        words.append(word.lower())
+            path = Path(cls._CUSTOM_WORDS_PATH)
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+            cleaned_lines: list[str] = []
+            for line in lines:
+                word = line.split("#", 1)[0].strip()
+                normalized = word.casefold()
+                if word and normalized in words:
+                    continue
+                cleaned_lines.append(line)
+                if word:
+                    words.add(normalized)
+            if cleaned_lines != lines:
+                path.write_text("\n".join(cleaned_lines).rstrip() + "\n", encoding="utf-8")
         except FileNotFoundError:
             pass
         except Exception:
             pass
         return words
+
+    @classmethod
+    def add_custom_word(cls, word: str) -> bool:
+        """Append a word to the custom dictionary; return False if it already exists."""
+        normalized = word.strip().casefold()
+        cls._custom_words = cls._load_custom_words()
+        if not normalized or normalized in cls._custom_words:
+            return False
+        path = Path(cls._CUSTOM_WORDS_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        needs_newline = path.exists() and path.stat().st_size > 0
+        with path.open("a", encoding="utf-8") as fh:
+            if needs_newline:
+                with path.open("rb") as source:
+                    source.seek(-1, os.SEEK_END)
+                    if source.read(1) not in (b"\n", b"\r"):
+                        fh.write("\n")
+            fh.write(word.strip() + "\n")
+        cls._custom_words.add(normalized)
+        return True
 
     def __init__(self, parent, language: str = "it"):
         super().__init__(parent)
@@ -123,10 +157,17 @@ class _SpellHighlighter(QSyntaxHighlighter):
         if not self._checker or not text.strip():
             return
         import re
-        for m in re.finditer(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", text):
+        for m in re.finditer(r"[A-Za-zÀ-ÖØ-öø-ÿ]+(?:['’][A-Za-zÀ-ÖØ-öø-ÿ]+)?", text):
             word = m.group()
-            if self._checker.unknown([word]):
-                self.setFormat(m.start(), len(word), self._fmt)
+            parts = re.split(r"['’]", word, maxsplit=1)
+            checked_word = word
+            offset = 0
+            if len(parts) == 2 and parts[0].casefold() in self._ITALIAN_ELISIONS:
+                checked_word = parts[1]
+                offset = len(parts[0]) + 1
+            if (checked_word.casefold() not in self._custom_words
+                    and self._checker.unknown([checked_word])):
+                self.setFormat(m.start() + offset, len(checked_word), self._fmt)
 
 
 def _load_thumbnail(path: str, w: int, h: int) -> "QPixmap":
@@ -1181,6 +1222,11 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Scene {scene_id}  —  {fname}")
         dlg.setModal(True)
+        # WA_DeleteOnClose ensures Qt destroys the C++ QDialog object when it
+        # closes, rather than letting it accumulate as a hidden child of
+        # MainWindow.  Without this, repeated zoom sessions pile up dead
+        # QDialog instances which can eventually cause a segfault.
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dlg.setMinimumWidth(max(scaled.width(), 620))
         dlg.setStyleSheet(
             "QDialog { background:#1D1B20; }"
@@ -1310,7 +1356,10 @@ class MainWindow(QMainWindow):
             dlg.accept()
             # Chain: run preview_images, then automatically run preview_clips after.
             def _chain(success: bool, payload: str):
-                self.controller.pipeline_finished.disconnect(_chain)
+                try:
+                    self.controller.pipeline_finished.disconnect(_chain)
+                except Exception:
+                    return  # already disconnected (e.g. button double-clicked)
                 if success:
                     self.run_stage("preview_clips")
             self.controller.pipeline_finished.connect(_chain)
@@ -1939,6 +1988,7 @@ class MainWindow(QMainWindow):
             ed.setPlaceholderText("Enter dubbed / translated text here…")
             ed.setMinimumHeight(70)
             ed.setMaximumHeight(160)
+            ed.setCursorWidth(2)
             ed.setStyleSheet(
                 "QPlainTextEdit { background:#1D1B20; color:#E6E1E5; "
                 "border:1px solid #36343B; border-radius:2px; padding:4px; "
@@ -1953,12 +2003,16 @@ class MainWindow(QMainWindow):
                 self._dub_apply_card_state(s)
                 self._dub_mark_unsaved()
 
-            def _on_focus_in(event, s=sid):
+            def _on_focus_in(event, s=sid, e=ed):
                 self._dub_focused_sid = s
-                QPlainTextEdit.focusInEvent(ed, event)
+                QPlainTextEdit.focusInEvent(e, event)
 
             ed.textChanged.connect(_on_text_changed)
             ed.focusInEvent = _on_focus_in
+            ed.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            ed.customContextMenuRequested.connect(
+                lambda pos, e=ed: self._dub_show_editor_context_menu(e, pos)
+            )
 
             cl.addWidget(ed)
             self._dub_editors[sid]      = ed
@@ -2069,6 +2123,34 @@ class MainWindow(QMainWindow):
                     ed.blockSignals(False)
         count = len(_SpellHighlighter._custom_words)
         self._dub_status_label.setText(f"Custom word list reloaded — {count} word(s).")
+
+    def _dub_show_editor_context_menu(self, editor: QPlainTextEdit, pos) -> None:
+        """Show the standard editor menu with an Italian dictionary action."""
+        cursor = editor.textCursor()
+        if not cursor.hasSelection():
+            cursor = editor.cursorForPosition(pos)
+            cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        word = cursor.selectedText().strip()
+
+        menu = editor.createStandardContextMenu()
+        menu.addSeparator()
+        add_action = menu.addAction(f'Add "{word}" to Dictionary' if word else "Add to Dictionary")
+        import re
+        add_action.setEnabled(
+            self._dub_spell_lang == "it"
+            and bool(re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", word))
+            and word.casefold() not in _SpellHighlighter._custom_words
+        )
+        chosen = menu.exec(editor.viewport().mapToGlobal(pos))
+        if chosen == add_action:
+            try:
+                added = _SpellHighlighter.add_custom_word(word)
+            except OSError as exc:
+                QMessageBox.warning(self, "Dictionary", f"Could not update the dictionary:\n{exc}")
+                return
+            self._dub_reload_custom_words()
+            if added:
+                self._dub_status_label.setText(f'Added "{word}" to the custom dictionary.')
 
     def _dub_update_spell_btn_style(self) -> None:
         """Color the active IT/EN button; dim the inactive one."""
@@ -2654,20 +2736,20 @@ class MainWindow(QMainWindow):
     def _flush_cuda_main_thread() -> None:
         """
         Called from the main thread (via QTimer) after a GPU pipeline stage
-        completes.  Forces Python GC and synchronises the CUDA device so that
-        any deferred tensor destructions from the worker thread are finalised
-        here in the main thread — preventing the GPU from showing 100 %
-        utilisation after image generation has visually finished.
+        completes.  Forces Python GC and frees the CUDA allocator cache so
+        that VRAM drops back to idle.  NOTE: torch.cuda.synchronize() is
+        intentionally NOT called here — calling it from the Qt event-loop
+        thread (a different thread from the one that submitted the kernels)
+        can hard-crash the CUDA driver on Windows, making the process
+        disappear silently.
         """
         import gc
         gc.collect()
         try:
             import torch
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 gc.collect()
-                torch.cuda.synchronize()
         except Exception:
             pass
 
