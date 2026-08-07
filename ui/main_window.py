@@ -1700,6 +1700,8 @@ class MainWindow(QMainWindow):
             "to_redub":   "#F8B23D",
             "dubbed":     "#4CAF50",
         }[state]
+        if sid == getattr(self, "_dub_selected_sid", None):
+            border = "#96BDE2"
         card.setStyleSheet(
             f"QWidget#dubCard {{ background:#1D1B20; border:2px solid {border}; border-radius:4px; }}"
         )
@@ -1922,6 +1924,7 @@ class MainWindow(QMainWindow):
         self._dub_preview_btns: dict  = {}   # sid → QPushButton
         self._dub_dirty:   dict       = {}   # sid → bool (text changed after last dub)
         self._dub_spell_highlighters  = {}   # sid → _SpellHighlighter
+        self._dub_selected_sid = None
         # Load bookmark from disk for this project
         self._dub_bookmarks: dict = {}
         bm_path = self._dub_bookmark_path()
@@ -2004,7 +2007,7 @@ class MainWindow(QMainWindow):
                 self._dub_mark_unsaved()
 
             def _on_focus_in(event, s=sid, e=ed):
-                self._dub_focused_sid = s
+                self._dub_select_scene(s)
                 QPlainTextEdit.focusInEvent(e, event)
 
             ed.textChanged.connect(_on_text_changed)
@@ -2030,6 +2033,9 @@ class MainWindow(QMainWindow):
             self._dub_cards_layout.insertWidget(self._dub_cards_layout.count() - 1, card)
             self._dub_apply_card_state(sid)
 
+        if self._dub_editors:
+            self._dub_select_scene(min(self._dub_editors))
+
         # Ctrl+B shortcut (created once)
         if not getattr(self, "_dub_bm_shortcut_installed", False):
             from PyQt6.QtGui import QShortcut, QKeySequence
@@ -2045,6 +2051,18 @@ class MainWindow(QMainWindow):
     def _dub_mark_unsaved(self) -> None:
         self._dub_update_save_btn()
         self._dub_update_dub_btn()
+
+    def _dub_select_scene(self, sid: int) -> None:
+        """Select the scene used as the starting point for sequential playback."""
+        previous_sid = getattr(self, "_dub_selected_sid", None)
+        self._dub_selected_sid = sid
+        self._dub_focused_sid = sid
+        if previous_sid in getattr(self, "_dub_cards", {}):
+            self._dub_apply_card_state(previous_sid)
+        if sid in getattr(self, "_dub_cards", {}):
+            self._dub_apply_card_state(sid)
+        if hasattr(self, "_dub_status_label"):
+            self._dub_status_label.setText(f"Scene {sid} selected for playback.")
 
     def _dub_mark_saved(self) -> None:
         self._dub_update_save_btn()
@@ -2188,7 +2206,7 @@ class MainWindow(QMainWindow):
             return
 
         all_sids = sorted(editors.keys())
-        start_sid = getattr(self, "_dub_focused_sid", all_sids[0])
+        start_sid = getattr(self, "_dub_selected_sid", None) or all_sids[0]
         # Collect existing audio files from start_sid onward
         queue = [
             os.path.join(audio_dir, f"scene_{sid:03d}.mp3")
@@ -2201,7 +2219,7 @@ class MainWindow(QMainWindow):
 
         self._dub_play_queue = queue
         self._dub_play_index = 0
-        self._dub_play_btn.setEnabled(False)
+        self._dub_play_btn.setEnabled(True)
         self._dub_play_btn.setText("⏹ Stop")
         self._dub_play_btn.clicked.disconnect()
         self._dub_play_btn.clicked.connect(self._dub_stop_playback)
