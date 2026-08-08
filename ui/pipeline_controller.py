@@ -1,5 +1,6 @@
 import glob
 import os
+import shutil
 from typing import Dict, List, Optional, Tuple
 
 import yaml
@@ -444,10 +445,9 @@ class PipelineWorker(QObject):
 
             # â”€â”€ Helper: assemble clips + audio into a video â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             def _run_assemble(clips_d: str, video_out: str, audio_out: str,
-                              resolution: tuple):
+                              resolution: tuple, normalize_audio: bool = False):
                 from video.clip_assembler import ClipAssembler
                 from video.audio_sync import AudioSync
-                from moviepy import AudioFileClip
 
                 self._emit_progress(82, "Assembling clips...")
                 assembler = ClipAssembler(video_out, fps=int(self.config.get("fps", 24)),
@@ -465,7 +465,8 @@ class PipelineWorker(QObject):
                     # Use ffmpeg concat demuxer directly to avoid MoviePy's
                     # frame-iterator over-read bug on long audio files.
                     import subprocess, tempfile
-                    combined_path = os.path.join(os.path.dirname(audio_out), "narration_combined.mp3")
+                    audio_name = "final_audio.mp3" if normalize_audio else "narration_combined.mp3"
+                    combined_path = os.path.join(os.path.dirname(audio_out), audio_name)
                     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
                                                     delete=False, encoding="utf-8") as flist:
                         for p in tts_files:
@@ -481,9 +482,23 @@ class PipelineWorker(QObject):
                         os.unlink(flist_path)
                     audio_src = combined_path
                 elif os.path.exists(input_audio):
-                    audio_src = input_audio
+                    if normalize_audio:
+                        extension = os.path.splitext(input_audio)[1]
+                        audio_src = os.path.join(os.path.dirname(audio_out), f"final_audio{extension}")
+                        shutil.copy2(input_audio, audio_src)
+                    else:
+                        audio_src = input_audio
                 else:
                     raise FileNotFoundError("No TTS audio found. Run Synthesise Audio first.")
+
+                if normalize_audio:
+                    from audio_loudness import normalize_loudness_in_place
+
+                    self._emit_progress(94, "Equalizing final audio loudness...")
+                    result = normalize_loudness_in_place(audio_src)
+                    if not result.success:
+                        raise RuntimeError(f"Audio normalization failed: {result.error}")
+                    self.log.emit(f"Normalized final audio to -19 LUFS: {audio_src}")
 
                 sync = AudioSync(
                     output_path=audio_out,
@@ -824,7 +839,7 @@ class PipelineWorker(QObject):
                 out_w = int(self.config.get("output_width", 1920))
                 out_h = int(self.config.get("output_height", 1080))
                 _run_assemble(clips_dir, final_video_path, final_with_audio_path,
-                              resolution=(out_w, out_h))
+                              resolution=(out_w, out_h), normalize_audio=True)
                 self._emit_progress(100, "Final video complete")
                 self.finished.emit(True, final_with_audio_path)
                 return

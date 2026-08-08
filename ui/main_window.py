@@ -1559,6 +1559,15 @@ class MainWindow(QMainWindow):
         btn_spell_reload.setToolTip("Reload custom word list from disk (spell_custom_words.txt)")
         btn_spell_reload.clicked.connect(self._dub_reload_custom_words)
 
+        self._dub_duration_label = QLabel("00:00")
+        self._dub_duration_label.setToolTip("Overall length of dubbed scenes")
+        self._dub_duration_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._dub_duration_label.setStyleSheet(
+            "color:#E6E1E5; font-size:12px; font-weight:bold;"
+        )
+
         bar.addWidget(btn_load)
         bar.addWidget(self._dub_save_btn)
         bar.addWidget(self._dub_all_btn)
@@ -1569,6 +1578,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(btn_spell_en)
         bar.addWidget(btn_spell_reload)
         bar.addStretch(1)   # pushes status label to expand on the left
+        bar.addWidget(self._dub_duration_label)
         root.addLayout(bar)
 
         # ── Find / Replace panel (hidden by default) ──────────────────────────
@@ -1669,6 +1679,28 @@ class MainWindow(QMainWindow):
     def _dub_scenes_yaml_path(self) -> str:
         project = self.project_path_input.text().strip()
         return os.path.join(project, "output", "scenes.yaml") if project else ""
+
+    def _dub_update_total_duration(self) -> None:
+        """Show the combined duration of the currently dubbed scene audio."""
+        total_seconds = 0.0
+        for sid in getattr(self, "_dub_editors", {}):
+            audio_path = self._dub_audio_path(sid)
+            if not os.path.exists(audio_path):
+                continue
+            try:
+                from mutagen.mp3 import MP3
+                total_seconds += MP3(audio_path).info.length
+            except Exception:
+                try:
+                    from moviepy import AudioFileClip
+                    clip = AudioFileClip(audio_path)
+                    total_seconds += clip.duration
+                    clip.close()
+                except Exception:
+                    pass
+        rounded_seconds = max(0, int(total_seconds + 0.5))
+        minutes, seconds = divmod(rounded_seconds, 60)
+        self._dub_duration_label.setText(f"{minutes:02d}:{seconds:02d}")
 
     def _dub_bookmark_path(self) -> str:
         project = self.project_path_input.text().strip()
@@ -2045,6 +2077,7 @@ class MainWindow(QMainWindow):
             self._dub_bm_shortcut_installed = True
 
         self._dub_status_label.setText(f"{len(scenes)} scene(s) loaded.")
+        self._dub_update_total_duration()
         self._dub_has_unsaved = not from_disk
         self._dub_mark_unsaved() if self._dub_has_unsaved else self._dub_mark_saved()
 
@@ -2401,6 +2434,7 @@ class MainWindow(QMainWindow):
             self._dub_dirty[s] = False
             self._dub_apply_card_state(s)
             self._dub_update_dub_btn()
+            self._dub_update_total_duration()
             b = self._dub_preview_btns.get(s)
             if b:
                 b.setEnabled(True)
