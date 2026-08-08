@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QPushButton,
     QLabel,
     QFileDialog,
@@ -374,6 +375,7 @@ class MainWindow(QMainWindow):
         self.sdxl_model_input = QLineEdit()
         self.flux_dev_model_input = QLineEdit()
         self.flux_schnell_model_input = QLineEdit()
+        self.flux2_model_input = QLineEdit()
         self.svd_model_input = QLineEdit()
 
         from images.image_generator import MODEL_TYPES
@@ -450,6 +452,18 @@ class MainWindow(QMainWindow):
         self.dev_guidance_input.setValue(3.5)
         self.dev_guidance_input.setToolTip("Guidance scale for FLUX dev. Recommended: 3.5–5.0")
 
+        self.flux2_steps_input = QSpinBox()
+        self.flux2_steps_input.setRange(1, 100)
+        self.flux2_steps_input.setValue(4)
+        self.flux2_steps_input.setToolTip("Inference steps for FLUX.2 final image variants")
+
+        self.flux2_guidance_input = QDoubleSpinBox()
+        self.flux2_guidance_input.setRange(0.0, 30.0)
+        self.flux2_guidance_input.setDecimals(2)
+        self.flux2_guidance_input.setSingleStep(0.5)
+        self.flux2_guidance_input.setValue(1.0)
+        self.flux2_guidance_input.setToolTip("Guidance scale for FLUX.2 final image variants")
+
         self.image_resolution_input = QComboBox()
         self.image_resolution_input.addItem("1024 × 576  (16:9 — fits 16 GiB GPU)", (1024, 576))
         self.image_resolution_input.addItem("1344 × 768  (16:9 — requires 24 GiB GPU)", (1344, 768))
@@ -487,6 +501,7 @@ class MainWindow(QMainWindow):
         form.addRow("SD model path", self.sdxl_model_input)
         form.addRow("FLUX schnell model path", self.flux_schnell_model_input)
         form.addRow("FLUX dev model path", self.flux_dev_model_input)
+        form.addRow("FLUX.2 model path", self.flux2_model_input)
         form.addRow("SVD model path", self.svd_model_input)
         form.addRow("Clip engine", self.clip_engine_input)
         form.addRow("Ken Burns motion", self.ken_burns_motion_input)
@@ -496,6 +511,9 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("── FLUX Dev (Final Images) ──"))
         form.addRow("Dev inference steps", self.dev_steps_input)
         form.addRow("Dev guidance scale", self.dev_guidance_input)
+        form.addRow(QLabel("── FLUX.2 (Final Images) ──"))
+        form.addRow("FLUX.2 inference steps", self.flux2_steps_input)
+        form.addRow("FLUX.2 guidance scale", self.flux2_guidance_input)
         form.addRow(QLabel("── SVD Clip Generation ──"))
         form.addRow("Image resolution", self.image_resolution_input)
         form.addRow("SVD video frames", self.num_frames_input)
@@ -762,12 +780,12 @@ class MainWindow(QMainWindow):
 
         header_row = QHBoxLayout()
         self._lightbox_status_label = QLabel(
-            'Run "8. Final Images" to generate 6 variants per scene (3 Schnell + 3 Dev).')
+            'Run "8. Final Images" to generate 9 variants per scene (Schnell + Dev + FLUX.2).')
         self._lightbox_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
         header_row.addWidget(self._lightbox_status_label, 1)
 
         btn_run = QPushButton("\u25b6 Run Final Images")
-        btn_run.setToolTip("Generate 6 lightbox images per scene (stage 8)")
+        btn_run.setToolTip("Generate 9 lightbox images per scene (stage 8)")
         btn_run.clicked.connect(lambda: self.run_stage("final_images"))
         btn_refresh = QPushButton("Refresh")
         btn_refresh.clicked.connect(self._refresh_lightbox)
@@ -858,6 +876,9 @@ class MainWindow(QMainWindow):
             ("dev_v1",     "Dev \u22121"),
             ("dev_v2",     "Dev \u25cf"),
             ("dev_v3",     "Dev +1"),
+                ("flux2_v1",   "FLUX.2 -1"),
+                ("flux2_v2",   "FLUX.2 base"),
+                ("flux2_v3",   "FLUX.2 +1"),
         ]
         THUMB_W, THUMB_H = 180, 102
 
@@ -877,11 +898,11 @@ class MainWindow(QMainWindow):
             hdr.setWordWrap(True)
             scene_vlay.addWidget(hdr)
 
-            thumb_row = QHBoxLayout()
-            thumb_row.setSpacing(8)
+            thumb_grid = QGridLayout()
+            thumb_grid.setSpacing(8)
             self._lightbox_checkboxes[sid] = {}
 
-            for variant_key, variant_label in VARIANT_ORDER:
+            for variant_index, (variant_key, variant_label) in enumerate(VARIANT_ORDER):
                 fname = f"scene_{sid:03d}_{variant_key}.png"
                 img_path = os.path.join(lightbox_dir, fname)
 
@@ -924,10 +945,9 @@ class MainWindow(QMainWindow):
                 cell_lay.addLayout(lbl_row)
 
                 self._lightbox_checkboxes[sid][fname] = chk
-                thumb_row.addWidget(cell)
+                thumb_grid.addWidget(cell, variant_index // 3, variant_index % 3)
 
-            thumb_row.addStretch(1)
-            scene_vlay.addLayout(thumb_row)
+            scene_vlay.addLayout(thumb_grid)
             self._lightbox_grid_layout.insertWidget(
                 self._lightbox_grid_layout.count() - 1, scene_card)
 
@@ -2862,6 +2882,7 @@ class MainWindow(QMainWindow):
         self.sdxl_model_input.setText(str(settings.get("sdxl_base", "models/sd3")))
         self.flux_dev_model_input.setText(str(settings.get("flux_dev", "models/flux/FLUX.1-dev")))
         self.flux_schnell_model_input.setText(str(settings.get("flux_schnell", "models/flux/FLUX.1-schnell")))
+        self.flux2_model_input.setText(str(settings.get("flux2", "models/flux/FLUX.2-klein-4B")))
         self.svd_model_input.setText(str(settings.get("svd", "models/svd")))
         self.clip_engine_input.setCurrentText(str(settings.get("clip_engine", "ken_burns")))
         self.ken_burns_motion_input.setCurrentText(str(settings.get("ken_burns_motion", "static")))
@@ -2869,6 +2890,8 @@ class MainWindow(QMainWindow):
         self.schnell_guidance_input.setValue(float(settings.get("schnell_guidance", 0.0)))
         self.dev_steps_input.setValue(int(settings.get("dev_steps", 20)))
         self.dev_guidance_input.setValue(float(settings.get("dev_guidance", 3.5)))
+        self.flux2_steps_input.setValue(int(settings.get("flux2_steps", 4)))
+        self.flux2_guidance_input.setValue(float(settings.get("flux2_guidance", 1.0)))
         w = int(settings.get("image_width", 1024))
         h = int(settings.get("image_height", 576))
         idx = self.image_resolution_input.findData((w, h))
@@ -2905,6 +2928,7 @@ class MainWindow(QMainWindow):
             "sdxl_base": self.sdxl_model_input.text().strip(),
             "flux_dev": self.flux_dev_model_input.text().strip(),
             "flux_schnell": self.flux_schnell_model_input.text().strip(),
+            "flux2": self.flux2_model_input.text().strip(),
             "svd": self.svd_model_input.text().strip(),
             "clip_engine": self.clip_engine_input.currentText(),
             "ken_burns_motion": self.ken_burns_motion_input.currentText(),
@@ -2912,6 +2936,8 @@ class MainWindow(QMainWindow):
             "schnell_guidance": self.schnell_guidance_input.value(),
             "dev_steps": self.dev_steps_input.value(),
             "dev_guidance": self.dev_guidance_input.value(),
+            "flux2_steps": self.flux2_steps_input.value(),
+            "flux2_guidance": self.flux2_guidance_input.value(),
             "guidance_scale": self.schnell_guidance_input.value(),  # compat
             "num_inference_steps": self.schnell_steps_input.value(),  # compat
             "image_model": "flux-schnell",  # always schnell for preview now

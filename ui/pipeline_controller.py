@@ -271,6 +271,10 @@ class PipelineWorker(QObject):
                     model_path = self.config.get("flux_dev", "models/flux/FLUX.1-dev")
                     steps = int(self.config.get("dev_steps", 20))
                     guidance = float(self.config.get("dev_guidance", 3.5))
+                elif model_type == "flux2":
+                    model_path = self.config.get("flux2", "models/flux/FLUX.2-klein-4B")
+                    steps = int(self.config.get("flux2_steps", 4))
+                    guidance = float(self.config.get("flux2_guidance", 1.0))
                 else:
                     model_path = self.config.get("sdxl_base", "models/sd3")
                     steps = int(self.config.get("num_inference_steps", 30))
@@ -610,11 +614,11 @@ class PipelineWorker(QObject):
                 return
 
             # ─────────────────────────────────────────────────────────────────
-            # STAGE: final_images  – 3×Schnell + 3×Dev → output/lightbox/
+            # STAGE: final_images  – 3 variants per model → output/lightbox/
             # ─────────────────────────────────────────────────────────────────
             if stage == "final_images":
                 self._check_cancel()
-                self._emit_progress(5, "Generating lightbox images (3×Schnell + 3×Dev per scene)")
+                self._emit_progress(5, "Generating lightbox images (Schnell + Dev + FLUX.2)")
 
                 if os.path.exists(scenes_path):
                     with open(scenes_path, "r", encoding="utf-8") as fh:
@@ -631,6 +635,7 @@ class PipelineWorker(QObject):
                 model_variants = [
                     ("flux-schnell", "schnell"),
                     ("flux-dev",     "dev"),
+                    ("flux2",        "flux2"),
                 ]
 
                 def _variant_path(sid, model_key, v_idx):
@@ -869,7 +874,7 @@ class PipelineController(QObject):
         ("5. Preview Images (Schnell)", "preview_images"),
         ("6. Preview Clips",           "preview_clips"),
         ("7. Preview Video",           "preview_video"),
-        ("8. Final Images (FLUX Dev)", "final_images"),
+        ("8. Final Images (Dev + FLUX.2)", "final_images"),
         ("9. Final Clips",             "final_clips"),
         ("10. Final Video",            "final_video"),
     ]
@@ -887,12 +892,15 @@ class PipelineController(QObject):
         "svd": "models/svd",
         "flux_dev": "models/flux/FLUX.1-dev",
         "flux_schnell": "models/flux/FLUX.1-schnell",
+        "flux2": "models/flux/FLUX.2-klein-4B",
         "guidance_scale": 7.5,
         "num_inference_steps": 30,
         "schnell_steps": 4,
         "schnell_guidance": 0.0,
         "dev_steps": 20,
         "dev_guidance": 3.5,
+        "flux2_steps": 4,
+        "flux2_guidance": 1.0,
         "image_width": 1344,
         "image_height": 768,
         "image_model": "sdxl",

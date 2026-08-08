@@ -13,6 +13,7 @@ MODEL_TYPES = {
     "sdxl":          "Stable Diffusion XL",
     "flux-dev":      "FLUX.1-dev  (best quality, ~24 GB)",
     "flux-schnell":  "FLUX.1-schnell  (fast, 4 steps)",
+    "flux2":         "FLUX.2 Klein 4B  (final image variants)",
 }
 
 
@@ -64,8 +65,17 @@ class ImageGenerator:
             )
 
         if self.model_type.startswith("flux"):
-            from diffusers import FluxPipeline
-            self.pipe = FluxPipeline.from_pretrained(
+            if self.model_type == "flux2":
+                try:
+                    from diffusers import Flux2KleinPipeline as PipelineClass
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "FLUX.2 requires a Diffusers version that provides Flux2KleinPipeline. "
+                        "Upgrade Diffusers in the application's Python environment."
+                    ) from exc
+            else:
+                from diffusers import FluxPipeline as PipelineClass
+            self.pipe = PipelineClass.from_pretrained(
                 self.model_path,
                 torch_dtype=dtype,
             )
@@ -116,17 +126,19 @@ class ImageGenerator:
             generator = torch.Generator(device=self.device).manual_seed(active_seed)
 
         if self.model_type.startswith("flux"):
-            # FLUX.1: no negative_prompt; guidance_scale=0 for schnell, ~3.5 for dev
+            # FLUX models do not use negative_prompt.
             gs = 0.0 if self.model_type == "flux-schnell" else self.guidance_scale
-            result = self.pipe(
-                prompt,
+            pipeline_args = dict(
+                prompt=prompt,
                 guidance_scale=gs,
                 num_inference_steps=self.num_inference_steps,
                 width=self.width,
                 height=self.height,
                 generator=generator,
-                max_sequence_length=512,
             )
+            if self.model_type != "flux2":
+                pipeline_args["max_sequence_length"] = 512
+            result = self.pipe(**pipeline_args)
         else:
             result = self.pipe(
                 prompt,
