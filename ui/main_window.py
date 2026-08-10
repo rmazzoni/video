@@ -1298,7 +1298,7 @@ class MainWindow(QMainWindow):
         prompt_edit.setFixedHeight(110)
         prompt_edit.setStyleSheet(
             "QTextEdit { background:#0F0D13; color:#E6E1E5; border:1px solid #36343B;"
-            " border-radius:3px; font-size:12px; padding:4px; }"
+            " border-radius:3px; font-size:14px; padding:4px; }"
             "QTextEdit:focus { border:1px solid #96BDE2; }"
         )
         lay.addWidget(prompt_edit)
