@@ -456,7 +456,12 @@ class PipelineWorker(QObject):
                 self._emit_progress(82, "Assembling clips...")
                 assembler = ClipAssembler(video_out, fps=int(self.config.get("fps", 24)),
                                           target_resolution=resolution)
-                assembler.assemble(clips_d)
+
+                def _assemble_progress(pct: float, _total: int) -> None:
+                    # Assembling occupies the 82-92% band of the overall pipeline.
+                    self._emit_progress(82 + int(pct / 100 * 10), f"Assembling clips... {int(pct)}%")
+
+                assembler.assemble(clips_d, on_progress=_assemble_progress)
                 self._emit_progress(92, "Merging audio...")
 
                 tts_files = sorted([

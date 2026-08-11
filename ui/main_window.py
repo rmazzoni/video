@@ -191,6 +191,19 @@ def _load_thumbnail(path: str, w: int, h: int) -> "QPixmap":
 
 
 class MainWindow(QMainWindow):
+    # Lightbox variant display/generation order (Schnell → Dev → FLUX.2, each −1/●/+1)
+    _LIGHTBOX_VARIANT_ORDER = [
+        ("schnell_v1", "Schnell −1"),
+        ("schnell_v2", "Schnell ●"),
+        ("schnell_v3", "Schnell +1"),
+        ("dev_v1",     "Dev −1"),
+        ("dev_v2",     "Dev ●"),
+        ("dev_v3",     "Dev +1"),
+        ("flux2_v1",   "FLUX.2 -1"),
+        ("flux2_v2",   "FLUX.2 base"),
+        ("flux2_v3",   "FLUX.2 +1"),
+    ]
+
     def __init__(self):
         super().__init__()
 
@@ -867,17 +880,7 @@ class MainWindow(QMainWindow):
         self._lightbox_status_label.setText(
             f"{len(scene_files)} scene(s), {total_images} image(s) \u2014 check images to include in Final Clips")
 
-        VARIANT_ORDER = [
-            ("schnell_v1", "Schnell \u22121"),
-            ("schnell_v2", "Schnell \u25cf"),
-            ("schnell_v3", "Schnell +1"),
-            ("dev_v1",     "Dev \u22121"),
-            ("dev_v2",     "Dev \u25cf"),
-            ("dev_v3",     "Dev +1"),
-                ("flux2_v1",   "FLUX.2 -1"),
-                ("flux2_v2",   "FLUX.2 base"),
-                ("flux2_v3",   "FLUX.2 +1"),
-        ]
+        VARIANT_ORDER = self._LIGHTBOX_VARIANT_ORDER
         THUMB_W, THUMB_H = 180, 102
 
         for sid in sorted(scene_files.keys()):
@@ -905,6 +908,7 @@ class MainWindow(QMainWindow):
                 img_path = os.path.join(lightbox_dir, fname)
 
                 cell = QWidget()
+                cell.setFixedWidth(THUMB_W)
                 cell.setStyleSheet("background:transparent; border:none;")
                 cell_lay = QVBoxLayout(cell)
                 cell_lay.setContentsMargins(0, 0, 0, 0)
@@ -977,8 +981,17 @@ class MainWindow(QMainWindow):
             return
 
         selections: dict = {}
+        variant_rank = {vk: i for i, (vk, _) in enumerate(self._LIGHTBOX_VARIANT_ORDER)}
+
+        def _order_key(fname: str) -> int:
+            """Rank a lightbox filename by its position in the display order (Schnell→Dev→FLUX.2)."""
+            stem = os.path.splitext(fname)[0]
+            variant_key = "_".join(stem.split("_")[2:])   # scene_003_schnell_v1 -> schnell_v1
+            return variant_rank.get(variant_key, len(variant_rank))
+
         for sid, fname_dict in sorted(self._lightbox_checkboxes.items()):
-            chosen = [fname for fname, chk in sorted(fname_dict.items()) if chk.isChecked()]
+            chosen = [fname for fname in sorted(fname_dict.keys(), key=_order_key)
+                      if fname_dict[fname].isChecked()]
             if chosen:
                 selections[sid] = chosen
 

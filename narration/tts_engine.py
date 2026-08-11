@@ -210,9 +210,15 @@ class TTSEngine:
         than the spoken narration and shows muted clip tails.
         """
         import subprocess, tempfile
+        # Positive stop_periods in a single silenceremove pass truncates the
+        # ENTIRE remaining stream at the first qualifying silence gap rather
+        # than trimming only the true trailing silence. Use the safe
+        # trim/reverse/trim/reverse idiom (start_periods only) instead.
         trim_filter = (
-            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB:"
-            "stop_periods=1:stop_duration=0.05:stop_threshold=-50dB"
+            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,"
+            "areverse,"
+            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,"
+            "areverse"
         )
         descriptor, tmp_path = tempfile.mkstemp(
             suffix=".mp3", dir=os.path.dirname(audio_path) or None

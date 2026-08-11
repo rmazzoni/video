@@ -23,7 +23,8 @@ class ClipAssembler:
         Concatenates all MP4 clips in a directory into a single video.
         If scene_timings is provided ({scene_id: duration_seconds}), each clip
         is padded with a freeze of its last frame to match that duration.
-        :param on_progress: optional callback(loaded, total)
+        :param on_progress: optional callback(percent_0_100, 100) called
+                            periodically while FFmpeg encodes the concatenated video.
         Returns the output file path.
         """
         clip_files = self._get_sorted_clips(clips_dir)
@@ -59,8 +60,19 @@ class ClipAssembler:
                 fh.write(f"file '{p.replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'\n")
             list_path = fh.name
 
-        if on_progress:
-            on_progress(total, total)
+        # Sum clip durations up front so FFmpeg's own "out_time" progress can
+        # be turned into a meaningful percentage instead of a static 82%.
+        total_duration = 0.0
+        for p in padded_files:
+            try:
+                probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", p],
+                    capture_output=True, text=True,
+                )
+                total_duration += float(probe.stdout.strip())
+            except Exception:
+                pass
 
         try:
             if self.target_resolution:
@@ -86,9 +98,7 @@ class ClipAssembler:
                     "-c", "copy",
                     self.output_path,
                 ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-2000:]}")
+            self._run_ffmpeg_with_progress(cmd, total_duration, on_progress)
         finally:
             os.unlink(list_path)
             for t in temp_files:
@@ -98,6 +108,40 @@ class ClipAssembler:
                     pass
 
         return self.output_path
+
+    @staticmethod
+    def _run_ffmpeg_with_progress(cmd: List[str], total_duration: float, on_progress=None) -> None:
+        """Run an FFmpeg command, reporting encode progress via on_progress(percent, 100)."""
+        if not on_progress or total_duration <= 0:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-2000:]}")
+            return
+
+        proc = subprocess.Popen(
+            cmd + ["-progress", "pipe:1", "-nostats"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+        # stderr is merged into stdout above so a single read loop can't
+        # deadlock on a full, undrained stderr pipe during long encodes.
+        tail_lines: List[str] = []
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if line.startswith("out_time_ms="):
+                    try:
+                        seconds = int(line.split("=", 1)[1]) / 1_000_000
+                    except ValueError:
+                        continue
+                    pct = max(0.0, min(99.0, seconds / total_duration * 100))
+                    on_progress(pct, 100)
+                else:
+                    tail_lines.append(line)
+        finally:
+            proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError("FFmpeg failed:\n" + "\n".join(tail_lines[-100:]))
+        on_progress(100, 100)
 
     def _pad_clip(self, clip_path: str, target_duration: float) -> str:
         """
