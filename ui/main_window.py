@@ -1572,6 +1572,13 @@ class MainWindow(QMainWindow):
         self._dub_all_btn.setToolTip("Synthesise audio for all segments")
         self._dub_all_btn.clicked.connect(self._dub_all)
 
+        self._dub_redub_all_btn = QPushButton("↻ Redub All")
+        self._dub_redub_all_btn.setToolTip(
+            "Force re-synthesize EVERY segment, even if already dubbed "
+            "(use after changing speed, pitch or voice for the whole project)"
+        )
+        self._dub_redub_all_btn.clicked.connect(lambda: self._dub_all(force=True))
+
         self._dub_play_btn = QPushButton("▶ Play")
         self._dub_play_btn.setToolTip("Play all dubbed audio starting from the current scene")
         self._dub_play_btn.clicked.connect(self._dub_play_from_current)
@@ -1621,6 +1628,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(btn_load)
         bar.addWidget(self._dub_save_btn)
         bar.addWidget(self._dub_all_btn)
+        bar.addWidget(self._dub_redub_all_btn)
         bar.addWidget(self._dub_play_btn)
         bar.addWidget(speed_label)
         bar.addWidget(self._dub_speed_input)
@@ -2431,6 +2439,8 @@ class MainWindow(QMainWindow):
         bg, hv = self._DUB_BTN_COLORS.get(status, ("#c0392b", "#a93226"))
         self._dub_all_btn.setEnabled(status != "none")
         self._dub_all_btn.setStyleSheet(self._BTN_SS.format(bg=bg, hv=hv))
+        if hasattr(self, "_dub_redub_all_btn"):
+            self._dub_redub_all_btn.setEnabled(status != "none")
 
     def _dub_update_save_btn(self) -> None:
         if not hasattr(self, "_dub_save_btn"):
@@ -2583,15 +2593,20 @@ class MainWindow(QMainWindow):
 
     # ── Dub All ───────────────────────────────────────────────────────────────
 
-    def _dub_all(self) -> None:
+    def _dub_all(self, force: bool = False) -> None:
         if not hasattr(self, "_dub_editors") or not self._dub_editors:
             QMessageBox.warning(self, "No segments", "Load scenes first.")
             return
-        # Only queue segments that have no audio yet or whose text has changed
-        ids = sorted(
-            sid for sid in self._dub_editors
-            if not os.path.exists(self._dub_audio_path(sid)) or self._dub_dirty.get(sid, False)
-        )
+        if force:
+            # Redub every segment regardless of dirty/existing-audio state
+            # (e.g. after changing speed, pitch or voice for the whole project).
+            ids = sorted(self._dub_editors.keys())
+        else:
+            # Only queue segments that have no audio yet or whose text has changed
+            ids = sorted(
+                sid for sid in self._dub_editors
+                if not os.path.exists(self._dub_audio_path(sid)) or self._dub_dirty.get(sid, False)
+            )
         if not ids:
             self._dub_status_label.setText("All segments already dubbed and up to date.")
             return
@@ -2602,6 +2617,7 @@ class MainWindow(QMainWindow):
         self._dub_all_grand_total = len(self._dub_editors)
         self._dub_all_already_done = self._dub_all_grand_total - self._dub_all_total
         self._dub_all_btn.setEnabled(False)
+        self._dub_redub_all_btn.setEnabled(False)
         self._dub_progress.setVisible(True)
         start_pct = int(self._dub_all_already_done / self._dub_all_grand_total * 100)
         self._dub_progress.setValue(start_pct)
@@ -2616,6 +2632,7 @@ class MainWindow(QMainWindow):
         already_done = getattr(self, "_dub_all_already_done", 0)
         if done >= total:
             self._dub_all_btn.setEnabled(True)
+            self._dub_redub_all_btn.setEnabled(True)
             self._dub_progress.setVisible(False)
             self._dub_generate_timings()
             self._dub_save()
