@@ -57,9 +57,13 @@ def normalize_loudness_in_place(
         )
 
     ffmpeg = ffmpeg_executable or "ffmpeg"
+    # stop_periods must stay at 1: a negative value makes FFmpeg strip every
+    # silent gap throughout the track (not just the trailing one), which
+    # chews up intentional pauses between scenes and desyncs the narration
+    # from the already-timed video clips.
     trim_filter = (
         "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB:"
-        "stop_periods=-1:stop_duration=0.05:stop_threshold=-50dB"
+        "stop_periods=1:stop_duration=0.05:stop_threshold=-50dB"
     )
     target = f"I={target_lufs}:TP={true_peak_db}:LRA={loudness_range}"
 

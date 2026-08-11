@@ -147,6 +147,7 @@ class TTSEngine:
 
             text = _apply_fixups(scene["text"])
             self._synthesise_subprocess(text, audio_path)
+            self._trim_edge_silence(audio_path)
 
             duration = self._measure_duration(audio_path)
             timings[scene_id] = duration
@@ -199,6 +200,40 @@ class TTSEngine:
             os.unlink(sf.name)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "TTS synthesis failed")
+
+    @staticmethod
+    def _trim_edge_silence(audio_path: str) -> None:
+        """
+        Strip leading/trailing silence that Edge TTS bakes into each scene's
+        MP3. Without this, scene_timings (and thus each Ken Burns/SVD clip
+        duration) is padded with dead air, so the final video runs longer
+        than the spoken narration and shows muted clip tails.
+        """
+        import subprocess, tempfile
+        trim_filter = (
+            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB:"
+            "stop_periods=1:stop_duration=0.05:stop_threshold=-50dB"
+        )
+        descriptor, tmp_path = tempfile.mkstemp(
+            suffix=".mp3", dir=os.path.dirname(audio_path) or None
+        )
+        os.close(descriptor)
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", audio_path, "-af", trim_filter,
+                 "-c:a", "libmp3lame", "-b:a", "192k", tmp_path],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0 and os.path.getsize(tmp_path) > 0:
+                os.replace(tmp_path, audio_path)
+        except Exception:
+            pass
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
     @staticmethod
     def _measure_duration(audio_path: str) -> float:

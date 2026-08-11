@@ -8,7 +8,7 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 from narration.transcript_loader import TranscriptLoader
 from narration.scene_splitter import SceneSplitter
-from prompts.prompt_builder import PromptBuilder
+from prompts.prompt_builder import PromptBuilder, structure_prompt_for_model
 from utilis.config_loader import ConfigLoader
 from utilis.logger import Logger
 
@@ -508,7 +508,7 @@ class PipelineWorker(QObject):
                     output_path=audio_out,
                     audio_volume=float(self.config.get("audio_volume", 1.0)),
                     fade_in=float(self.config.get("fade_in", 0.0)),
-                    fade_out=float(self.config.get("fade_out", 0.5)),
+                    fade_out=float(self.config.get("fade_out", 0.0)),
                 )
                 sync.merge(video_out, audio_src)
 
@@ -687,6 +687,8 @@ class PipelineWorker(QObject):
                     for sid, v_idx, seed_val, scene in work:
                         self._check_cancel()
                         prompt = cached_prompts.get(sid) or cached_prompts.get(str(sid)) or scene.get("text", "")
+                        prompt = structure_prompt_for_model(
+                            prompt, model_type, str(self.config.get("style_preset", "cinematic")))
                         suffix = f"_{model_key}_v{v_idx}"
                         self.log.emit(f"Scene {sid} [{model_key} v{v_idx} seed={seed_val}]: generating...")
                         image_gen.generate_image(prompt, sid, seed_override=seed_val, filename_suffix=suffix)
@@ -907,8 +909,8 @@ class PipelineController(QObject):
         "num_frames": 14,
         "motion_bucket_id": 127,
         "audio_volume": 1.0,
-        "fade_in": 0.5,
-        "fade_out": 0.5,
+        "fade_in": 0.0,
+        "fade_out": 0.0,
         "clip_engine": "ken_burns",
         "ken_burns_motion": "static",
         "decode_chunk_size": 4,

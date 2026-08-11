@@ -1,4 +1,30 @@
+import json
 from typing import Dict, List, Optional
+
+from prompts.style_presets import STYLE_PRESETS
+
+
+def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: str = "cinematic") -> str:
+    """
+    Reformat a plain descriptive prompt for a specific image model.
+
+    FLUX.2 (Klein) follows structured prompts more reliably than long free-text
+    sentences (per BFL's official prompting guide), so scene/style/composition
+    are broken out into separate JSON fields. Other models receive the prompt
+    text unchanged.
+    """
+    if model_type != "flux2":
+        return prompt_text
+    style_desc = STYLE_PRESETS.get(style_preset, STYLE_PRESETS["cinematic"])
+    payload = {
+        "scene": prompt_text,
+        "style": style_desc,
+        "composition": (
+            "characters facing the camera, front or three-quarter view, "
+            "faces clearly visible, medium shot"
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 class PromptBuilder:
@@ -34,57 +60,8 @@ class PromptBuilder:
             from prompts.prompt_enhancer import PromptEnhancer
             self._enhancer = PromptEnhancer(model=ollama_model, host=ollama_host)
 
-        # Predefined style presets
-        self.style_presets = {
-            "cinematic": (
-                "cinematic lighting, volumetric light, high detail, 35mm lens, "
-                "soft shadows, realistic textures, depth of field, dramatic atmosphere"
-            ),
-            "realistic": (
-                "ultra realistic, natural lighting, detailed textures, photographic quality"
-            ),
-            "anime": (
-                "anime style, vibrant colors, clean line art, expressive characters"
-            ),
-            "watercolor": (
-                "soft watercolor painting, gentle brush strokes, pastel tones"
-            ),
-            "illustration": (
-                "digital illustration, clean shading, stylized shapes, bold colors"
-            ),
-            "noir": (
-                "black and white photography, dramatic chiaroscuro, deep shadows, "
-                "1940s detective atmosphere, high contrast, rain-slicked streets"
-            ),
-            "baroque": (
-                "baroque painting style, ornate composition, dramatic lighting, "
-                "rich jewel tones, deep shadow, oil painting texture, Rembrandt lighting"
-            ),
-            "concept art": (
-                "professional concept art, detailed environment design, "
-                "matte painting, epic scale, studio quality, bold composition"
-            ),
-            "oil painting": (
-                "oil painting, thick impasto brushwork, rich saturated colour, "
-                "canvas texture, classical technique, museum quality"
-            ),
-            "impressionist": (
-                "impressionist painting, loose expressive brushwork, dappled light, "
-                "soft edges, vibrant colour palette, plein air atmosphere"
-            ),
-            "ghibli": (
-                "Studio Ghibli style, soft anime aesthetic, lush detailed backgrounds, "
-                "warm natural lighting, gentle colour palette, hand-drawn feel"
-            ),
-            "golden hour": (
-                "golden hour lighting, warm orange and amber tones, long soft shadows, "
-                "lens flare, photorealistic, rich depth of field"
-            ),
-            "ethereal": (
-                "ethereal dreamlike atmosphere, soft glowing light, pastel mist, "
-                "otherworldly beauty, delicate details, surreal fantasy"
-            ),
-        }
+        # Style presets are defined once in prompts/style_presets.py (shared with the Settings UI)
+        self.style_presets = STYLE_PRESETS
 
     # ---------------------------------------------------------
     # PUBLIC API

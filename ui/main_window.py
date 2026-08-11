@@ -350,12 +350,9 @@ class MainWindow(QMainWindow):
 
         form = QFormLayout()
 
+        from prompts.style_presets import STYLE_PRESETS
         self.style_preset_input = QComboBox()
-        self.style_preset_input.addItems([
-            "cinematic", "realistic", "anime", "watercolor", "illustration",
-            "noir", "baroque", "concept art", "oil painting", "impressionist",
-            "ghibli", "golden hour", "ethereal",
-        ])
+        self.style_preset_input.addItems(list(STYLE_PRESETS.keys()))
 
         self.aspect_ratio_input = QComboBox()
         self.aspect_ratio_input.addItems(["16:9", "9:16", "1:1", "4:3", "21:9"])
@@ -552,6 +549,7 @@ class MainWindow(QMainWindow):
         self.tts_rate_input.setValue(0)
         self.tts_rate_input.setSuffix("%")
         self.tts_rate_input.setToolTip("Speaking rate offset (+10 = 10% faster, -10 = 10% slower)")
+        self.tts_rate_input.valueChanged.connect(self._tts_rate_changed)
         form.addRow("TTS rate", self.tts_rate_input)
 
         self.tts_pitch_input = QSpinBox()
@@ -1332,6 +1330,30 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background:#2e7a50; }"
         )
 
+        btn_reset = QPushButton("\u21bb  Reset to Auto-Generated")
+        btn_reset.setToolTip("Discard manual edits and rebuild the prompt from current Settings")
+        btn_reset.setStyleSheet(
+            "QPushButton { background:#36343B; color:#E6E1E5; border:none;"
+            " border-radius:4px; padding:6px 20px; }"
+            "QPushButton:hover { background:#4a4850; }"
+        )
+
+        def _reset_to_auto_generated():
+            if scene_id is None:
+                return
+            from prompts.prompt_builder import PromptBuilder
+            builder = PromptBuilder(
+                style_preset=self.style_preset_input.currentText(),
+                default_aspect_ratio=self.aspect_ratio_input.currentText(),
+                use_ollama=self.use_ollama_input.isChecked(),
+                ollama_model=self.ollama_model_input.text().strip() or "llama3",
+                ollama_host=self.ollama_host_input.text().strip() or "http://localhost:11434",
+            )
+            rebuilt = builder.build_prompt({"id": scene_id, "text": scene_text})
+            prompt_edit.setPlainText(rebuilt)
+
+        btn_reset.clicked.connect(_reset_to_auto_generated)
+
         def _persist_prompt_and_delete_image():
             """Save prompt to yaml and delete the draft image. Returns True on success."""
             new_prompt = prompt_edit.toPlainText().strip()
@@ -1387,6 +1409,7 @@ class MainWindow(QMainWindow):
 
         btn_save.clicked.connect(_save_and_redo)
         btn_save_clip.clicked.connect(_save_and_redo_clip)
+        btn_row.addWidget(btn_reset)
         btn_row.addWidget(btn_close)
         btn_row.addWidget(btn_save)
         btn_row.addWidget(btn_save_clip)
@@ -1553,9 +1576,16 @@ class MainWindow(QMainWindow):
         self._dub_play_btn.setToolTip("Play all dubbed audio starting from the current scene")
         self._dub_play_btn.clicked.connect(self._dub_play_from_current)
 
-        btn_export_word = QPushButton("📄 Export Word")
-        btn_export_word.setToolTip("Export all dubbed text to a .docx file in the project output folder")
-        btn_export_word.clicked.connect(self._dub_export_word)
+        speed_label = QLabel("Speed:")
+        self._dub_speed_input = QDoubleSpinBox()
+        self._dub_speed_input.setRange(0.5, 2.0)
+        self._dub_speed_input.setSingleStep(0.01)
+        self._dub_speed_input.setDecimals(2)
+        self._dub_speed_input.setValue(1.0)
+        self._dub_speed_input.setSuffix("x")
+        self._dub_speed_input.setFixedHeight(28)
+        self._dub_speed_input.setToolTip("Narration speed (1.0 = normal, 0.95 = 5% slower, 1.10 = 10% faster)")
+        self._dub_speed_input.valueChanged.connect(self._dub_speed_changed)
 
         # Spell-check language toggle (IT / EN — no Off button; spell check always on)
         self._dub_spell_lang = "it"
@@ -1592,7 +1622,8 @@ class MainWindow(QMainWindow):
         bar.addWidget(self._dub_save_btn)
         bar.addWidget(self._dub_all_btn)
         bar.addWidget(self._dub_play_btn)
-        bar.addWidget(btn_export_word)
+        bar.addWidget(speed_label)
+        bar.addWidget(self._dub_speed_input)
         bar.addWidget(btn_find)
         bar.addWidget(btn_spell_it)
         bar.addWidget(btn_spell_en)
@@ -1721,6 +1752,45 @@ class MainWindow(QMainWindow):
         rounded_seconds = max(0, int(total_seconds + 0.5))
         minutes, seconds = divmod(rounded_seconds, 60)
         self._dub_duration_label.setText(f"{minutes:02d}:{seconds:02d}")
+
+    def _dub_segment_speed_text(self, sid: int) -> str:
+        """Speed badge text for a scene, based on the TTS rate used for its current audio."""
+        if not os.path.exists(self._dub_audio_path(sid)):
+            return "—"
+        pct = getattr(self, "_dub_rates", {}).get(sid)
+        if pct is None:
+            return "—"
+        return f"{1 + pct / 100:.2f}x"
+
+    def _dub_segment_duration(self, sid: int) -> str:
+        """Duration badge text (mm:ss) for a single scene's dubbed audio file."""
+        audio_path = self._dub_audio_path(sid)
+        if not os.path.exists(audio_path):
+            return "--:--"
+        seconds = 0.0
+        try:
+            from mutagen.mp3 import MP3
+            seconds = MP3(audio_path).info.length
+        except Exception:
+            try:
+                from moviepy import AudioFileClip
+                clip = AudioFileClip(audio_path)
+                seconds = clip.duration
+                clip.close()
+            except Exception:
+                return "--:--"
+        total = max(0, int(seconds + 0.5))
+        minutes, secs = divmod(total, 60)
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _dub_update_segment_badges(self, sid: int) -> None:
+        """Refresh a single scene card's speed/duration badges."""
+        speed_lbl = getattr(self, "_dub_speed_labels", {}).get(sid)
+        if speed_lbl:
+            speed_lbl.setText(self._dub_segment_speed_text(sid))
+        dur_lbl = getattr(self, "_dub_duration_labels", {}).get(sid)
+        if dur_lbl:
+            dur_lbl.setText(self._dub_segment_duration(sid))
 
     def _dub_bookmark_path(self) -> str:
         project = self.project_path_input.text().strip()
@@ -1918,52 +1988,25 @@ class MainWindow(QMainWindow):
                 count += n
         self._dub_find_status.setText(f"Replaced {count} occurrence(s)")
 
-    def _dub_export_word(self) -> None:
-        project = self.project_path_input.text().strip()
-        if not project:
-            QMessageBox.warning(self, "No project", "Open a project first.")
+    def _dub_speed_changed(self, value: float) -> None:
+        """Mirror the Dubbing tab speed control into the Settings tab TTS rate field."""
+        if not hasattr(self, "tts_rate_input"):
             return
-        editors: dict = getattr(self, "_dub_editors", {})
-        if not editors:
-            QMessageBox.warning(self, "Nothing to export", "Load scenes in the Dubbing tab first.")
+        pct = round((value - 1.0) * 100)
+        if self.tts_rate_input.value() != pct:
+            self.tts_rate_input.blockSignals(True)
+            self.tts_rate_input.setValue(pct)
+            self.tts_rate_input.blockSignals(False)
+
+    def _tts_rate_changed(self, value: int) -> None:
+        """Mirror the Settings tab TTS rate field into the Dubbing tab speed control."""
+        if not hasattr(self, "_dub_speed_input"):
             return
-        try:
-            from docx import Document
-            from docx.shared import Pt, RGBColor
-        except ImportError:
-            QMessageBox.critical(self, "Missing dependency",
-                                 "python-docx is not installed.\nRun: pip install python-docx")
-            return
-
-        doc = Document()
-        doc.core_properties.title = os.path.basename(project)
-
-        style = doc.styles["Normal"]
-        style.font.name = "Calibri"
-        style.font.size = Pt(11)
-
-        heading = doc.add_heading(os.path.basename(project), level=1)
-        heading.runs[0].font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
-
-        for sid in sorted(editors.keys()):
-            text = editors[sid].toPlainText().strip()
-            doc.add_paragraph(text)
-
-        out_dir = os.path.join(project, "output")
-        os.makedirs(out_dir, exist_ok=True)
-        project_name = os.path.basename(project).replace(" ", "_")
-        out_path = os.path.join(out_dir, f"{project_name}_dubbing.docx")
-        try:
-            doc.save(out_path)
-        except PermissionError:
-            QMessageBox.warning(self, "Export failed",
-                                f"Could not write:\n{out_path}\n\nClose the file in Word and try again.")
-            return
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Exported")
-        msg.setText(f"Word file saved to:\n{out_path}")
-        msg.setIcon(QMessageBox.Icon.NoIcon)
-        msg.exec()
+        speed = round(1.0 + value / 100.0, 2)
+        if abs(self._dub_speed_input.value() - speed) > 1e-6:
+            self._dub_speed_input.blockSignals(True)
+            self._dub_speed_input.setValue(speed)
+            self._dub_speed_input.blockSignals(False)
 
     def _dub_populate(self, scenes: list, existing: dict = None, from_disk: bool = False) -> None:
         existing = existing or {}
@@ -1976,6 +2019,9 @@ class MainWindow(QMainWindow):
         self._dub_preview_btns: dict  = {}   # sid → QPushButton
         self._dub_dirty:   dict       = {}   # sid → bool (text changed after last dub)
         self._dub_spell_highlighters  = {}   # sid → _SpellHighlighter
+        self._dub_speed_labels: dict  = {}   # sid → QLabel (speed badge)
+        self._dub_duration_labels: dict = {} # sid → QLabel (duration badge)
+        self._dub_rates:   dict       = {}   # sid → TTS rate % used for its current audio
         self._dub_selected_sid = None
         # Load bookmark from disk for this project
         self._dub_bookmarks: dict = {}
@@ -1994,6 +2040,9 @@ class MainWindow(QMainWindow):
             original = scene.get("text", "")
             entry    = existing.get(sid, {})
             dubbed   = (entry.get("dubbed") if isinstance(entry, dict) else original) or original
+            rate_pct = entry.get("rate_pct") if isinstance(entry, dict) else None
+            if rate_pct is not None:
+                self._dub_rates[sid] = int(rate_pct)
 
             card = QWidget()
             card.setObjectName("dubCard")
@@ -2008,6 +2057,20 @@ class MainWindow(QMainWindow):
             char_lbl = QLabel(f"{len(dubbed)} chars")
             char_lbl.setStyleSheet("color:#8E8B90; font-size:10px; background:transparent; border:none;")
             char_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+            speed_lbl = QLabel(self._dub_segment_speed_text(sid))
+            speed_lbl.setToolTip("Speech speed used to dub this scene")
+            speed_lbl.setStyleSheet(
+                "color:#C9A6E6; font-size:10px; font-weight:bold; background:#2A2438; "
+                "border:1px solid #46365A; border-radius:8px; padding:1px 6px;"
+            )
+
+            duration_lbl = QLabel(self._dub_segment_duration(sid))
+            duration_lbl.setToolTip("Length of this scene's dubbed audio")
+            duration_lbl.setStyleSheet(
+                "color:#9FD6B8; font-size:10px; font-weight:bold; background:#1E3A2C; "
+                "border:1px solid #2F5B41; border-radius:8px; padding:1px 6px;"
+            )
 
             preview_btn = QPushButton("▶")
             preview_btn.setFixedSize(28, 28)
@@ -2024,6 +2087,8 @@ class MainWindow(QMainWindow):
 
             hdr.addWidget(id_lbl)
             hdr.addWidget(char_lbl, 1)
+            hdr.addWidget(speed_lbl)
+            hdr.addWidget(duration_lbl)
             hdr.addWidget(bm_btn)
             hdr.addWidget(preview_btn)
             cl.addLayout(hdr)
@@ -2073,6 +2138,8 @@ class MainWindow(QMainWindow):
             self._dub_editors[sid]      = ed
             self._dub_cards[sid]        = card
             self._dub_preview_btns[sid] = preview_btn
+            self._dub_speed_labels[sid]    = speed_lbl
+            self._dub_duration_labels[sid] = duration_lbl
             # Attach spell-check highlighter — block signals so rehighlight()
             # does not fire textChanged and spuriously mark the scene as dirty.
             lang = getattr(self, "_dub_spell_lang", "it")
@@ -2398,7 +2465,8 @@ class MainWindow(QMainWindow):
         os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
         voice  = self._tts_voice_setting()
-        rate   = f"{self.tts_rate_input.value():+d}%"
+        rate_pct_value = self.tts_rate_input.value()
+        rate   = f"{rate_pct_value:+d}%"
         pitch  = f"{self.tts_pitch_input.value():+d}Hz"
         volume = f"{self.tts_volume_input.value():+d}%"
 
@@ -2452,9 +2520,12 @@ class MainWindow(QMainWindow):
 
         def _on_done(s):
             self._dub_dirty[s] = False
+            self._dub_rates[s] = rate_pct_value
             self._dub_apply_card_state(s)
             self._dub_update_dub_btn()
             self._dub_update_total_duration()
+            self._dub_update_segment_badges(s)
+            self._dub_save()
             b = self._dub_preview_btns.get(s)
             if b:
                 b.setEnabled(True)
@@ -2602,8 +2673,13 @@ class MainWindow(QMainWindow):
             import yaml as _yaml
             scenes = (_yaml.safe_load(Path(scenes_path).read_text(encoding="utf-8")) or {}).get("scenes", [])
             originals = {int(s["id"]): s.get("text", "") for s in scenes}
+        rates = getattr(self, "_dub_rates", {})
         data = {
-            sid: {"original": originals.get(sid, ""), "dubbed": ed.toPlainText()}
+            sid: {
+                "original": originals.get(sid, ""),
+                "dubbed": ed.toPlainText(),
+                **({"rate_pct": rates[sid]} if sid in rates else {}),
+            }
             for sid, ed in self._dub_editors.items()
         }
         try:
@@ -2899,8 +2975,8 @@ class MainWindow(QMainWindow):
         self.num_frames_input.setValue(int(settings.get("num_frames", 14)))
         self.motion_bucket_id_input.setValue(int(settings.get("motion_bucket_id", 127)))
         self.audio_volume_input.setValue(float(settings.get("audio_volume", 1.0)))
-        self.fade_in_input.setValue(float(settings.get("fade_in", 0.5)))
-        self.fade_out_input.setValue(float(settings.get("fade_out", 0.5)))
+        self.fade_in_input.setValue(float(settings.get("fade_in", 0.0)))
+        self.fade_out_input.setValue(float(settings.get("fade_out", 0.0)))
         self.use_ollama_input.setChecked(bool(settings.get("use_ollama", False)))
         self.ollama_model_input.setText(str(settings.get("ollama_model", "llama3")))
         self.ollama_host_input.setText(str(settings.get("ollama_host", "http://localhost:11434")))
@@ -2912,6 +2988,7 @@ class MainWindow(QMainWindow):
             self.tts_voice_input.setCurrentIndex(idx)
         tts_rate = str(settings.get("tts_rate", "+0%")).replace("+", "").replace("%", "")
         self.tts_rate_input.setValue(int(tts_rate) if tts_rate.lstrip("-").isdigit() else 0)
+        self._tts_rate_changed(self.tts_rate_input.value())
         tts_pitch = str(settings.get("tts_pitch", "+0Hz")).replace("+", "").replace("Hz", "")
         self.tts_pitch_input.setValue(int(tts_pitch) if tts_pitch.lstrip("-").isdigit() else 0)
         tts_volume = str(settings.get("tts_volume", "+0%")).replace("+", "").replace("%", "")
