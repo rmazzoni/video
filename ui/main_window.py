@@ -1614,6 +1614,10 @@ class MainWindow(QMainWindow):
         self._dub_speed_input.setToolTip("Narration speed (1.0 = normal, 0.95 = 5% slower, 1.10 = 10% faster)")
         self._dub_speed_input.valueChanged.connect(self._dub_speed_changed)
 
+        btn_export_word = QPushButton("📄 Export Word")
+        btn_export_word.setToolTip("Export all dubbed text to a .docx file in the project output folder")
+        btn_export_word.clicked.connect(self._dub_export_word)
+
         # Spell-check language toggle (IT / EN — no Off button; spell check always on)
         self._dub_spell_lang = "it"
         self._dub_spell_highlighters: dict = {}  # sid → _SpellHighlighter
@@ -1631,11 +1635,6 @@ class MainWindow(QMainWindow):
         btn_find.setFixedHeight(28)
         btn_find.clicked.connect(self._dub_toggle_find_panel)
 
-        btn_spell_reload = QPushButton("↺ Words")
-        btn_spell_reload.setFixedHeight(28)
-        btn_spell_reload.setToolTip("Reload custom word list from disk (spell_custom_words.txt)")
-        btn_spell_reload.clicked.connect(self._dub_reload_custom_words)
-
         self._dub_duration_label = QLabel("00:00")
         self._dub_duration_label.setToolTip("Overall length of dubbed scenes")
         self._dub_duration_label.setAlignment(
@@ -1652,10 +1651,10 @@ class MainWindow(QMainWindow):
         bar.addWidget(self._dub_play_btn)
         bar.addWidget(speed_label)
         bar.addWidget(self._dub_speed_input)
+        bar.addWidget(btn_export_word)
         bar.addWidget(btn_find)
         bar.addWidget(btn_spell_it)
         bar.addWidget(btn_spell_en)
-        bar.addWidget(btn_spell_reload)
         bar.addStretch(1)   # pushes status label to expand on the left
         bar.addWidget(self._dub_duration_label)
         root.addLayout(bar)
@@ -2035,6 +2034,53 @@ class MainWindow(QMainWindow):
             self._dub_speed_input.blockSignals(True)
             self._dub_speed_input.setValue(speed)
             self._dub_speed_input.blockSignals(False)
+
+    def _dub_export_word(self) -> None:
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Open a project first.")
+            return
+        editors: dict = getattr(self, "_dub_editors", {})
+        if not editors:
+            QMessageBox.warning(self, "Nothing to export", "Load scenes in the Dubbing tab first.")
+            return
+        try:
+            from docx import Document
+            from docx.shared import Pt, RGBColor
+        except ImportError:
+            QMessageBox.critical(self, "Missing dependency",
+                                 "python-docx is not installed.\nRun: pip install python-docx")
+            return
+
+        doc = Document()
+        doc.core_properties.title = os.path.basename(project)
+
+        style = doc.styles["Normal"]
+        style.font.name = "Calibri"
+        style.font.size = Pt(11)
+
+        heading = doc.add_heading(os.path.basename(project), level=1)
+        heading.runs[0].font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
+
+        for sid in sorted(editors.keys()):
+            text = editors[sid].toPlainText().strip()
+            doc.add_paragraph(text)
+
+        out_dir = os.path.join(project, "output")
+        os.makedirs(out_dir, exist_ok=True)
+        project_name = os.path.basename(project).replace(" ", "_")
+        out_path = os.path.join(out_dir, f"{project_name}_dubbing.docx")
+        try:
+            doc.save(out_path)
+        except PermissionError:
+            QMessageBox.warning(self, "Export failed",
+                                f"Could not write:\n{out_path}\n\nClose the file in Word and try again.")
+            return
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Exported")
+        msg.setText(f"Word file saved to:\n{out_path}")
+        msg.setIcon(QMessageBox.Icon.NoIcon)
+        msg.exec()
 
     def _dub_populate(self, scenes: list, existing: dict = None, from_disk: bool = False) -> None:
         existing = existing or {}
