@@ -447,7 +447,54 @@ class PipelineWorker(QObject):
                     gen.unload()
                     _log_vram("after clip gen unload")
 
-            # â”€â”€ Helper: assemble clips + audio into a video â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Helper: pad audio/video edges so words aren't clipped ────────
+            # -shortest muxing (or an over-eager silence trim) can shave a hair
+            # off the first/last word if audio and video start/end at exactly
+            # the same instant. Add a small fixed silence/freeze margin instead.
+            AUDIO_LEAD_IN_S = 0.5
+            AUDIO_TRAIL_OUT_S = 0.5
+
+            def _probe_duration(path: str) -> float:
+                import subprocess
+                try:
+                    p = subprocess.run(
+                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", path],
+                        capture_output=True, text=True,
+                    )
+                    return float(p.stdout.strip())
+                except Exception:
+                    return -1.0
+
+            def _pad_audio_edges(path: str, lead_s: float, trail_s: float) -> None:
+                import subprocess
+                tmp = path + ".padded" + os.path.splitext(path)[1]
+                filt = f"adelay={int(lead_s * 1000)}:all=1,apad=pad_dur={trail_s}"
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", path, "-af", filt, tmp],
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+                    raise RuntimeError(f"FFmpeg audio edge padding failed:\n{result.stderr[-1000:]}")
+                os.replace(tmp, path)
+
+            def _pad_video_edges(path: str, lead_s: float, trail_s: float) -> None:
+                import subprocess
+                tmp = path + ".padded.mp4"
+                # Must be ONE tpad filter instance, not two chained tpad filters —
+                # chaining two separate tpad calls drops frames at the boundary
+                # between them and silently loses most of the intended padding.
+                vf = f"tpad=start_duration={lead_s}:start_mode=clone:stop_duration={trail_s}:stop_mode=clone"
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", path, "-vf", vf,
+                     "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-an", tmp],
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+                    raise RuntimeError(f"FFmpeg video edge padding failed:\n{result.stderr[-1000:]}")
+                os.replace(tmp, path)
+
+            # ── Helper: assemble clips + audio into a video ───────────────
             def _run_assemble(clips_d: str, video_out: str, audio_out: str,
                               resolution: tuple, normalize_audio: bool = False):
                 from video.clip_assembler import ClipAssembler
@@ -465,6 +512,10 @@ class PipelineWorker(QObject):
                     self._emit_progress(int(pct * 0.85), f"Assembling clips... {int(pct)}%")
 
                 assembler.assemble(clips_d, on_progress=_assemble_progress)
+                _before_v = _probe_duration(video_out)
+                _pad_video_edges(video_out, AUDIO_LEAD_IN_S, AUDIO_TRAIL_OUT_S)
+                _after_v = _probe_duration(video_out)
+                self.log.emit(f"Video edge padding: {_before_v:.3f}s -> {_after_v:.3f}s")
                 self._emit_progress(85, "Merging audio...")
 
                 tts_files = sorted([
@@ -507,11 +558,15 @@ class PipelineWorker(QObject):
                     from audio_loudness import normalize_loudness_in_place
 
                     self._emit_progress(90, "Equalizing final audio loudness...")
-                    result = normalize_loudness_in_place(audio_src)
+                    result = normalize_loudness_in_place(audio_src, target_lufs=-17.0, trim_silence=False)
                     if not result.success:
                         raise RuntimeError(f"Audio normalization failed: {result.error}")
-                    self.log.emit(f"Normalized final audio to -19 LUFS: {audio_src}")
+                    self.log.emit(f"Normalized final audio to -17 LUFS: {audio_src}")
 
+                _before_a = _probe_duration(audio_src)
+                _pad_audio_edges(audio_src, AUDIO_LEAD_IN_S, AUDIO_TRAIL_OUT_S)
+                _after_a = _probe_duration(audio_src)
+                self.log.emit(f"Audio edge padding: {_before_a:.3f}s -> {_after_a:.3f}s")
                 self._emit_progress(97, "Muxing final video...")
                 sync = AudioSync(
                     output_path=audio_out,
@@ -520,6 +575,11 @@ class PipelineWorker(QObject):
                     fade_out=float(self.config.get("fade_out", 0.0)),
                 )
                 sync.merge(video_out, audio_src)
+                self.log.emit(
+                    f"Final mux inputs: video={_probe_duration(video_out):.3f}s "
+                    f"audio={_probe_duration(audio_src):.3f}s "
+                    f"output={_probe_duration(audio_out):.3f}s"
+                )
 
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # STAGE: preview_images  â€” FLUX schnell â†’ output/draft/

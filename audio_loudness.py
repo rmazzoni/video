@@ -44,6 +44,7 @@ def normalize_loudness_in_place(
     true_peak_db: float = -1.0,
     loudness_range: float = 11.0,
     ffmpeg_executable: Optional[str] = None,
+    trim_silence: bool = True,
 ) -> LoudnessNormalizationResult:
     path = Path(audio_path)
     measurements: Dict[str, str] = {}
@@ -64,12 +65,15 @@ def normalize_loudness_in_place(
     # The safe way to strip only leading/trailing silence is to trim the
     # start, reverse, trim the (now-leading) former end, and reverse back —
     # using only start_periods, never stop_periods.
+    # trim_silence=False skips this entirely: callers that add their own
+    # deliberate lead/trail padding need the exact duration preserved so it
+    # stays in sync with a video track that has no equivalent trim applied.
     trim_filter = (
         "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,"
         "areverse,"
         "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,"
         "areverse"
-    )
+    ) if trim_silence else "anull"
     target = f"I={target_lufs}:TP={true_peak_db}:LRA={loudness_range}"
 
     try:
