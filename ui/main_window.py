@@ -942,6 +942,7 @@ class MainWindow(QMainWindow):
                 chk.setChecked(fname in selected_set or (not selected_set and os.path.exists(img_path)))
                 chk.setToolTip(f"Include {fname} in Final Clips")
                 chk.setEnabled(os.path.exists(img_path))
+                chk.toggled.connect(lambda _checked: self._save_lightbox_selections(silent=True))
                 lbl_row.addWidget(vlbl, 1)
                 lbl_row.addWidget(chk)
                 cell_lay.addLayout(lbl_row)
@@ -965,19 +966,24 @@ class MainWindow(QMainWindow):
         for sid_dict in self._lightbox_checkboxes.values():
             for chk in sid_dict.values():
                 if chk.isEnabled():
+                    chk.blockSignals(True)
                     chk.setChecked(checked)
+                    chk.blockSignals(False)
+        self._save_lightbox_selections(silent=True)
 
-    def _save_lightbox_selections(self) -> None:
+    def _save_lightbox_selections(self, silent: bool = False) -> None:
         import yaml as _yaml
 
         project = self.project_path_input.text().strip()
         if not project:
-            QMessageBox.warning(self, "No project", "Load a project first.")
+            if not silent:
+                QMessageBox.warning(self, "No project", "Load a project first.")
             return
 
         if not self._lightbox_checkboxes:
-            QMessageBox.information(self, "Nothing to save",
-                                    "Refresh the Lightbox tab first to load images.")
+            if not silent:
+                QMessageBox.information(self, "Nothing to save",
+                                        "Refresh the Lightbox tab first to load images.")
             return
 
         selections: dict = {}
@@ -1002,7 +1008,8 @@ class MainWindow(QMainWindow):
         total = sum(len(v) for v in selections.values())
         self._lightbox_status_label.setText(
             f"Saved {total} selection(s) across {len(selections)} scene(s) \u2192 lightbox_selections.yaml")
-        self._append_log(f"Lightbox selections saved: {total} image(s) in {len(selections)} scene(s).")
+        if not silent:
+            self._append_log(f"Lightbox selections saved: {total} image(s) in {len(selections)} scene(s).")
 
     def _delete_draft_image(self, image_path: str, card: QWidget) -> None:
         try:

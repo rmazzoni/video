@@ -453,16 +453,19 @@ class PipelineWorker(QObject):
                 from video.clip_assembler import ClipAssembler
                 from video.audio_sync import AudioSync
 
-                self._emit_progress(82, "Assembling clips...")
+                # This helper is the entire body of work for the preview_video /
+                # final_video stages, so its own progress spans the full 0-100%
+                # range: assembling clips takes the bulk (0-85%), then audio
+                # merge/equalization get the remaining allowance up to 100%.
+                self._emit_progress(0, "Assembling clips...")
                 assembler = ClipAssembler(video_out, fps=int(self.config.get("fps", 24)),
                                           target_resolution=resolution)
 
                 def _assemble_progress(pct: float, _total: int) -> None:
-                    # Assembling occupies the 82-92% band of the overall pipeline.
-                    self._emit_progress(82 + int(pct / 100 * 10), f"Assembling clips... {int(pct)}%")
+                    self._emit_progress(int(pct * 0.85), f"Assembling clips... {int(pct)}%")
 
                 assembler.assemble(clips_d, on_progress=_assemble_progress)
-                self._emit_progress(92, "Merging audio...")
+                self._emit_progress(85, "Merging audio...")
 
                 tts_files = sorted([
                     os.path.join(tts_dir, f)
@@ -503,12 +506,13 @@ class PipelineWorker(QObject):
                 if normalize_audio:
                     from audio_loudness import normalize_loudness_in_place
 
-                    self._emit_progress(94, "Equalizing final audio loudness...")
+                    self._emit_progress(90, "Equalizing final audio loudness...")
                     result = normalize_loudness_in_place(audio_src)
                     if not result.success:
                         raise RuntimeError(f"Audio normalization failed: {result.error}")
                     self.log.emit(f"Normalized final audio to -19 LUFS: {audio_src}")
 
+                self._emit_progress(97, "Muxing final video...")
                 sync = AudioSync(
                     output_path=audio_out,
                     audio_volume=float(self.config.get("audio_volume", 1.0)),
