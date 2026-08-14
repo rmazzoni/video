@@ -1,19 +1,19 @@
 {
-  "_meta_note": "FLUX.2 Klein-4B text-to-image. Params: @prompt, @seed.",
+  "_meta_note": "FLUX.1-dev text-to-image (best quality, guidance-distilled). Params: @prompt, @seed.",
   "1": {
     "class_type": "UNETLoader",
     "_meta": { "title": "Load Diffusion Model" },
-    "inputs": { "unet_name": "flux2-klein-4b.safetensors", "weight_dtype": "default" }
+    "inputs": { "unet_name": "flux1-dev.safetensors", "weight_dtype": "default" }
   },
   "2": {
-    "class_type": "CLIPLoader",
-    "_meta": { "title": "Load CLIP" },
-    "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "flux2" }
+    "class_type": "DualCLIPLoader",
+    "_meta": { "title": "Load Dual CLIP" },
+    "inputs": { "clip_name1": "clip_l.safetensors", "clip_name2": "t5xxl_fp16.safetensors", "type": "flux" }
   },
   "3": {
     "class_type": "VAELoader",
     "_meta": { "title": "Load VAE" },
-    "inputs": { "vae_name": "flux2-vae.safetensors" }
+    "inputs": { "vae_name": "flux-ae.safetensors" }
   },
   "4": {
     "class_type": "CLIPTextEncode",
@@ -23,7 +23,7 @@
   "5": {
     "class_type": "FluxGuidance",
     "_meta": { "title": "Flux Guidance" },
-    "inputs": { "conditioning": ["4", 0], "guidance": 4.0 }
+    "inputs": { "conditioning": ["4", 0], "guidance": 3.5 }
   },
   "6": {
     "class_type": "ConditioningZeroOut",
@@ -59,6 +59,6 @@
   "10": {
     "class_type": "SaveImage",
     "_meta": { "title": "Save Image" },
-    "inputs": { "images": ["9", 0], "filename_prefix": "flux2_klein" }
+    "inputs": { "images": ["9", 0], "filename_prefix": "flux1_dev" }
   }
 }

@@ -1,29 +1,61 @@
 {
-  "_meta_note": "Placeholder ComfyUI API-format workflow. Export the real graph from ComfyUI (Save (API Format)) and replace this file.",
+  "_meta_note": "Image-to-video via Stable Video Diffusion XT (the only video model installed; FLUX.2 has no video variant). Params: @image (filename already uploaded to ComfyUI's input/ folder), @seed.",
+  "1": {
+    "class_type": "ImageOnlyCheckpointLoader",
+    "_meta": { "title": "Load SVD Checkpoint" },
+    "inputs": { "ckpt_name": "svd_xt.safetensors" }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "_meta": { "title": "Load Init Image" },
+    "inputs": { "image": "@image" }
+  },
   "3": {
+    "class_type": "SVD_img2vid_Conditioning",
+    "_meta": { "title": "SVD Conditioning" },
+    "inputs": {
+      "clip_vision": ["1", 1],
+      "init_image": ["2", 0],
+      "vae": ["1", 2],
+      "width": 1024,
+      "height": 576,
+      "video_frames": 25,
+      "motion_bucket_id": 127,
+      "fps": 6,
+      "augmentation_level": 0.0
+    }
+  },
+  "4": {
     "class_type": "KSampler",
     "_meta": { "title": "KSampler" },
     "inputs": {
+      "model": ["1", 0],
       "seed": "@seed",
       "steps": 20,
-      "cfg": 4.0,
+      "cfg": 2.5,
       "sampler_name": "euler",
-      "scheduler": "normal",
+      "scheduler": "karras",
+      "positive": ["3", 0],
+      "negative": ["3", 1],
+      "latent_image": ["3", 2],
       "denoise": 1.0
     }
   },
-  "6": {
-    "class_type": "CLIPTextEncode",
-    "_meta": { "title": "Positive Prompt" },
-    "inputs": {
-      "text": "@prompt"
-    }
+  "5": {
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE Decode" },
+    "inputs": { "samples": ["4", 0], "vae": ["1", 2] }
   },
-  "10": {
-    "class_type": "VideoLinearCFGGuidance",
-    "_meta": { "title": "Video Guidance" },
+  "6": {
+    "class_type": "SaveAnimatedWEBP",
+    "_meta": { "title": "Save Animated WEBP" },
     "inputs": {
-      "min_cfg": 1.0
+      "images": ["5", 0],
+      "filename_prefix": "svd_video",
+      "fps": 6.0,
+      "lossless": false,
+      "quality": 90,
+      "method": "default"
     }
   }
 }

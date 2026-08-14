@@ -110,7 +110,8 @@ class ComfyClient:
         "@prompt" / "@seed" placeholder found in the workflow's node inputs,
         submits the resulting graph, and returns the ComfyUI prompt_id.
         """
-        graph = self._substitute_params(copy.deepcopy(workflow), params)
+        graph = {k: v for k, v in workflow.items() if isinstance(v, dict)}
+        graph = self._substitute_params(copy.deepcopy(graph), params)
         queued = self.queue_prompt(graph)
         prompt_id = queued.get("prompt_id")
         if not prompt_id:

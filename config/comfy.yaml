@@ -6,3 +6,7 @@ workflows_dir: "workflows"
 
 # Default workflow used by the UI on startup
 default_workflow: "flux2_image.json"
+
+# Local ComfyUI installation (cloned via `git clone`), used to launch the server
+install_dir: "F:/VID/ComfyUI"
+python_executable: "F:/VID/venv/Scripts/python.exe"
