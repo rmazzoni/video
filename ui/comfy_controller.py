@@ -1,39 +1,55 @@
-"""Connects the Qt6 UI to the comfy_bridge backend (client/loader/executor)."""
+"""Connects the Qt6 UI to the comfy_bridge backend (client/loader)."""
 
+import time
 from typing import Any, Dict, Optional
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 from comfy_bridge.client import ComfyClient
-from comfy_bridge.workflow_executor import WorkflowExecutor
 from comfy_bridge.workflow_loader import WorkflowLoader
 from utilis.logger import Logger
 
 
-class ComfyWorker(QObject):
-    """Runs a single workflow execution on a background QThread."""
+class WorkflowWorker(QObject):
+    """
+    Submits a workflow + params to ComfyUI on a background QThread and
+    polls `ComfyClient.get_result` until it reports completion.
+    """
 
-    progress = pyqtSignal(int, str)
+    progress = pyqtSignal(int)
     finished = pyqtSignal(dict)
-    failed = pyqtSignal(str)
+    error = pyqtSignal(str)
 
-    def __init__(self, executor: WorkflowExecutor, graph: Dict[str, Any]):
+    def __init__(self, comfy_client: ComfyClient, workflow: Dict[str, Any], params: Dict[str, Any]):
         super().__init__()
-        self.executor = executor
-        self.graph = graph
-
-    @pyqtSlot()
-    def run(self) -> None:
-        self.executor.run(
-            self.graph,
-            on_progress=lambda pct, msg: self.progress.emit(pct, msg),
-            on_complete=lambda result: self.finished.emit(result),
-            on_error=lambda err: self.failed.emit(err),
-        )
+        self.client = comfy_client
+        self.workflow = workflow
+        self.params = params
+        self._cancel_requested = False
 
     @pyqtSlot()
     def cancel(self) -> None:
-        self.executor.cancel()
+        self._cancel_requested = True
+        self.client.interrupt()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            prompt_id = self.client.execute_workflow(self.workflow, self.params)
+            self.progress.emit(10)
+
+            # Poll until finished
+            while not self._cancel_requested:
+                status = self.client.get_result(prompt_id)
+                if status.get("completed"):
+                    self.progress.emit(100)
+                    self.finished.emit(status)
+                    return
+                self.progress.emit(status.get("progress") or 50)
+                time.sleep(0.5)
+
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class ComfyController(QObject):
@@ -59,10 +75,9 @@ class ComfyController(QObject):
         self.logger = Logger()
         self.client = ComfyClient(host=host, port=port)
         self.loader = WorkflowLoader(workflows_dir)
-        self.executor = WorkflowExecutor(self.client)
 
         self._thread: Optional[QThread] = None
-        self._worker: Optional[ComfyWorker] = None
+        self._worker: Optional[WorkflowWorker] = None
 
     def check_connection(self) -> bool:
         alive = self.client.is_alive()
@@ -72,23 +87,26 @@ class ComfyController(QObject):
     def load_workflow(self, name: str) -> Dict[str, Any]:
         return self.loader.load(name)
 
-    def run_workflow(self, workflow_name: str, params: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+    def run_workflow(self, workflow_name: str, params: Optional[Dict[str, Any]] = None) -> None:
+        """
+        `params` maps placeholder names used in the workflow JSON (e.g.
+        "prompt", "seed") to their values, matching `@prompt`/`@seed`
+        tokens in the graph.
+        """
         if self._thread is not None:
             self.logger.warning("A workflow is already running.")
             return
 
         graph = self.loader.load(workflow_name)
-        if params:
-            graph = self.executor.apply_params(graph, params)
 
         self._thread = QThread(self)
-        self._worker = ComfyWorker(self.executor, graph)
+        self._worker = WorkflowWorker(self.client, graph, params or {})
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self.progress.emit)
+        self._worker.progress.connect(lambda pct: self.progress.emit(pct, ""))
         self._worker.finished.connect(self._on_finished)
-        self._worker.failed.connect(self._on_failed)
+        self._worker.error.connect(self._on_failed)
 
         self._thread.start()
 
@@ -110,3 +128,4 @@ class ComfyController(QObject):
     def _on_failed(self, error: str) -> None:
         self.failed.emit(error)
         self._cleanup_thread()
+

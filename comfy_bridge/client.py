@@ -117,19 +117,29 @@ class ComfyClient:
             raise RuntimeError(f"ComfyUI did not return a prompt_id: {queued}")
         return prompt_id
 
-    def get_result(self, prompt_id: str, timeout: float = 300.0, poll_interval: float = 1.0) -> Dict[str, Any]:
+    def get_result(self, prompt_id: str) -> Dict[str, Any]:
         """
-        Blocks until `prompt_id` finishes (or `timeout` seconds elapse),
-        polling /history/{id}, then returns the parsed result
-        (see ResponseParser.parse_history).
+        Single, non-blocking check of a prompt's status via /history/{id}.
+        Returns {"completed": False} while still queued/running, or the
+        parsed result (with "completed": True) once ComfyUI has finished.
+        Intended to be polled from a worker thread's own loop.
         """
-        parser = ResponseParser()
+        history = self.get_history(prompt_id)
+        if prompt_id not in history:
+            return {"completed": False, "progress": None}
+
+        result = ResponseParser().parse_history(history, prompt_id)
+        result["completed"] = True
+        return result
+
+    def wait_for_result(self, prompt_id: str, timeout: float = 300.0, poll_interval: float = 1.0) -> Dict[str, Any]:
+        """Blocking convenience wrapper that polls `get_result` until completion or timeout."""
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
-            history = self.get_history(prompt_id)
-            if prompt_id in history:
-                return parser.parse_history(history, prompt_id)
+            status = self.get_result(prompt_id)
+            if status.get("completed"):
+                return status
             time.sleep(poll_interval)
 
         raise TimeoutError(f"Timed out waiting for ComfyUI prompt {prompt_id}")
