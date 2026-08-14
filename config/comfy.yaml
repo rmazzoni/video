@@ -1,0 +1,8 @@
+# ComfyUI backend connection settings
+host: "127.0.0.1"
+port: 8188
+
+workflows_dir: "workflows"
+
+# Default workflow used by the UI on startup
+default_workflow: "flux2_image.json"

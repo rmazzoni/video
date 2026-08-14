@@ -1,0 +1,29 @@
+{
+  "_meta_note": "Placeholder ComfyUI API-format workflow. Export the real graph from ComfyUI (Save (API Format)) and replace this file.",
+  "3": {
+    "class_type": "KSampler",
+    "_meta": { "title": "KSampler" },
+    "inputs": {
+      "seed": "@seed",
+      "steps": 20,
+      "cfg": 4.0,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1.0
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Positive Prompt" },
+    "inputs": {
+      "text": "@prompt"
+    }
+  },
+  "10": {
+    "class_type": "VideoLinearCFGGuidance",
+    "_meta": { "title": "Video Guidance" },
+    "inputs": {
+      "min_cfg": 1.0
+    }
+  }
+}

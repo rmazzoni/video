@@ -1,0 +1,4 @@
+# Application-wide settings
+project_root: "."
+output_dir: "output"
+log_level: "INFO"

@@ -29,6 +29,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect
 from ui.pipeline_controller import PipelineController
+from ui.comfy_controller import ComfyController
+from ui.widgets.workflow_selector import WorkflowSelector
+from ui.widgets.node_editor_stub import NodeEditorStub
+from ui.widgets.pipeline_status import PipelineStatus
 
 
 class _DualColorProgressBar(QProgressBar):
@@ -221,6 +225,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_dubbing_tab(), "Dubbing")
         self.tabs.addTab(self._build_draft_tab(), "Preview Images")
         self.tabs.addTab(self._build_lightbox_tab(), "Lightbox")
+        self.tabs.addTab(self._build_comfy_tab(), "ComfyUI")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         layout.addWidget(self.tabs)
 
@@ -345,6 +350,44 @@ class MainWindow(QMainWindow):
         root.addLayout(extras_row)
         root.addWidget(self.log_output, 1)
         return page
+
+    def _build_comfy_tab(self) -> QWidget:
+        workflows_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "workflows")
+        self.comfy_controller = ComfyController(workflows_dir)
+
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self.comfy_workflow_selector = WorkflowSelector(workflows_dir)
+        self.comfy_status = PipelineStatus()
+        self.comfy_node_stub = NodeEditorStub()
+
+        run_row = QHBoxLayout()
+        self.comfy_run_button = QPushButton("Run Workflow")
+        self.comfy_cancel_button = QPushButton("Cancel")
+        self.comfy_check_button = QPushButton("Check Connection")
+        run_row.addWidget(self.comfy_run_button)
+        run_row.addWidget(self.comfy_cancel_button)
+        run_row.addWidget(self.comfy_check_button)
+
+        layout.addWidget(self.comfy_workflow_selector)
+        layout.addLayout(run_row)
+        layout.addWidget(self.comfy_node_stub)
+        layout.addWidget(self.comfy_status, 1)
+
+        self.comfy_check_button.clicked.connect(self.comfy_controller.check_connection)
+        self.comfy_run_button.clicked.connect(
+            lambda: self.comfy_controller.run_workflow(self.comfy_workflow_selector.selected_workflow())
+        )
+        self.comfy_cancel_button.clicked.connect(self.comfy_controller.cancel)
+        self.comfy_controller.connection_changed.connect(self.comfy_status.set_connected)
+        self.comfy_controller.progress.connect(self.comfy_status.set_progress)
+        self.comfy_controller.finished.connect(
+            lambda result: self.comfy_status.append_log(f"Finished: {result.get('images', [])}")
+        )
+        self.comfy_controller.failed.connect(lambda err: self.comfy_status.append_log(f"Error: {err}"))
+
+        return tab
 
     def _build_settings_tab(self) -> QWidget:
         outer = QWidget()
