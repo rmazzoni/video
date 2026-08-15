@@ -63,7 +63,7 @@ class PipelineWorker(QObject):
         try:
             stage = (self.stage or "full").strip().lower()
             if stage not in {"narration", "scenes", "prompts", "tts",
-                             "preview_images", "preview_clips", "preview_video",
+                             "preview_images", "preview_scene", "preview_clips", "preview_video",
                              "final_images", "final_clips", "final_video"}:                raise ValueError(f"Unknown stage: {stage}")
 
             # Force-release any GPU memory left over from a previous pipeline run
@@ -584,6 +584,28 @@ class PipelineWorker(QObject):
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # STAGE: preview_images  â€” FLUX schnell â†’ output/draft/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            if stage == "preview_scene":
+                self._check_cancel()
+                scene_id = int(self.config.get("preview_scene_id", 0))
+                prompt = str(self.config.get("preview_prompt", "")).strip()
+                if scene_id <= 0:
+                    raise ValueError("preview_scene requires a valid preview_scene_id.")
+                if not prompt:
+                    raise ValueError("preview_scene requires a non-empty preview_prompt.")
+
+                self._emit_progress(10, f"Loading FLUX schnell for scene {scene_id}")
+                image_gen = _make_image_gen("flux-schnell", draft_dir)
+                try:
+                    self._check_cancel()
+                    self._emit_progress(35, f"Generating scene {scene_id}")
+                    image_gen.generate_image(prompt, scene_id)
+                finally:
+                    image_gen.unload()
+                image_path = os.path.join(draft_dir, f"scene_{scene_id:03d}.png")
+                self._emit_progress(100, f"Scene {scene_id} preview ready")
+                self.finished.emit(True, image_path)
+                return
+
             if stage == "preview_images":
                 self._check_cancel()
                 self._emit_progress(10, "Generating preview images (FLUX schnell)")
@@ -598,6 +620,12 @@ class PipelineWorker(QObject):
                 if os.path.exists(prompts_path):
                     with open(prompts_path, "r", encoding="utf-8") as fh:
                         cached_prompts = yaml.safe_load(fh) or {}
+
+                overrides_path = os.path.join(self.project_path, "output", "prompt_overrides.yaml")
+                prompt_overrides: dict = {}
+                if os.path.exists(overrides_path):
+                    with open(overrides_path, "r", encoding="utf-8") as fh:
+                        prompt_overrides = yaml.safe_load(fh) or {}
 
                 # Scan existing draft images
                 existing_drafts: set = set()
@@ -647,7 +675,9 @@ class PipelineWorker(QObject):
                 for idx, scene in enumerate(scenes_needed, 1):
                     self._check_cancel()
                     sid = int(scene["id"])
-                    prompt = cached_prompts.get(sid) or scene.get("text", "")
+                    prompt = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
+                              or cached_prompts.get(sid) or cached_prompts.get(str(sid))
+                              or scene.get("text", ""))
                     self.log.emit(f"Scene {sid}: generating preview imageâ€¦")
                     image_gen.generate_image(prompt, sid)
                     self._emit_progress(10 + int((idx / total) * 85), f"Preview image {idx}/{total}")

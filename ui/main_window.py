@@ -223,6 +223,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_pipeline_tab(), "Pipeline")
         self.tabs.addTab(self._build_script_tab(), "Script")
         self.tabs.addTab(self._build_dubbing_tab(), "Dubbing")
+        self.tabs.addTab(self._build_prompts_tab(), "Prompts")
         self.tabs.addTab(self._build_draft_tab(), "Preview Images")
         self.tabs.addTab(self._build_lightbox_tab(), "Lightbox")
         self.tabs.addTab(self._build_comfy_tab(), "ComfyUI")
@@ -292,16 +293,12 @@ class MainWindow(QMainWindow):
         stages_row2 = QHBoxLayout()
         self._stage_btns: dict = {}
         stage_defs = [
-            ("1. Narration",       "narration"),
-            ("2. Split Scenes",    "scenes"),
-            ("3. Build Prompts",   "prompts"),
-            ("4. Synth Audio",     "tts"),
-            ("5. Preview Images",  "preview_images"),
-            ("6. Preview Clips",   "preview_clips"),
-            ("7. Preview Video",   "preview_video"),
-            ("8. Lightbox Images", "final_images"),
-            ("9. Final Clips",     "final_clips"),
-            ("10. Final Video",    "final_video"),
+            ("Preview Images",  "preview_images"),
+            ("Preview Clips",   "preview_clips"),
+            ("Preview Video",   "preview_video"),
+            ("Lightbox Images", "final_images"),
+            ("Final Clips",     "final_clips"),
+            ("Final Video",     "final_video"),
         ]
         for i, (label, value) in enumerate(stage_defs):
             btn = QPushButton(label)
@@ -1256,6 +1253,7 @@ class MainWindow(QMainWindow):
         project = self.project_path_input.text().strip()
         scenes_yaml  = os.path.join(project, "output", "scenes.yaml")
         prompts_yaml = os.path.join(project, "output", "prompts.yaml")
+        overrides_yaml = os.path.join(project, "output", "prompt_overrides.yaml")
 
         # Load narration text
         scene_text = ""
@@ -1271,11 +1269,19 @@ class MainWindow(QMainWindow):
 
         # Load prompt
         prompts: dict = {}
+        overrides: dict = {}
         current_prompt = ""
         if scene_id is not None and os.path.exists(prompts_yaml):
             try:
                 prompts = yaml.safe_load(Path(prompts_yaml).read_text(encoding="utf-8")) or {}
                 current_prompt = prompts.get(scene_id) or prompts.get(str(scene_id)) or ""
+            except Exception:
+                pass
+        if scene_id is not None and os.path.exists(overrides_yaml):
+            try:
+                overrides = yaml.safe_load(Path(overrides_yaml).read_text(encoding="utf-8")) or {}
+                current_prompt = (overrides.get(scene_id) or overrides.get(str(scene_id))
+                                  or current_prompt)
             except Exception:
                 pass
 
@@ -1422,11 +1428,11 @@ class MainWindow(QMainWindow):
             new_prompt = prompt_edit.toPlainText().strip()
             if scene_id is None:
                 return False
-            prompts[scene_id] = new_prompt
-            prompts.pop(str(scene_id), None)
+            overrides[scene_id] = new_prompt
+            overrides.pop(str(scene_id), None)
             try:
-                with open(prompts_yaml, "w", encoding="utf-8") as fh:
-                    yaml.safe_dump(prompts, fh, allow_unicode=True, sort_keys=False)
+                with open(overrides_yaml, "w", encoding="utf-8") as fh:
+                    yaml.safe_dump(overrides, fh, allow_unicode=True, sort_keys=False)
             except Exception as exc:
                 QMessageBox.warning(dlg, "Save failed", str(exc))
                 return False
@@ -1786,6 +1792,371 @@ class MainWindow(QMainWindow):
         root.addWidget(scroll, 1)
 
         return page
+
+    def _build_prompts_tab(self) -> QWidget:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setSpacing(6)
+
+        self._prompts_status_label = QLabel("Build prompts or reload translations to populate scenes.")
+        self._prompts_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
+        root.addWidget(self._prompts_status_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._prompts_cards_widget = QWidget()
+        self._prompts_cards_layout = QVBoxLayout(self._prompts_cards_widget)
+        self._prompts_cards_layout.setSpacing(8)
+        self._prompts_cards_layout.addStretch(1)
+        scroll.setWidget(self._prompts_cards_widget)
+        root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        btn_build = QPushButton("Build Prompts")
+        btn_build.setToolTip("Generate missing Llama prompts from each scene's English text")
+        btn_build.clicked.connect(lambda: self.run_stage("prompts"))
+        btn_reload = QPushButton("Reload from Dubbing")
+        btn_reload.setToolTip("Reload Italian translations from output/dubbing.yaml")
+        btn_reload.clicked.connect(self._prompts_reload_from_dubbing)
+        actions.addWidget(btn_build)
+        actions.addWidget(btn_reload)
+        root.addLayout(actions)
+        return page
+
+    def _prompts_reload_from_dubbing(self) -> None:
+        if getattr(self, "_dub_editors", None):
+            self._dub_save()
+        self._prompts_refresh()
+
+    def _prompts_project_data(self):
+        import yaml as _yaml
+
+        project = self.project_path_input.text().strip()
+        if not project:
+            return [], {}, {}, {}
+
+        output = os.path.join(project, "output")
+
+        def _load(name: str):
+            path = os.path.join(output, name)
+            if not os.path.exists(path):
+                return {}
+            try:
+                return _yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            except Exception:
+                return {}
+
+        scenes = _load("scenes.yaml").get("scenes", [])
+        return scenes, _load("dubbing.yaml"), _load("prompts.yaml"), _load("prompt_overrides.yaml")
+
+    def _prompts_refresh(self) -> None:
+        if not hasattr(self, "_prompts_cards_layout"):
+            return
+        while self._prompts_cards_layout.count() > 1:
+            item = self._prompts_cards_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        scenes, dubbing, prompts, overrides = self._prompts_project_data()
+        if not scenes:
+            self._prompts_status_label.setText("No scenes found. Split scenes from the Script tab first.")
+            return
+
+        for scene in scenes:
+            sid = int(scene["id"])
+            original = scene.get("text", "")
+            dub_entry = dubbing.get(sid) or dubbing.get(str(sid)) or {}
+            italian = dub_entry.get("dubbed", "") if isinstance(dub_entry, dict) else str(dub_entry)
+            generated = prompts.get(sid) or prompts.get(str(sid)) or ""
+            override = overrides.get(sid) or overrides.get(str(sid)) or ""
+
+            card = QWidget()
+            card.setObjectName("promptCard")
+            card.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            card.setToolTip("Click to refine this scene prompt and preview FLUX schnell")
+            card.setStyleSheet(
+                "QWidget#promptCard { background:#1D1B20; border:1px solid #36343B; border-radius:4px; }"
+                "QWidget#promptCard:hover { border:1px solid #96BDE2; }"
+            )
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(10, 8, 10, 8)
+            layout.setSpacing(4)
+
+            title = QLabel(f"Scene {sid}" + ("  •  manual override active" if override else ""))
+            title.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; border:none;")
+            title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            layout.addWidget(title)
+            for heading, text, color in (
+                ("English original", original, "#E6E1E5"),
+                ("Italian translation", italian or "(not yet synced from Dubbing)", "#9FD6B8"),
+                ("Llama 3 prompt", generated or "(not generated)", "#C9A6E6"),
+            ):
+                heading_label = QLabel(heading)
+                heading_label.setStyleSheet("color:#8E8B90; font-size:10px; font-weight:bold; border:none;")
+                heading_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                value_label = QLabel(text)
+                value_label.setWordWrap(True)
+                value_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                value_label.setStyleSheet(
+                    f"color:{color}; font-size:12px; background:#131118; "
+                    "border:1px solid #2a2830; border-radius:2px; padding:5px;"
+                )
+                layout.addWidget(heading_label)
+                layout.addWidget(value_label)
+
+            card.mousePressEvent = lambda event, s=sid: self._open_prompt_scene_dialog(s)
+            self._prompts_cards_layout.insertWidget(self._prompts_cards_layout.count() - 1, card)
+
+        self._prompts_status_label.setText(f"{len(scenes)} scene(s). Click a card to refine its image prompt.")
+
+    def _open_prompt_scene_dialog(self, scene_id: int, candidate: bool = False,
+                                  prior_override=None) -> None:
+        import yaml as _yaml
+        from PyQt6.QtWidgets import QDialog, QTextEdit
+
+        scenes, dubbing, prompts, overrides = self._prompts_project_data()
+        scene = next((s for s in scenes if int(s["id"]) == scene_id), {})
+        original = scene.get("text", "")
+        dub_entry = dubbing.get(scene_id) or dubbing.get(str(scene_id)) or {}
+        italian = dub_entry.get("dubbed", "") if isinstance(dub_entry, dict) else str(dub_entry)
+        llama_prompt = prompts.get(scene_id) or prompts.get(str(scene_id)) or ""
+        working_prompt = overrides.get(scene_id) or overrides.get(str(scene_id)) or llama_prompt
+
+        project = self.project_path_input.text().strip()
+        image_path = os.path.join(project, "output", "draft", f"scene_{scene_id:03d}.png")
+        backup_path = image_path + ".prompt_backup"
+        overrides_path = os.path.join(project, "output", "prompt_overrides.yaml")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Scene {scene_id} prompt refinement")
+        dlg.setModal(True)
+        dlg.resize(900, 760)
+        dlg.setMinimumSize(720, 600)
+        dlg.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        layout = QVBoxLayout(dlg)
+
+        preview = QLabel("No preview image yet")
+        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview.setMinimumHeight(260)
+        if os.path.exists(image_path):
+            pixmap = QPixmap(image_path)
+            preview.setPixmap(pixmap.scaled(820, 360, Qt.AspectRatioMode.KeepAspectRatio,
+                                            Qt.TransformationMode.SmoothTransformation))
+            preview.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            preview.setToolTip("Click to view the full-size image")
+            preview.mousePressEvent = lambda event: self._open_image_viewer(image_path)
+        layout.addWidget(preview)
+
+        run_status = QLabel("")
+        run_status.setStyleSheet("color:#8E8B90; font-size:11px;")
+        run_progress = QProgressBar()
+        run_progress.setRange(0, 100)
+        run_progress.setVisible(False)
+        layout.addWidget(run_status)
+        layout.addWidget(run_progress)
+
+        for heading, text in (("English original", original), ("Italian translation", italian)):
+            heading_label = QLabel(heading)
+            heading_label.setStyleSheet("font-size:14px; font-weight:bold;")
+            layout.addWidget(heading_label)
+            view = QTextEdit()
+            view.setPlainText(text)
+            view.setReadOnly(True)
+            view.setFixedHeight(70)
+            view.setStyleSheet("QTextEdit { font-size:16px; }")
+            layout.addWidget(view)
+
+        original_prompt_label = QLabel("Original Llama prompt (read only)")
+        original_prompt_label.setStyleSheet("font-size:15px; font-weight:bold;")
+        layout.addWidget(original_prompt_label)
+        original_prompt_view = QTextEdit()
+        original_prompt_view.setPlainText(llama_prompt)
+        original_prompt_view.setReadOnly(True)
+        original_prompt_view.setMinimumHeight(100)
+        original_prompt_view.setStyleSheet(
+            "QTextEdit { background:#131118; color:#C9A6E6; border:1px solid #36343B; "
+            "border-radius:3px; padding:5px; font-size:19px; }"
+        )
+        layout.addWidget(original_prompt_view)
+
+        working_prompt_label = QLabel("Working prompt")
+        working_prompt_label.setStyleSheet("font-size:15px; font-weight:bold;")
+        layout.addWidget(working_prompt_label)
+        prompt_edit = QTextEdit()
+        prompt_edit.setPlainText(working_prompt)
+        prompt_edit.setMinimumHeight(120)
+        prompt_edit.setStyleSheet("QTextEdit { font-size:19px; }")
+        layout.addWidget(prompt_edit)
+
+        tuning = QHBoxLayout()
+        tuning.addWidget(QLabel("Llama model:"))
+        llama_model = QLineEdit(self.ollama_model_input.text().strip() or "llama3")
+        tuning.addWidget(llama_model, 1)
+        tuning.addWidget(QLabel("Schnell steps:"))
+        steps = QSpinBox()
+        steps.setRange(1, 20)
+        steps.setValue(self.schnell_steps_input.value())
+        tuning.addWidget(steps)
+        tuning.addWidget(QLabel("Guidance:"))
+        guidance = QDoubleSpinBox()
+        guidance.setRange(0.0, 10.0)
+        guidance.setValue(self.schnell_guidance_input.value())
+        tuning.addWidget(guidance)
+        layout.addLayout(tuning)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        btn_close = QPushButton("Discard Candidate" if candidate else "Close")
+        btn_llama = QPushButton("Regenerate with Llama")
+        btn_run = QPushButton("Run FLUX Schnell")
+        btn_commit = QPushButton("Commit to Preview Images")
+        btn_commit.setEnabled(candidate)
+        buttons.addWidget(btn_close)
+        buttons.addWidget(btn_llama)
+        buttons.addWidget(btn_run)
+        buttons.addWidget(btn_commit)
+        layout.addLayout(buttons)
+
+        def _save_override() -> bool:
+            text = prompt_edit.toPlainText().strip()
+            if not text:
+                QMessageBox.warning(dlg, "Empty prompt", "Enter a prompt first.")
+                return False
+            overrides[scene_id] = text
+            overrides.pop(str(scene_id), None)
+            os.makedirs(os.path.dirname(overrides_path), exist_ok=True)
+            Path(overrides_path).write_text(
+                _yaml.safe_dump(overrides, allow_unicode=True, sort_keys=False), encoding="utf-8"
+            )
+            self.ollama_model_input.setText(llama_model.text().strip() or "llama3")
+            self.schnell_steps_input.setValue(steps.value())
+            self.schnell_guidance_input.setValue(guidance.value())
+            self.controller.blockSignals(True)
+            try:
+                self.controller.save_settings(self._collect_settings_from_form())
+            finally:
+                self.controller.blockSignals(False)
+            return True
+
+        candidate_state = {"resolved": False, "has_candidate": candidate}
+
+        def _set_running(running: bool):
+            btn_run.setEnabled(not running)
+            btn_llama.setEnabled(not running)
+            btn_close.setEnabled(not running)
+            btn_commit.setEnabled(not running and candidate_state["has_candidate"])
+            run_progress.setVisible(running)
+
+        def _run_preview():
+            prompt = prompt_edit.toPlainText().strip()
+            if not prompt:
+                QMessageBox.warning(dlg, "Empty prompt", "Enter a prompt first.")
+                return
+            if getattr(self.controller, "_thread", None) is not None:
+                QMessageBox.warning(dlg, "Pipeline busy", "Wait for the current pipeline operation to finish.")
+                return
+            if not candidate_state["has_candidate"] and os.path.exists(image_path):
+                if os.path.exists(backup_path):
+                    os.remove(backup_path)
+                os.replace(image_path, backup_path)
+
+            self.schnell_steps_input.setValue(steps.value())
+            self.schnell_guidance_input.setValue(guidance.value())
+            self.controller.blockSignals(True)
+            try:
+                self.controller.save_settings(self._collect_settings_from_form())
+            finally:
+                self.controller.blockSignals(False)
+
+            _set_running(True)
+            run_progress.setValue(0)
+            run_status.setText(f"Generating scene {scene_id} with FLUX schnell...")
+
+            def _show_progress(value: int, message: str):
+                run_progress.setValue(value)
+                run_status.setText(message)
+
+            def _show_candidate(success: bool, payload: str):
+                try:
+                    self.controller.pipeline_finished.disconnect(_show_candidate)
+                    self.controller.pipeline_progress.disconnect(_show_progress)
+                except Exception:
+                    pass
+                _set_running(False)
+                if success:
+                    candidate_state["has_candidate"] = True
+                    btn_close.setText("Discard Candidate")
+                    btn_commit.setEnabled(True)
+                    pixmap = QPixmap(image_path)
+                    preview.setPixmap(pixmap.scaled(
+                        820, 360, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    ))
+                    preview.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                    preview.setToolTip("Click to view the full-size image")
+                    preview.mousePressEvent = lambda event: self._open_image_viewer(image_path)
+                    run_progress.setValue(100)
+                    run_status.setText(f"Scene {scene_id} candidate ready. Commit or adjust and run again.")
+                else:
+                    if os.path.exists(backup_path):
+                        os.replace(backup_path, image_path)
+                    run_status.setText(f"Generation failed: {payload}")
+
+            self.controller.pipeline_progress.connect(_show_progress)
+            self.controller.pipeline_finished.connect(_show_candidate)
+            self.controller.run_pipeline("preview_scene", {
+                "preview_scene_id": scene_id,
+                "preview_prompt": prompt,
+                "schnell_steps": steps.value(),
+                "schnell_guidance": guidance.value(),
+            })
+
+        def _commit():
+            if not _save_override():
+                return
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            candidate_state["resolved"] = True
+            self._prompts_refresh()
+            self._refresh_draft_grid()
+            dlg.accept()
+
+        def _discard_candidate():
+            if candidate_state["has_candidate"] and not candidate_state["resolved"]:
+                candidate_state["resolved"] = True
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+                if os.path.exists(backup_path):
+                    os.replace(backup_path, image_path)
+                self._refresh_draft_grid()
+                self._prompts_refresh()
+
+        def _close_or_discard():
+            _discard_candidate()
+            dlg.reject()
+
+        def _regenerate_with_llama():
+            from prompts.prompt_builder import PromptBuilder
+            builder = PromptBuilder(
+                style_preset=self.style_preset_input.currentText(),
+                default_aspect_ratio=self.aspect_ratio_input.currentText(),
+                use_ollama=True,
+                ollama_model=llama_model.text().strip() or "llama3",
+                ollama_host=self.ollama_host_input.text().strip() or "http://localhost:11434",
+            )
+            try:
+                prompt_edit.setPlainText(builder.build_prompt({"id": scene_id, "text": original}))
+            except Exception as exc:
+                QMessageBox.warning(dlg, "Llama generation failed", str(exc))
+
+        btn_close.clicked.connect(_close_or_discard)
+        dlg.rejected.connect(_discard_candidate)
+        btn_llama.clicked.connect(_regenerate_with_llama)
+        btn_run.clicked.connect(_run_preview)
+        btn_commit.clicked.connect(_commit)
+        dlg.exec()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -2983,6 +3354,7 @@ class MainWindow(QMainWindow):
         self._refresh_draft_grid()
         self._refresh_lightbox()
         self._dub_refresh()
+        self._prompts_refresh()
 
     def _refresh_recent_projects(self, projects) -> None:
         self.recent_projects_combo.blockSignals(True)
@@ -3054,6 +3426,9 @@ class MainWindow(QMainWindow):
         if success and hasattr(self, "_sync_pending") and self._sync_pending:
             self._sync_pending = False
             self._dub_refresh()
+
+        if success:
+            QTimer.singleShot(0, self._prompts_refresh)
 
         if success:
             self.pipeline_status_label.setText("Pipeline complete")
