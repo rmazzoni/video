@@ -729,6 +729,12 @@ class PipelineWorker(QObject):
                     with open(prompts_path, "r", encoding="utf-8") as fh:
                         cached_prompts = yaml.safe_load(fh) or {}
 
+                overrides_path = os.path.join(self.project_path, "output", "prompt_overrides.yaml")
+                prompt_overrides = {}
+                if os.path.exists(overrides_path):
+                    with open(overrides_path, "r", encoding="utf-8") as fh:
+                        prompt_overrides = yaml.safe_load(fh) or {}
+
                 base_seed = int(self.config.get("seed", 42))
                 seed_offsets = [-1, 0, 1]
                 model_variants = [
@@ -785,7 +791,9 @@ class PipelineWorker(QObject):
                     image_gen = _make_image_gen(model_type, lightbox_dir)
                     for sid, v_idx, seed_val, scene in work:
                         self._check_cancel()
-                        prompt = cached_prompts.get(sid) or cached_prompts.get(str(sid)) or scene.get("text", "")
+                        prompt = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
+                                  or cached_prompts.get(sid) or cached_prompts.get(str(sid))
+                                  or scene.get("text", ""))
                         prompt = structure_prompt_for_model(
                             prompt, model_type, str(self.config.get("style_preset", "cinematic")))
                         suffix = f"_{model_key}_v{v_idx}"
@@ -1039,6 +1047,7 @@ class PipelineController(QObject):
 
         self._thread: Optional[QThread] = None
         self._worker: Optional[PipelineWorker] = None
+        self._pending_stages: List[Tuple[str, Optional[dict]]] = []
 
     def set_project_path(self, path: str) -> None:
         normalized = os.path.abspath(path)
@@ -1092,7 +1101,9 @@ class PipelineController(QObject):
 
     def run_pipeline(self, stage: str = "full", extra_config: dict = None) -> None:
         if self._thread is not None:
-            self.log.warning("Pipeline is already running.")
+            self._pending_stages.append((stage, extra_config))
+            self.log.info(f"Pipeline busy — queued stage '{stage}' to run when idle "
+                          f"({len(self._pending_stages)} queued).")
             return
 
         if not self.project_path:
@@ -1128,6 +1139,9 @@ class PipelineController(QObject):
         self._thread.start()
 
     def cancel_pipeline(self) -> None:
+        if self._pending_stages:
+            self.log.info(f"Cleared {len(self._pending_stages)} queued stage(s) due to cancellation.")
+            self._pending_stages.clear()
         if self._worker is None:
             self.pipeline_log.emit("No active pipeline run.")
             return
@@ -1145,6 +1159,9 @@ class PipelineController(QObject):
         """Release thread/worker references once the thread has fully stopped."""
         self._worker = None
         self._thread = None
+        if self._pending_stages:
+            stage, extra_config = self._pending_stages.pop(0)
+            self.run_pipeline(stage, extra_config)
 
     def _load_recent_projects(self) -> List[str]:
         if not os.path.exists(self.recent_projects_path):

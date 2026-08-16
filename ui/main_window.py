@@ -71,9 +71,14 @@ class _ClickableImageLabel(QLabel):
         self.setToolTip("Click to enlarge")
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self._image_path)
-        super().mousePressEvent(event)
+        try:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.clicked.emit(self._image_path)
+            super().mousePressEvent(event)
+        except RuntimeError:
+            # The label can be deleted mid-click if a background pipeline finishes
+            # and rebuilds the grid while this click's dialog is still open/modal.
+            pass
 
 
 class _SpellHighlighter(QSyntaxHighlighter):
@@ -1484,10 +1489,26 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(btn_save_clip)
         lay.addLayout(btn_row)
 
-        dlg.exec()
-        self._refresh_draft_grid()
+        # Suppress grid rebuilds while this dialog's nested event loop is running —
+        # a background pipeline finishing mid-dialog would otherwise delete the very
+        # card widget whose click opened this dialog, crashing on return to its
+        # mousePressEvent. See _refresh_draft_grid().
+        self._draft_dialog_depth = getattr(self, "_draft_dialog_depth", 0) + 1
+        try:
+            dlg.exec()
+        finally:
+            self._draft_dialog_depth -= 1
+        if self._draft_dialog_depth <= 0:
+            self._draft_grid_refresh_pending = False
+            self._refresh_draft_grid()
 
     def _refresh_draft_grid(self) -> None:
+        if getattr(self, "_draft_dialog_depth", 0) > 0:
+            # A draft/prompt dialog's nested event loop is active — rebuilding now
+            # would delete widgets still referenced further up the call stack.
+            # Defer until the dialog closes (see _open_draft_zoom_dialog).
+            self._draft_grid_refresh_pending = True
+            return
         project = self.project_path_input.text().strip()
         draft_dir   = os.path.join(project, "output", "draft")  if project else ""
         images_dir  = os.path.join(project, "output", "images") if project else ""
@@ -2156,7 +2177,16 @@ class MainWindow(QMainWindow):
         btn_llama.clicked.connect(_regenerate_with_llama)
         btn_run.clicked.connect(_run_preview)
         btn_commit.clicked.connect(_commit)
-        dlg.exec()
+
+        # Suppress grid rebuilds while this dialog is modal (see _refresh_draft_grid).
+        self._draft_dialog_depth = getattr(self, "_draft_dialog_depth", 0) + 1
+        try:
+            dlg.exec()
+        finally:
+            self._draft_dialog_depth -= 1
+        if self._draft_dialog_depth <= 0 and getattr(self, "_draft_grid_refresh_pending", False):
+            self._draft_grid_refresh_pending = False
+            self._refresh_draft_grid()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
