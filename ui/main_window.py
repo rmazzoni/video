@@ -26,14 +26,17 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QCheckBox,
     QSlider,
+    QSplitter,
 )
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl
 from ui.pipeline_controller import PipelineController
 from ui.comfy_controller import ComfyController
 from ui.widgets.workflow_selector import WorkflowSelector
 from ui.widgets.node_editor_stub import NodeEditorStub
 from ui.widgets.pipeline_status import PipelineStatus
+from utilis.config_loader import ConfigLoader
 
 
 class _DualColorProgressBar(QProgressBar):
@@ -356,14 +359,24 @@ class MainWindow(QMainWindow):
 
     def _build_comfy_tab(self) -> QWidget:
         workflows_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "workflows")
-        self.comfy_controller = ComfyController(workflows_dir)
+        config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config")
+        comfy_config = ConfigLoader(config_dir).load(
+            "comfy.yaml", default={"host": "127.0.0.1", "port": 8188}
+        )
+        comfy_host = comfy_config.get("host", "127.0.0.1")
+        comfy_port = int(comfy_config.get("port", 8188))
+        self.comfy_controller = ComfyController(workflows_dir, host=comfy_host, port=comfy_port)
 
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        outer_layout = QVBoxLayout(tab)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        left_panel = QWidget()
+        layout = QVBoxLayout(left_panel)
 
         self.comfy_workflow_selector = WorkflowSelector(workflows_dir)
         self.comfy_status = PipelineStatus()
-        self.comfy_node_stub = NodeEditorStub()
 
         run_row = QHBoxLayout()
         self.comfy_run_button = QPushButton("Run Workflow")
@@ -375,8 +388,26 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.comfy_workflow_selector)
         layout.addLayout(run_row)
-        layout.addWidget(self.comfy_node_stub)
         layout.addWidget(self.comfy_status, 1)
+
+        # Embedded ComfyUI web interface, so the node graph lives inside the app
+        self.comfy_web_view = QWebEngineView()
+        self.comfy_web_view.setUrl(QUrl(f"http://{comfy_host}:{comfy_port}"))
+        btn_reload_comfy_ui = QPushButton("Reload ComfyUI Page")
+        btn_reload_comfy_ui.clicked.connect(
+            lambda: self.comfy_web_view.setUrl(QUrl(f"http://{comfy_host}:{comfy_port}"))
+        )
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(btn_reload_comfy_ui)
+        right_layout.addWidget(self.comfy_web_view, 1)
+
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        outer_layout.addWidget(splitter)
 
         self.comfy_check_button.clicked.connect(self.comfy_controller.check_connection)
         self.comfy_run_button.clicked.connect(
