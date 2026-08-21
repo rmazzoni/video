@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QStatusBar,
     QCheckBox,
+    QSlider,
 )
 from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect
@@ -3241,17 +3242,32 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(page)
         root.setSpacing(6)
 
+        header_row = QHBoxLayout()
         self._script_path_label = QLabel("No project loaded")
         self._script_path_label.setStyleSheet("color:#8E8B90; font-size:11px;")
-        root.addWidget(self._script_path_label)
+        header_row.addWidget(self._script_path_label, 1)
+
+        header_row.addWidget(QLabel("Text size:"))
+        self._script_font_size = 15
+        self._script_font_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self._script_font_size_slider.setMinimum(8)
+        self._script_font_size_slider.setMaximum(36)
+        self._script_font_size_slider.setValue(self._script_font_size)
+        self._script_font_size_slider.setFixedWidth(120)
+        self._script_font_size_slider.setToolTip("Adjust script text size")
+        self._script_font_size_slider.valueChanged.connect(self._on_script_font_size_changed)
+        header_row.addWidget(self._script_font_size_slider)
+        self._script_font_size_label = QLabel(f"{self._script_font_size}px")
+        self._script_font_size_label.setStyleSheet("color:#8E8B90; font-size:11px;")
+        self._script_font_size_label.setFixedWidth(28)
+        header_row.addWidget(self._script_font_size_label)
+        root.addLayout(header_row)
 
         self._script_editor = QPlainTextEdit()
         self._script_editor.setPlaceholderText("Open or create a project to edit the narration script.")
-        self._script_editor.setStyleSheet(
-            "QPlainTextEdit { font-family: 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.5; }"
-        )
         self._script_editor.textChanged.connect(self._on_script_text_changed)
         root.addWidget(self._script_editor, 1)
+        self._apply_script_font_size(self._script_font_size)
 
         btn_row = QHBoxLayout()
         self._btn_save_script = QPushButton("Save Script")
@@ -3273,6 +3289,16 @@ class MainWindow(QMainWindow):
         self._script_dirty = False
         self._script_set_saved_style()
         return page
+
+    def _apply_script_font_size(self, size: int) -> None:
+        self._script_editor.setStyleSheet(
+            f"QPlainTextEdit {{ font-family: 'Segoe UI', sans-serif; font-size: {size}px; line-height: 1.5; }}"
+        )
+
+    def _on_script_font_size_changed(self, size: int) -> None:
+        self._script_font_size = size
+        self._script_font_size_label.setText(f"{size}px")
+        self._apply_script_font_size(size)
 
     def _script_set_saved_style(self) -> None:
         self._btn_save_script.setStyleSheet(
