@@ -18,6 +18,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config", "comfy.yaml")
 
 STARTUP_TIMEOUT_SECS = 60
 POLL_INTERVAL_SECS = 1.0
+RELAUNCH_EXIT_CODE = 75
 
 
 def load_comfy_config() -> dict:
@@ -78,9 +79,18 @@ def main() -> None:
         print("[launcher] ComfyUI is up.")
 
     try:
-        print("[launcher] Starting Qt application...")
-        app_proc = subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "main.py")], cwd=BASE_DIR)
-        app_proc.wait()
+        app_env = os.environ.copy()
+        app_env["VID_COMFY_LAUNCHER"] = "1"
+        while True:
+            print("[launcher] Starting Qt application...")
+            app_proc = subprocess.Popen(
+                [sys.executable, os.path.join(BASE_DIR, "main.py")],
+                cwd=BASE_DIR,
+                env=app_env,
+            )
+            if app_proc.wait() != RELAUNCH_EXIT_CODE:
+                break
+            print("[launcher] Relaunch requested; keeping ComfyUI running.")
     finally:
         if comfy_proc is not None and comfy_proc.poll() is None:
             print("[launcher] Shutting down ComfyUI...")

@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl, QCoreApplication
 from ui.pipeline_controller import PipelineController
 from ui.comfy_controller import ComfyController
 from ui.widgets.workflow_selector import WorkflowSelector
@@ -3743,7 +3744,12 @@ class MainWindow(QMainWindow):
         self._tts_preview_thread.start()
 
     def _relaunch(self) -> None:
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        if os.environ.get("VID_COMFY_LAUNCHER") == "1":
+            QCoreApplication.exit(75)
+            return
+
+        subprocess.Popen([sys.executable] + sys.argv, cwd=os.getcwd())
+        QCoreApplication.quit()
 
     def _clear_prompt_cache(self) -> None:
         project = self.project_path_input.text().strip()
