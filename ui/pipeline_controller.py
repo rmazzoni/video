@@ -167,44 +167,76 @@ class PipelineWorker(QObject):
 
             if stage == "prompts":
                 self._check_cancel()
-                self._emit_progress(25, "Building prompts")
-                prompt_builder = PromptBuilder(
-                    style_preset=self.config.get("style_preset", "cinematic"),
-                    default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
-                    use_ollama=bool(self.config.get("use_ollama", False)),
-                    ollama_model=str(self.config.get("ollama_model", "llama3")),
-                    ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
-                )
-                if prompt_builder._enhancer:
-                    if prompt_builder._enhancer.is_available():
-                        self.log.emit("Ollama prompt enhancement: ACTIVE")
-                    else:
-                        self.log.emit("Ollama not available â€” using rule-based prompts.")
+                self._emit_progress(25, "Building model-specific prompts")
+                from prompts.model_prompt_service import MODEL_KEYS, ModelPromptService, effective_prompt
+
                 prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+                model_prompts_path = os.path.join(self.project_path, "output", "model_prompts.yaml")
                 cached_prompts: dict = {}
                 if os.path.exists(prompts_path):
                     with open(prompts_path, "r", encoding="utf-8") as fh:
                         cached_prompts = yaml.safe_load(fh) or {}
-                    self.log.emit(f"Loaded {len(cached_prompts)} cached prompt(s).")
+                model_prompts: dict = {}
+                if os.path.exists(model_prompts_path):
+                    with open(model_prompts_path, "r", encoding="utf-8") as fh:
+                        model_prompts = yaml.safe_load(fh) or {}
+
+                service = ModelPromptService(
+                    profiles_dir=self._resolve_path(str(self.config.get(
+                        "prompt_profiles_dir", "src/config/prompt_profiles"))),
+                    ollama_model=str(self.config.get("ollama_model", "llama3")),
+                    ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
+                    max_visual_beats=(int(self.config["max_visual_beats"])
+                                      if self.config.get("max_visual_beats") is not None else None),
+                )
+                requested_model = str(self.config.get("prompt_model_key", "")).strip().lower()
+                active_models = (requested_model,) if requested_model in MODEL_KEYS else MODEL_KEYS
+                force_regenerate = bool(self.config.get("force_regenerate_prompts", False))
                 total_scenes = len(scenes)
                 new_count = 0
                 for index, scene in enumerate(scenes, start=1):
                     self._check_cancel()
                     scene_id = int(scene["id"])
-                    if scene_id in cached_prompts:
-                        self.log.emit(f"Scene {scene_id}: using cached prompt.")
-                    else:
-                        prompt = prompt_builder.build_prompt(scene)
-                        cached_prompts[scene_id] = prompt
+                    scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
+                    updated_entry = {"scene_id": scene_id, "models": {}}
+                    existing_models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
+                    for model_key in MODEL_KEYS:
+                        existing = existing_models.get(model_key, {})
+                        if model_key not in active_models:
+                            updated_entry["models"][model_key] = existing
+                            continue
+                        existing_rows = existing.get("prompts", []) if isinstance(existing, dict) else []
+                        if any(row.get("source") == "manually_edited" for row in existing_rows
+                               if isinstance(row, dict)) and not force_regenerate:
+                            updated_entry["models"][model_key] = existing
+                            self.log.emit(f"Scene {scene_id} [{model_key}]: preserved manual prompts.")
+                            continue
+                        profile = service.load_profile(model_key)
+                        updated_entry["models"][model_key] = {
+                            "profile": f"{model_key}.yaml",
+                            "prompts": service.generate(scene, model_key),
+                            "max_prompts_per_scene": int(profile.get("max_prompts_per_scene", 3)),
+                        }
                         new_count += 1
-                        self.log.emit(f"Scene {scene_id}: generated prompt.")
-                        with open(prompts_path, "w", encoding="utf-8") as fh:
-                            yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
+                        self.log.emit(f"Scene {scene_id} [{model_key}]: generated prompts.")
+                    model_prompts[scene_id] = updated_entry
+                    model_prompts.pop(str(scene_id), None)
+                    schnell = updated_entry["models"].get("schnell", {})
+                    schnell_prompt = effective_prompt(schnell)
+                    if schnell_prompt:
+                        cached_prompts[scene_id] = schnell_prompt
+                        cached_prompts.pop(str(scene_id), None)
+                    elif scene_id not in cached_prompts and str(scene_id) not in cached_prompts:
+                        cached_prompts[scene_id] = scene.get("text", "")
+                    with open(model_prompts_path, "w", encoding="utf-8") as fh:
+                        yaml.safe_dump(model_prompts, fh, allow_unicode=True, sort_keys=False)
+                    with open(prompts_path, "w", encoding="utf-8") as fh:
+                        yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
                     self._emit_progress(30 + int((index / total_scenes) * 70),
-                                        f"Prompts {index}/{total_scenes}")
-                self.log.emit(f"Prompts done. {new_count} new, {total_scenes - new_count} cached.")
+                                        f"Model prompts {index}/{total_scenes}")
+                self.log.emit(f"Model prompts complete: {new_count} model/scene set(s) generated.")
                 self._emit_progress(100, "Prompts ready")
-                self.finished.emit(True, prompts_path)
+                self.finished.emit(True, model_prompts_path)
                 return
 
             if stage in {"full", "tts"}:
@@ -735,6 +767,12 @@ class PipelineWorker(QObject):
                     with open(overrides_path, "r", encoding="utf-8") as fh:
                         prompt_overrides = yaml.safe_load(fh) or {}
 
+                model_prompts_path = os.path.join(self.project_path, "output", "model_prompts.yaml")
+                model_prompts = {}
+                if os.path.exists(model_prompts_path):
+                    with open(model_prompts_path, "r", encoding="utf-8") as fh:
+                        model_prompts = yaml.safe_load(fh) or {}
+
                 base_seed = int(self.config.get("seed", 42))
                 seed_offsets = [-1, 0, 1]
                 model_variants = [
@@ -791,7 +829,15 @@ class PipelineWorker(QObject):
                     image_gen = _make_image_gen(model_type, lightbox_dir)
                     for sid, v_idx, seed_val, scene in work:
                         self._check_cancel()
-                        prompt = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
+                        scene_prompt_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
+                        model_entry = scene_prompt_entry.get("models", {}).get(model_key, {})
+                        model_rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
+                        model_texts = [
+                            str(row.get("text", "")).strip() for row in model_rows
+                            if isinstance(row, dict) and str(row.get("text", "")).strip()
+                        ]
+                        prompt = (model_texts[(v_idx - 1) % len(model_texts)] if model_texts else
+                                  prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
                                   or cached_prompts.get(sid) or cached_prompts.get(str(sid))
                                   or scene.get("text", ""))
                         prompt = structure_prompt_for_model(

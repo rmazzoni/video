@@ -1,0 +1,88 @@
+{
+  "1": {
+    "class_type": "VIDPipelineConfig",
+    "_meta": { "title": "VID Pipeline Settings" },
+    "inputs": {
+      "project_path": "F:/VID/projects/project",
+      "source_dir": "F:/VID/src",
+      "prompt_profiles_dir": "F:/VID/src/config/prompt_profiles",
+      "max_visual_beats": 3,
+      "style_preset": "cinematic",
+      "aspect_ratio": "16:9",
+      "scene_split_method": "paragraph",
+      "min_sentence_length": 20,
+      "seed": 42,
+      "image_width": 1344,
+      "image_height": 768,
+      "clip_engine": "ken_burns",
+      "ken_burns_motion": "static",
+      "fps": 8,
+      "num_frames": 14,
+      "motion_bucket_id": 127,
+      "tts_voice": "it-IT-DiegoNeural",
+      "tts_rate": "+0%",
+      "tts_pitch": "+0Hz",
+      "tts_volume": "+0%",
+      "output_width": 1920,
+      "output_height": 1080,
+      "audio_volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0
+    }
+  },
+  "2": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "1. Load Narration" },
+    "inputs": { "config": ["1", 0], "stage": "narration" }
+  },
+  "3": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "2. Split Scenes" },
+    "inputs": { "config": ["1", 0], "stage": "scenes", "previous": ["2", 0] }
+  },
+  "4": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "3. Build Prompts" },
+    "inputs": { "config": ["1", 0], "stage": "prompts", "previous": ["3", 0] }
+  },
+  "5": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "4. Synthesise Audio" },
+    "inputs": { "config": ["1", 0], "stage": "tts", "previous": ["4", 0] }
+  },
+  "6": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "5. Preview Images" },
+    "inputs": { "config": ["1", 0], "stage": "preview_images", "previous": ["5", 0] }
+  },
+  "7": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "6. Preview Clips" },
+    "inputs": { "config": ["1", 0], "stage": "preview_clips", "previous": ["6", 0] }
+  },
+  "8": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "7. Preview Video" },
+    "inputs": { "config": ["1", 0], "stage": "preview_video", "previous": ["7", 0] }
+  },
+  "9": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "8. Final Images" },
+    "inputs": { "config": ["1", 0], "stage": "final_images", "previous": ["8", 0] }
+  },
+  "10": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "9. Final Clips" },
+    "inputs": { "config": ["1", 0], "stage": "final_clips", "previous": ["9", 0] }
+  },
+  "11": {
+    "class_type": "VIDPipelineStage",
+    "_meta": { "title": "10. Final Video" },
+    "inputs": { "config": ["1", 0], "stage": "final_video", "previous": ["10", 0] }
+  },
+  "12": {
+    "class_type": "VIDPipelineOutput",
+    "_meta": { "title": "VID Pipeline Output" },
+    "inputs": { "state": ["11", 0] }
+  }
+}

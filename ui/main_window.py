@@ -1856,15 +1856,46 @@ class MainWindow(QMainWindow):
         self._prompts_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
         root.addWidget(self._prompts_status_label)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._prompts_cards_widget = QWidget()
-        self._prompts_cards_layout = QVBoxLayout(self._prompts_cards_widget)
-        self._prompts_cards_layout.setSpacing(8)
-        self._prompts_cards_layout.addStretch(1)
-        scroll.setWidget(self._prompts_cards_widget)
-        root.addWidget(scroll, 1)
+        self._prompt_model_tabs = QTabWidget()
+        self._prompt_model_layouts = {}
+        self._prompt_profile_editors = {}
+        for model_key, title in (("schnell", "Schnell"), ("dev", "Dev"), ("flux2", "FLUX.2")):
+            model_page = QWidget()
+            model_layout = QVBoxLayout(model_page)
+            profile_label = QLabel("Llama instructions")
+            profile_label.setStyleSheet("font-weight:bold;")
+            profile_editor = QPlainTextEdit()
+            profile_editor.setMaximumHeight(110)
+            profile_editor.setPlaceholderText("Instructions used by Llama for this model")
+            self._prompt_profile_editors[model_key] = profile_editor
+            btn_save_profile = QPushButton("Save Instructions")
+            btn_save_profile.clicked.connect(
+                lambda _checked, key=model_key: self._save_prompt_profile(key)
+            )
+            btn_regenerate = QPushButton("Regenerate This Model")
+            btn_regenerate.clicked.connect(
+                lambda _checked, key=model_key: self._regenerate_prompt_model(key)
+            )
+            profile_row = QHBoxLayout()
+            profile_row.addWidget(profile_label)
+            profile_row.addStretch(1)
+            profile_row.addWidget(btn_save_profile)
+            profile_row.addWidget(btn_regenerate)
+            model_layout.addLayout(profile_row)
+            model_layout.addWidget(profile_editor)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            cards_widget = QWidget()
+            cards_layout = QVBoxLayout(cards_widget)
+            cards_layout.setSpacing(8)
+            cards_layout.addStretch(1)
+            self._prompt_model_layouts[model_key] = cards_layout
+            scroll.setWidget(cards_widget)
+            model_layout.addWidget(scroll, 1)
+            self._prompt_model_tabs.addTab(model_page, title)
+        root.addWidget(self._prompt_model_tabs, 1)
 
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -1878,6 +1909,40 @@ class MainWindow(QMainWindow):
         actions.addWidget(btn_reload)
         root.addLayout(actions)
         return page
+
+    def _prompt_profiles_dir(self) -> str:
+        return os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "prompt_profiles")
+
+    def _save_prompt_profile(self, model_key: str) -> None:
+        import yaml as _yaml
+
+        path = os.path.join(self._prompt_profiles_dir(), f"{model_key}.yaml")
+        try:
+            profile = _yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            profile["system_instruction"] = self._prompt_profile_editors[model_key].toPlainText().strip()
+            Path(path).write_text(
+                _yaml.safe_dump(profile, allow_unicode=True, sort_keys=False), encoding="utf-8"
+            )
+            self._prompts_status_label.setText(f"Saved {model_key} Llama instructions.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save instructions failed", str(exc))
+
+    def _regenerate_prompt_model(self, model_key: str) -> None:
+        self._save_prompt_profile(model_key)
+        answer = QMessageBox.question(
+            self,
+            "Regenerate model prompts",
+            f"Replace all {model_key} prompts, including manual edits, using the current instructions?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        path = self.project_path_input.text().strip()
+        if path:
+            self.controller.set_project_path(path)
+        self.controller.run_pipeline("prompts", {
+            "prompt_model_key": model_key,
+            "force_regenerate_prompts": True,
+        })
 
     def _prompts_reload_from_dubbing(self) -> None:
         if getattr(self, "_dub_editors", None):
@@ -1906,64 +1971,145 @@ class MainWindow(QMainWindow):
         return scenes, _load("dubbing.yaml"), _load("prompts.yaml"), _load("prompt_overrides.yaml")
 
     def _prompts_refresh(self) -> None:
-        if not hasattr(self, "_prompts_cards_layout"):
+        if not hasattr(self, "_prompt_model_layouts"):
             return
-        while self._prompts_cards_layout.count() > 1:
-            item = self._prompts_cards_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        for cards_layout in self._prompt_model_layouts.values():
+            while cards_layout.count() > 1:
+                item = cards_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
 
         scenes, dubbing, prompts, overrides = self._prompts_project_data()
         if not scenes:
             self._prompts_status_label.setText("No scenes found. Split scenes from the Script tab first.")
             return
 
-        for scene in scenes:
-            sid = int(scene["id"])
-            original = scene.get("text", "")
-            dub_entry = dubbing.get(sid) or dubbing.get(str(sid)) or {}
-            italian = dub_entry.get("dubbed", "") if isinstance(dub_entry, dict) else str(dub_entry)
-            generated = prompts.get(sid) or prompts.get(str(sid)) or ""
-            override = overrides.get(sid) or overrides.get(str(sid)) or ""
+        import yaml as _yaml
+        project = self.project_path_input.text().strip()
+        model_prompts_path = os.path.join(project, "output", "model_prompts.yaml")
+        try:
+            model_prompts = _yaml.safe_load(Path(model_prompts_path).read_text(encoding="utf-8")) or {}
+        except Exception:
+            model_prompts = {}
 
-            card = QWidget()
-            card.setObjectName("promptCard")
-            card.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            card.setToolTip("Click to refine this scene prompt and preview FLUX schnell")
-            card.setStyleSheet(
-                "QWidget#promptCard { background:#1D1B20; border:1px solid #36343B; border-radius:4px; }"
-                "QWidget#promptCard:hover { border:1px solid #96BDE2; }"
-            )
-            layout = QVBoxLayout(card)
-            layout.setContentsMargins(10, 8, 10, 8)
-            layout.setSpacing(4)
+        for model_key, editor in self._prompt_profile_editors.items():
+            try:
+                profile_path = os.path.join(self._prompt_profiles_dir(), f"{model_key}.yaml")
+                profile = _yaml.safe_load(Path(profile_path).read_text(encoding="utf-8")) or {}
+                editor.setPlainText(str(profile.get("system_instruction", "")))
+            except Exception:
+                editor.clear()
 
-            title = QLabel(f"Scene {sid}" + ("  •  manual override active" if override else ""))
-            title.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; border:none;")
-            title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            layout.addWidget(title)
-            for heading, text, color in (
-                ("English original", original, "#E6E1E5"),
-                ("Italian translation", italian or "(not yet synced from Dubbing)", "#9FD6B8"),
-                ("Llama 3 prompt", generated or "(not generated)", "#C9A6E6"),
-            ):
-                heading_label = QLabel(heading)
-                heading_label.setStyleSheet("color:#8E8B90; font-size:10px; font-weight:bold; border:none;")
-                heading_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                value_label = QLabel(text)
-                value_label.setWordWrap(True)
-                value_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                value_label.setStyleSheet(
-                    f"color:{color}; font-size:12px; background:#131118; "
-                    "border:1px solid #2a2830; border-radius:2px; padding:5px;"
+        for model_key, cards_layout in self._prompt_model_layouts.items():
+            for scene in scenes:
+                sid = int(scene["id"])
+                scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
+                models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
+                model_entry = models.get(model_key, {})
+                rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
+
+                card = QWidget()
+                card.setObjectName("promptCard")
+                card.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                card.setToolTip("Click to edit this model's visual beats")
+                card.setStyleSheet(
+                    "QWidget#promptCard { background:#1D1B20; border:1px solid #36343B; border-radius:4px; }"
+                    "QWidget#promptCard:hover { border:1px solid #96BDE2; }"
                 )
-                layout.addWidget(heading_label)
-                layout.addWidget(value_label)
+                layout = QVBoxLayout(card)
+                layout.setContentsMargins(10, 8, 10, 8)
+                layout.setSpacing(4)
 
-            card.mousePressEvent = lambda event, s=sid: self._open_prompt_scene_dialog(s)
-            self._prompts_cards_layout.insertWidget(self._prompts_cards_layout.count() - 1, card)
+                manual = any(row.get("source") == "manually_edited" for row in rows if isinstance(row, dict))
+                title = QLabel(f"Scene {sid} | {len(rows)} visual beat(s)" + (" | manual" if manual else ""))
+                title.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; border:none;")
+                title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                layout.addWidget(title)
+                for index, row in enumerate(rows, 1):
+                    text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
+                    value_label = QLabel(f"{index}. {text}")
+                    value_label.setWordWrap(True)
+                    value_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                    value_label.setStyleSheet(
+                        "color:#C9A6E6; font-size:12px; background:#131118; "
+                        "border:1px solid #2a2830; border-radius:2px; padding:5px;"
+                    )
+                    layout.addWidget(value_label)
+                if not rows:
+                    layout.addWidget(QLabel("Not generated"))
 
-        self._prompts_status_label.setText(f"{len(scenes)} scene(s). Click a card to refine its image prompt.")
+                card.mousePressEvent = lambda event, s=sid, key=model_key: self._edit_model_prompts(s, key)
+                cards_layout.insertWidget(cards_layout.count() - 1, card)
+
+        self._prompts_status_label.setText(
+            f"{len(scenes)} scene(s). Build Prompts generates all three profiles; click a card to edit beats."
+        )
+
+    def _edit_model_prompts(self, scene_id: int, model_key: str) -> None:
+        import yaml as _yaml
+        from PyQt6.QtWidgets import QDialog
+
+        project = self.project_path_input.text().strip()
+        path = os.path.join(project, "output", "model_prompts.yaml")
+        try:
+            data = _yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        scene_entry = data.get(scene_id) or data.get(str(scene_id)) or {"scene_id": scene_id, "models": {}}
+        models = scene_entry.setdefault("models", {})
+        model_entry = models.setdefault(model_key, {"profile": f"{model_key}.yaml", "prompts": []})
+        rows = model_entry.get("prompts", [])
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Scene {scene_id} | {model_key} prompts")
+        dialog.resize(820, 560)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Separate visual beats with a blank line."))
+        editor = QPlainTextEdit()
+        editor.setPlainText("\n\n".join(str(row.get("text", "")) for row in rows if isinstance(row, dict)))
+        layout.addWidget(editor, 1)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        cancel = QPushButton("Cancel")
+        save = QPushButton("Save Manual Prompts")
+        actions.addWidget(cancel)
+        actions.addWidget(save)
+        layout.addLayout(actions)
+
+        def _save():
+            texts = [part.strip() for part in editor.toPlainText().split("\n\n") if part.strip()]
+            model_entry["prompts"] = [
+                {
+                    "id": f"scene_{scene_id:03d}_beat_{index:02d}_{model_key}",
+                    "beat": index,
+                    "text": text,
+                    "source": "manually_edited",
+                }
+                for index, text in enumerate(texts, 1)
+            ]
+            data[scene_id] = scene_entry
+            data.pop(str(scene_id), None)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            Path(path).write_text(
+                _yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
+            )
+            if model_key == "schnell" and texts:
+                legacy_path = os.path.join(project, "output", "prompts.yaml")
+                try:
+                    legacy = _yaml.safe_load(Path(legacy_path).read_text(encoding="utf-8")) or {}
+                except Exception:
+                    legacy = {}
+                legacy[scene_id] = texts[0]
+                legacy.pop(str(scene_id), None)
+                Path(legacy_path).write_text(
+                    _yaml.safe_dump(legacy, allow_unicode=True, sort_keys=False), encoding="utf-8"
+                )
+            dialog.accept()
+            self._prompts_refresh()
+
+        cancel.clicked.connect(dialog.reject)
+        save.clicked.connect(_save)
+        dialog.exec()
 
     def _open_prompt_scene_dialog(self, scene_id: int, candidate: bool = False,
                                   prior_override=None) -> None:

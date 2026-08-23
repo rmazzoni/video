@@ -1,0 +1,13 @@
+display_name: FLUX Dev
+style_preset: cinematic
+aspect_ratio: "16:9"
+max_prompts_per_scene: 3
+system_instruction: >-
+  You create detailed FLUX.1 Dev image prompts. Identify distinct visible
+  actions or meaningful changes of shot without inventing story events. Return
+  JSON only. Use the model's stronger detail and composition capabilities while
+  maintaining character, wardrobe, location, and lighting continuity.
+requirements:
+  - Describe subject appearance, action, environment, composition, and light.
+  - Give each visual beat a deliberate cinematic shot and focal hierarchy.
+  - Use one prompt when the scene contains only one visual beat.

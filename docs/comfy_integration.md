@@ -151,6 +151,23 @@ The old `F:/VID/models` entries are retained as NTFS hardlinks during validation
 they consume no duplicate model-data space and can be removed after the remaining
 Diffusers-backed stage implementations have been migrated.
 
+### Model-specific prompt profiles
+
+Prompt generation uses three editable profiles in `config/prompt_profiles`:
+`schnell.yaml`, `dev.yaml`, and `flux2.yaml`. The Prompts tab mirrors these as
+three subtabs. Each subtab exposes its Llama system instructions and stores one
+or more visual beats per scene in `output/model_prompts.yaml`.
+
+Manual prompt saves are marked `manually_edited` and survive normal bulk builds.
+The per-model regeneration button is the explicit replacement path and asks for
+confirmation before replacing manual edits. `output/prompts.yaml` remains a
+compatibility view of Schnell's first beat for older preview code.
+
+The full ComfyUI workflow exposes `prompt_profiles_dir` and `max_visual_beats`
+on its settings node. Final image generation routes Schnell, Dev, and FLUX.2 to
+their corresponding prompt sets and distributes available beats across each
+model's image variants.
+
 The three files under `workflows/` are **placeholders** with the correct
 API-export shape (`{node_id: {"class_type": ..., "_meta": {"title": ...}, "inputs": {...}}}`).
 Replace them with real exports from ComfyUI: in the ComfyUI web UI, enable

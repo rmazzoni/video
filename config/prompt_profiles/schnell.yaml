@@ -1,0 +1,13 @@
+display_name: FLUX Schnell
+style_preset: cinematic
+aspect_ratio: "16:9"
+max_prompts_per_scene: 3
+system_instruction: >-
+  You create concise FLUX.1 Schnell image prompts. Identify only distinct visible
+  actions or meaningful changes of shot in the scene. Return JSON only. Each
+  prompt must be direct, concrete, visually complete, and suitable for a fast
+  four-step model. Do not invent events, characters, text, or dialogue.
+requirements:
+  - Prefer clear subjects, actions, setting, lighting, and camera framing.
+  - Keep each prompt compact and avoid redundant stylistic vocabulary.
+  - Use one prompt when the scene contains only one visual beat.
