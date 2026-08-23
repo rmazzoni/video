@@ -5,7 +5,7 @@ port: 8188
 workflows_dir: "workflows"
 
 # Default workflow used by the UI on startup
-default_workflow: "flux2_image.json"
+default_workflow: "vid_full_pipeline.json"
 
 # Local ComfyUI installation (cloned via `git clone`), used to launch the server
 install_dir: "F:/VID/ComfyUI"

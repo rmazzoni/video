@@ -21,6 +21,29 @@ POLL_INTERVAL_SECS = 1.0
 RELAUNCH_EXIT_CODE = 75
 
 
+def ensure_vid_custom_nodes(install_dir: str) -> None:
+    source = os.path.join(BASE_DIR, "comfy_nodes", "vid_pipeline")
+    custom_nodes_dir = os.path.join(install_dir, "custom_nodes")
+    target = os.path.join(custom_nodes_dir, "vid_pipeline")
+    os.makedirs(custom_nodes_dir, exist_ok=True)
+
+    if os.path.isdir(target):
+        if os.path.samefile(source, target):
+            return
+        raise FileExistsError(
+            f"ComfyUI custom node path already exists and is not linked to this app: {target}"
+        )
+
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", target, source],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Could not register VID ComfyUI nodes: {result.stderr.strip()}")
+    print(f"[launcher] Registered VID custom nodes: {target} -> {source}")
+
+
 def load_comfy_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -65,6 +88,8 @@ def main() -> None:
     if not install_dir or not python_executable:
         print("[launcher] install_dir/python_executable missing from config/comfy.yaml", file=sys.stderr)
         sys.exit(1)
+
+    ensure_vid_custom_nodes(install_dir)
 
     comfy_proc = None
     if is_port_open(host, port):

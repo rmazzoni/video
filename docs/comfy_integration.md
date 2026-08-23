@@ -119,6 +119,38 @@ cfg = ConfigLoader("config").load("comfy.yaml")
 
 ## Workflow JSON files
 
+### Full application workflow
+
+`vid_full_pipeline.json` is the migration workflow for the complete application
+pipeline. It contains a settings node followed by the ten stages currently
+exposed by `PipelineController`, with explicit state links enforcing this order:
+
+1. narration loading
+2. scene splitting
+3. prompt building
+4. TTS
+5. preview images
+6. preview clips
+7. preview video assembly
+8. final image variants
+9. final clips
+10. final video assembly and audio normalization
+
+The custom nodes live in `comfy_nodes/vid_pipeline`. `launch_with_comfy.py`
+registers that directory as `ComfyUI/custom_nodes/vid_pipeline` using an NTFS
+directory junction, so ComfyUI and the application use one source copy.
+
+This is the compatibility phase of the migration: ComfyUI owns graph execution
+and graph inputs override the saved application settings, while each stage node
+delegates to the current `PipelineWorker` implementation. Image and SVD internals
+can now be replaced incrementally by native ComfyUI graph nodes without changing
+the ten-stage workflow contract.
+
+The model weights already installed below `ComfyUI/models` remain authoritative.
+The old `F:/VID/models` entries are retained as NTFS hardlinks during validation;
+they consume no duplicate model-data space and can be removed after the remaining
+Diffusers-backed stage implementations have been migrated.
+
 The three files under `workflows/` are **placeholders** with the correct
 API-export shape (`{node_id: {"class_type": ..., "_meta": {"title": ...}, "inputs": {...}}}`).
 Replace them with real exports from ComfyUI: in the ComfyUI web UI, enable
