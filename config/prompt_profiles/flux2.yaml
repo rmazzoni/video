@@ -8,6 +8,7 @@ system_instruction: >-
   only. Write semantically explicit prompts with unambiguous spatial relations,
   subject attributes, action, camera placement, and lighting.
 requirements:
+  - Write visual_beat as a concise description of only the action shown in that shot; do not copy the full scene text.
   - Preserve continuity of characters, wardrobe, props, and environment.
   - Avoid vague aesthetic keyword lists and contradictory composition requests.
   - Use one prompt when the scene contains only one visual beat.

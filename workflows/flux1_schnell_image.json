@@ -23,7 +23,7 @@
   "5": {
     "class_type": "FluxGuidance",
     "_meta": { "title": "Flux Guidance" },
-    "inputs": { "conditioning": ["4", 0], "guidance": 0.0 }
+    "inputs": { "conditioning": ["4", 0], "guidance": "@guidance" }
   },
   "6": {
     "class_type": "ConditioningZeroOut",
@@ -33,7 +33,7 @@
   "7": {
     "class_type": "EmptyLatentImage",
     "_meta": { "title": "Empty Latent" },
-    "inputs": { "width": 1024, "height": 1024, "batch_size": 1 }
+    "inputs": { "width": "@width", "height": "@height", "batch_size": 1 }
   },
   "8": {
     "class_type": "KSampler",
@@ -41,7 +41,7 @@
     "inputs": {
       "model": ["1", 0],
       "seed": "@seed",
-      "steps": 4,
+      "steps": "@steps",
       "cfg": 1.0,
       "sampler_name": "euler",
       "scheduler": "simple",
@@ -59,6 +59,6 @@
   "10": {
     "class_type": "SaveImage",
     "_meta": { "title": "Save Image" },
-    "inputs": { "images": ["9", 0], "filename_prefix": "flux1_schnell" }
+    "inputs": { "images": ["9", 0], "filename_prefix": "@filename_prefix" }
   }
 }

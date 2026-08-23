@@ -34,20 +34,36 @@ class ModelPromptService:
 
     def generate(self, scene: Dict[str, Any], model_key: str) -> List[Dict[str, Any]]:
         profile = self.load_profile(model_key)
-        prompts = self._generate_with_ollama(scene, profile)
-        if not prompts:
-            prompts = self._fallback(scene, profile)
+        generated = self._generate_with_ollama(scene, profile)
+        if not generated:
+            generated = self._fallback(scene, profile)
         return [
             {
                 "id": f"scene_{int(scene['id']):03d}_beat_{index:02d}_{model_key}",
                 "beat": index,
-                "text": text,
+                "visual_beat": item["visual_beat"],
+                "text": item["prompt"],
+                "generated_prompt": item["prompt"],
                 "source": "generated",
             }
-            for index, text in enumerate(prompts, 1)
+            for index, item in enumerate(generated, 1)
         ]
 
-    def _generate_with_ollama(self, scene: Dict[str, Any], profile: Dict[str, Any]) -> List[str]:
+    def regenerate_prompt(self, scene: Dict[str, Any], model_key: str, visual_beat: str) -> str:
+        """Generate one replacement prompt while keeping the selected visual beat fixed."""
+        profile = self.load_profile(model_key)
+        focused_scene = dict(scene)
+        focused_scene["text"] = (
+            f"Original script:\n{scene['text']}\n\nVisual beat to depict:\n{visual_beat}"
+        )
+        focused_profile = dict(profile)
+        focused_profile["max_prompts_per_scene"] = 1
+        generated = self._generate_with_ollama(focused_scene, focused_profile)
+        if generated:
+            return generated[0]["prompt"]
+        return self._fallback(focused_scene, profile)[0]["prompt"]
+
+    def _generate_with_ollama(self, scene: Dict[str, Any], profile: Dict[str, Any]) -> List[Dict[str, str]]:
         try:
             import ollama
 
@@ -74,14 +90,17 @@ class ModelPromptService:
             payload = json.loads(content)
             limit = int(profile.get("max_prompts_per_scene", 3))
             return [
-                str(item.get("prompt", "")).strip()
+                {
+                    "visual_beat": str(item.get("visual_beat", "")).strip() or str(scene["text"]),
+                    "prompt": str(item.get("prompt", "")).strip(),
+                }
                 for item in payload.get("prompts", [])[:limit]
                 if isinstance(item, dict) and str(item.get("prompt", "")).strip()
             ]
         except Exception:
             return []
 
-    def _fallback(self, scene: Dict[str, Any], profile: Dict[str, Any]) -> List[str]:
+    def _fallback(self, scene: Dict[str, Any], profile: Dict[str, Any]) -> List[Dict[str, str]]:
         builder = PromptBuilder(
             style_preset=str(profile.get("style_preset", "cinematic")),
             default_aspect_ratio=str(profile.get("aspect_ratio", "16:9")),
@@ -89,7 +108,7 @@ class ModelPromptService:
         prompt = builder.build_prompt(scene)
         prompt = structure_prompt_for_model(prompt, MODEL_TYPES[profile["model_key"]],
                                             str(profile.get("style_preset", "cinematic")))
-        return [prompt]
+        return [{"visual_beat": str(scene["text"]), "prompt": prompt}]
 
 
 def effective_prompt(entry: Dict[str, Any]) -> str:

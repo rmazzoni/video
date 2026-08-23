@@ -8,6 +8,7 @@ system_instruction: >-
   JSON only. Use the model's stronger detail and composition capabilities while
   maintaining character, wardrobe, location, and lighting continuity.
 requirements:
+  - Write visual_beat as a concise description of only the action shown in that shot; do not copy the full scene text.
   - Describe subject appearance, action, environment, composition, and light.
   - Give each visual beat a deliberate cinematic shot and focal hierarchy.
   - Use one prompt when the scene contains only one visual beat.

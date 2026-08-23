@@ -40,7 +40,7 @@ class PromptBuilder:
         default_aspect_ratio: str = "16:9",
         character_refs: Optional[List[str]] = None,
         use_ollama: bool = False,
-        ollama_model: str = "llama3",
+        ollama_model: str = "qwen3:8b",
         ollama_host: str = "http://localhost:11434",
     ):
         """

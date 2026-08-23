@@ -63,7 +63,8 @@ class PipelineWorker(QObject):
         try:
             stage = (self.stage or "full").strip().lower()
             if stage not in {"narration", "scenes", "prompts", "tts",
-                             "preview_images", "preview_scene", "preview_clips", "preview_video",
+                             "preview_images", "preview_scene", "prompt_image_candidate",
+                             "preview_clips", "preview_video",
                              "final_images", "final_clips", "final_video"}:                raise ValueError(f"Unknown stage: {stage}")
 
             # Force-release any GPU memory left over from a previous pipeline run
@@ -184,7 +185,7 @@ class PipelineWorker(QObject):
                 service = ModelPromptService(
                     profiles_dir=self._resolve_path(str(self.config.get(
                         "prompt_profiles_dir", "src/config/prompt_profiles"))),
-                    ollama_model=str(self.config.get("ollama_model", "llama3")),
+                    ollama_model=str(self.config.get("ollama_model", "qwen3:8b")),
                     ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
                     max_visual_beats=(int(self.config["max_visual_beats"])
                                       if self.config.get("max_visual_beats") is not None else None),
@@ -234,6 +235,59 @@ class PipelineWorker(QObject):
                         yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
                     self._emit_progress(30 + int((index / total_scenes) * 70),
                                         f"Model prompts {index}/{total_scenes}")
+
+                if force_regenerate and requested_model in MODEL_KEYS:
+                    removed_files = set()
+
+                    def _remove_matching(directory: str, patterns: List[str]) -> None:
+                        if not os.path.isdir(directory):
+                            return
+                        for pattern in patterns:
+                            for path in glob.glob(os.path.join(directory, pattern)):
+                                if os.path.isfile(path):
+                                    os.remove(path)
+                                    removed_files.add(os.path.basename(path))
+
+                    _remove_matching(
+                        os.path.join(self.project_path, "output", "prompt_candidates"),
+                        [f"scene_*_{requested_model}_b*_candidate.png"],
+                    )
+                    _remove_matching(
+                        os.path.join(self.project_path, "output", "lightbox"),
+                        [f"scene_*_{requested_model}_b*_v*.png",
+                         f"scene_*_{requested_model}_v*.png"],
+                    )
+                    if requested_model == "schnell":
+                        _remove_matching(
+                            os.path.join(self.project_path, "output", "draft"),
+                            ["scene_*.png", "scene_*.jpg", "scene_*.jpeg"],
+                        )
+                        _remove_matching(
+                            os.path.join(self.project_path, "output", "draft_clips"),
+                            ["scene_*.mp4"],
+                        )
+                        _remove_matching(
+                            os.path.join(self.project_path, "output", "preview"),
+                            ["preview_video.mp4", "preview_with_audio.mp4"],
+                        )
+
+                    selections_path = os.path.join(
+                        self.project_path, "output", "lightbox_selections.yaml")
+                    if removed_files and os.path.exists(selections_path):
+                        with open(selections_path, "r", encoding="utf-8") as fh:
+                            selections = yaml.safe_load(fh) or {}
+                        cleaned = {}
+                        for scene_id, filenames in selections.items():
+                            if not isinstance(filenames, list):
+                                continue
+                            kept = [name for name in filenames if name not in removed_files]
+                            if kept:
+                                cleaned[scene_id] = kept
+                        with open(selections_path, "w", encoding="utf-8") as fh:
+                            yaml.safe_dump(cleaned, fh, allow_unicode=True, sort_keys=False)
+
+                    self.log.emit(
+                        f"Invalidated {len(removed_files)} {requested_model} derived file(s).")
                 self.log.emit(f"Model prompts complete: {new_count} model/scene set(s) generated.")
                 self._emit_progress(100, "Prompts ready")
                 self.finished.emit(True, model_prompts_path)
@@ -296,32 +350,29 @@ class PipelineWorker(QObject):
             # â”€â”€ Helper: build image generator for a given model type â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             def _make_image_gen(model_type: str, output_dir: str):
                 if model_type == "flux-schnell":
-                    model_path = self.config.get("flux_schnell", "models/flux/FLUX.1-schnell")
                     steps = int(self.config.get("schnell_steps", 4))
                     guidance = float(self.config.get("schnell_guidance", 0.0))
                 elif model_type == "flux-dev":
-                    model_path = self.config.get("flux_dev", "models/flux/FLUX.1-dev")
                     steps = int(self.config.get("dev_steps", 20))
                     guidance = float(self.config.get("dev_guidance", 3.5))
                 elif model_type == "flux2":
-                    model_path = self.config.get("flux2", "models/flux/FLUX.2-klein-4B")
                     steps = int(self.config.get("flux2_steps", 4))
                     guidance = float(self.config.get("flux2_guidance", 1.0))
                 else:
-                    model_path = self.config.get("sdxl_base", "models/sd3")
-                    steps = int(self.config.get("num_inference_steps", 30))
-                    guidance = float(self.config.get("guidance_scale", 7.5))
-                self.log.emit(f"Image model: {model_type}  steps={steps}  guidance={guidance}")
-                from images.image_generator import ImageGenerator
-                return ImageGenerator(
-                    model_path=self._resolve_path(model_path),
+                    raise ValueError(f"No native ComfyUI image workflow for: {model_type}")
+                self.log.emit(
+                    f"ComfyUI image workflow: {model_type}  steps={steps}  guidance={guidance}")
+                from images.comfy_image_generator import ComfyImageGenerator
+                return ComfyImageGenerator(
+                    source_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
                     model_type=model_type,
                     output_dir=output_dir,
-                    guidance_scale=guidance,
-                    num_inference_steps=steps,
+                    guidance=guidance,
+                    steps=steps,
                     seed=int(self.config.get("seed", 42)),
                     width=int(self.config.get("image_width", 1024)),
                     height=int(self.config.get("image_height", 576)),
+                    timeout=float(self.config.get("comfy_image_timeout", 900.0)),
                 )
 
             # â”€â”€ Helper: load scene_timings from timings.yaml or measure MP3s â”€â”€
@@ -638,6 +689,40 @@ class PipelineWorker(QObject):
                 self.finished.emit(True, image_path)
                 return
 
+            if stage == "prompt_image_candidate":
+                self._check_cancel()
+                scene_id = int(self.config.get("preview_scene_id", 0))
+                beat_index = int(self.config.get("preview_beat_index", 1))
+                model_key = str(self.config.get("preview_model_key", "schnell")).strip().lower()
+                prompt = str(self.config.get("preview_prompt", "")).strip()
+                model_types = {"schnell": "flux-schnell", "dev": "flux-dev", "flux2": "flux2"}
+                if scene_id <= 0 or beat_index <= 0 or model_key not in model_types or not prompt:
+                    raise ValueError("Invalid prompt image candidate parameters.")
+
+                candidate_dir = os.path.join(self.project_path, "output", "prompt_candidates")
+                os.makedirs(candidate_dir, exist_ok=True)
+                model_type = model_types[model_key]
+                effective_prompt = structure_prompt_for_model(
+                    prompt, model_type, str(self.config.get("style_preset", "cinematic")))
+                self._emit_progress(10, f"Loading {model_key} for scene {scene_id}, beat {beat_index}")
+                image_gen = _make_image_gen(model_type, candidate_dir)
+                suffix = f"_{model_key}_b{beat_index:02d}_candidate"
+                try:
+                    self._emit_progress(35, "Generating neutral-seed candidate")
+                    image_gen.generate_image(
+                        effective_prompt,
+                        scene_id,
+                        seed_override=int(self.config.get("seed", 42)),
+                        filename_suffix=suffix,
+                    )
+                finally:
+                    image_gen.unload()
+                image_path = os.path.join(
+                    candidate_dir, f"scene_{scene_id:03d}{suffix}.png")
+                self._emit_progress(100, "Candidate image ready")
+                self.finished.emit(True, image_path)
+                return
+
             if stage == "preview_images":
                 self._check_cancel()
                 self._emit_progress(10, "Generating preview images (FLUX schnell)")
@@ -684,7 +769,7 @@ class PipelineWorker(QObject):
                         style_preset=self.config.get("style_preset", "cinematic"),
                         default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
                         use_ollama=bool(self.config.get("use_ollama", False)),
-                        ollama_model=str(self.config.get("ollama_model", "llama3")),
+                        ollama_model=str(self.config.get("ollama_model", "qwen3:8b")),
                         ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
                     )
                     for s in scenes_no_prompt:
@@ -695,7 +780,7 @@ class PipelineWorker(QObject):
                     try:
                         import urllib.request, json as _json
                         _host = str(self.config.get("ollama_host", "http://localhost:11434"))
-                        _payload = _json.dumps({"model": str(self.config.get("ollama_model", "llama3")), "keep_alive": 0}).encode()
+                        _payload = _json.dumps({"model": str(self.config.get("ollama_model", "qwen3:8b")), "keep_alive": 0}).encode()
                         req = urllib.request.Request(f"{_host}/api/generate", data=_payload,
                                                      headers={"Content-Type": "application/json"}, method="POST")
                         urllib.request.urlopen(req, timeout=10)
@@ -745,7 +830,7 @@ class PipelineWorker(QObject):
                 return
 
             # ─────────────────────────────────────────────────────────────────
-            # STAGE: final_images  – 3 variants per model → output/lightbox/
+            # STAGE: final_images  – 3 seed variants per model prompt → output/lightbox/
             # ─────────────────────────────────────────────────────────────────
             if stage == "final_images":
                 self._check_cancel()
@@ -781,69 +866,62 @@ class PipelineWorker(QObject):
                     ("flux2",        "flux2"),
                 ]
 
-                def _variant_path(sid, model_key, v_idx):
-                    return os.path.join(lightbox_dir, f"scene_{sid:03d}_{model_key}_v{v_idx}.png")
-
-                scenes_all = [int(s["id"]) for s in scenes]
-                total_ops = len(scenes_all) * len(model_variants) * len(seed_offsets)
-                done_ops = 0
-
-                # ── Reuse existing draft images as schnell_v2 (base seed) ──────
-                # Draft images (output/draft/scene_NNN.png) were already generated
-                # by stage 5 using flux-schnell at the base seed.  Copy them to the
-                # lightbox as schnell_v2 instead of regenerating.
-                import shutil as _shutil
-                copied_drafts = 0
-                for scene in scenes:
+                def _model_prompt_rows(scene, model_key):
                     sid = int(scene["id"])
-                    dst = _variant_path(sid, "schnell", 2)   # v2 = base seed
-                    if os.path.exists(dst):
-                        continue
-                    # Try each supported extension
-                    for ext in ("png", "jpg", "jpeg"):
-                        src = os.path.join(draft_dir, f"scene_{sid:03d}.{ext}")
-                        if os.path.exists(src):
-                            _shutil.copy2(src, dst)
-                            self.log.emit(f"Scene {sid}: copied draft -> lightbox schnell_v2")
-                            copied_drafts += 1
-                            break
-                if copied_drafts:
-                    self.log.emit(f"Reused {copied_drafts} draft image(s) as schnell_v2.")
+                    scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
+                    model_entry = scene_entry.get("models", {}).get(model_key, {})
+                    rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
+                    usable = [row for row in rows if isinstance(row, dict) and str(row.get("text", "")).strip()]
+                    if usable:
+                        return usable
+                    fallback = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
+                                or cached_prompts.get(sid) or cached_prompts.get(str(sid))
+                                or scene.get("text", ""))
+                    return [{"beat": 1, "text": fallback}]
+
+                def _variant_path(sid, model_key, beat_idx, v_idx):
+                    return os.path.join(
+                        lightbox_dir, f"scene_{sid:03d}_{model_key}_b{beat_idx:02d}_v{v_idx}.png")
+
+                total_ops = sum(
+                    len(_model_prompt_rows(scene, model_key)) * len(seed_offsets)
+                    for scene in scenes for _model_type, model_key in model_variants
+                )
+                done_ops = 0
 
                 for model_type, model_key in model_variants:
                     self._check_cancel()
                     work = []
                     for scene in scenes:
                         sid = int(scene["id"])
-                        for v_idx, offset in enumerate(seed_offsets, 1):
-                            out = _variant_path(sid, model_key, v_idx)
-                            if not os.path.exists(out):
-                                work.append((sid, v_idx, base_seed + offset, scene))
+                        for row_index, row in enumerate(_model_prompt_rows(scene, model_key), 1):
+                            beat_idx = int(row.get("beat", row_index))
+                            for v_idx, offset in enumerate(seed_offsets, 1):
+                                out = _variant_path(sid, model_key, beat_idx, v_idx)
+                                if model_key == "schnell" and v_idx == 2 and not os.path.exists(out):
+                                    preview_path = os.path.join(
+                                        draft_dir,
+                                        f"scene_{sid:03d}_schnell_b{beat_idx:02d}_v2.png",
+                                    )
+                                    if os.path.exists(preview_path):
+                                        shutil.copy2(preview_path, out)
+                                        self.log.emit(
+                                            f"Scene {sid} [schnell beat {beat_idx} v2]: reused saved preview.")
+                                if not os.path.exists(out):
+                                    work.append((sid, beat_idx, v_idx, base_seed + offset, row))
                     if not work:
-                        done_ops += len(scenes_all) * len(seed_offsets)
                         self.log.emit(f"{model_key}: all variants already exist — skipping.")
-                        self._emit_progress(10 + int((done_ops / total_ops) * 85),
-                                            f"{model_key}: skipped (all exist)")
                         continue
 
                     image_gen = _make_image_gen(model_type, lightbox_dir)
-                    for sid, v_idx, seed_val, scene in work:
+                    for sid, beat_idx, v_idx, seed_val, row in work:
                         self._check_cancel()
-                        scene_prompt_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
-                        model_entry = scene_prompt_entry.get("models", {}).get(model_key, {})
-                        model_rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
-                        model_texts = [
-                            str(row.get("text", "")).strip() for row in model_rows
-                            if isinstance(row, dict) and str(row.get("text", "")).strip()
-                        ]
-                        prompt = (model_texts[(v_idx - 1) % len(model_texts)] if model_texts else
-                                  prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
-                                  or cached_prompts.get(sid) or cached_prompts.get(str(sid))
-                                  or scene.get("text", ""))
+                        prompt = str(row["text"]).strip()
                         prompt = structure_prompt_for_model(
                             prompt, model_type, str(self.config.get("style_preset", "cinematic")))
-                        suffix = f"_{model_key}_v{v_idx}"
-                        self.log.emit(f"Scene {sid} [{model_key} v{v_idx} seed={seed_val}]: generating...")
+                        suffix = f"_{model_key}_b{beat_idx:02d}_v{v_idx}"
+                        self.log.emit(
+                            f"Scene {sid} [{model_key} beat {beat_idx} v{v_idx} seed={seed_val}]: generating...")
                         image_gen.generate_image(prompt, sid, seed_override=seed_val, filename_suffix=suffix)
                         done_ops += 1
                         self._emit_progress(10 + int((done_ops / total_ops) * 85),
@@ -1073,7 +1151,7 @@ class PipelineController(QObject):
         "tts_pitch": "+0Hz",
         "tts_volume": "+0%",
         "use_ollama": False,
-        "ollama_model": "llama3",
+        "ollama_model": "qwen3:8b",
         "ollama_host": "http://localhost:11434",
     }
 

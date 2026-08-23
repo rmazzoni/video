@@ -21,7 +21,7 @@ class PromptEnhancer:
     using a local Ollama LLM. Falls back silently if Ollama is unavailable.
     """
 
-    def __init__(self, model: str = "llama3", host: str = "http://localhost:11434"):
+    def __init__(self, model: str = "qwen3:8b", host: str = "http://localhost:11434"):
         self._model = model
         self._host = host
         self._available: Optional[bool] = None  # None = not yet checked

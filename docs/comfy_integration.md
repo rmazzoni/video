@@ -146,6 +146,18 @@ delegates to the current `PipelineWorker` implementation. Image and SVD internal
 can now be replaced incrementally by native ComfyUI graph nodes without changing
 the ten-stage workflow contract.
 
+Image generation has now completed that migration. Preview images, popup image
+candidates, and final Schnell/Dev/FLUX.2 variants execute the native API graphs
+`flux1_schnell_image.json`, `flux1_dev_image.json`, and `flux2_image.json` through
+ComfyUI. The application no longer loads Diffusers image pipelines or image model
+directories for these stages. It queues each graph, waits for its history result,
+downloads the ComfyUI output, and writes it using the existing project filename.
+
+The full workflow's `VID Pipeline Settings` node supplies width, height, seed,
+and per-model steps/guidance to those native graphs. Sampler, scheduler, model,
+text encoder, and VAE selection remain defined by the corresponding native image
+workflow JSON. ComfyUI must be running for every image-generation action.
+
 The model weights already installed below `ComfyUI/models` remain authoritative.
 The old `F:/VID/models` entries are retained as NTFS hardlinks during validation;
 they consume no duplicate model-data space and can be removed after the remaining
@@ -155,7 +167,7 @@ Diffusers-backed stage implementations have been migrated.
 
 Prompt generation uses three editable profiles in `config/prompt_profiles`:
 `schnell.yaml`, `dev.yaml`, and `flux2.yaml`. The Prompts tab mirrors these as
-three subtabs. Each subtab exposes its Llama system instructions and stores one
+three subtabs. Each subtab exposes its Qwen system instructions and stores one
 or more visual beats per scene in `output/model_prompts.yaml`.
 
 Manual prompt saves are marked `manually_edited` and survive normal bulk builds.
@@ -163,10 +175,20 @@ The per-model regeneration button is the explicit replacement path and asks for
 confirmation before replacing manual edits. `output/prompts.yaml` remains a
 compatibility view of Schnell's first beat for older preview code.
 
-The full ComfyUI workflow exposes `prompt_profiles_dir` and `max_visual_beats`
-on its settings node. Final image generation routes Schnell, Dev, and FLUX.2 to
-their corresponding prompt sets and distributes available beats across each
-model's image variants.
+The full ComfyUI workflow exposes `prompt_profiles_dir`, `ollama_model`,
+`ollama_host`, and `max_visual_beats` on its settings node. Its default prompt
+model is `qwen3:8b`. Final image generation routes Schnell, Dev, and FLUX.2 to
+their corresponding prompt sets. Every prompt receives three independent seed
+variants (`N-1`, `N`, `N+1`); seeds are never shared across different prompts as
+if those prompts were variants of one another. Images use the filename form
+`scene_NNN_MODEL_bBB_vV.png`.
+
+Clicking one visual beat opens its refinement dialog. The dialog shows an
+available generated image, the original script, Qwen's visual-beat description,
+Qwen's original generated prompt, and an editable working prompt. Targeted
+regeneration keeps the visual beat fixed and asks Qwen for a replacement prompt.
+Saving a changed prompt invalidates only that beat's three images and removes
+their stale Lightbox selections so the next final-image run rebuilds them.
 
 The three files under `workflows/` are **placeholders** with the correct
 API-export shape (`{node_id: {"class_type": ..., "_meta": {"title": ...}, "inputs": {...}}}`).

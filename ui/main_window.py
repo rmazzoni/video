@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -664,7 +665,7 @@ class MainWindow(QMainWindow):
         form.addRow("", self.use_ollama_input)
 
         self.ollama_model_input = QLineEdit()
-        self.ollama_model_input.setPlaceholderText("e.g. llama3, mistral")
+        self.ollama_model_input.setPlaceholderText("e.g. qwen3:8b")
         form.addRow("Ollama model", self.ollama_model_input)
 
         self.ollama_host_input = QLineEdit()
@@ -869,12 +870,12 @@ class MainWindow(QMainWindow):
 
         header_row = QHBoxLayout()
         self._lightbox_status_label = QLabel(
-            'Run "8. Final Images" to generate 9 variants per scene (Schnell + Dev + FLUX.2).')
+            'Run "8. Final Images" to generate three seed variants for every visual beat.')
         self._lightbox_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
         header_row.addWidget(self._lightbox_status_label, 1)
 
         btn_run = QPushButton("\u25b6 Run Final Images")
-        btn_run.setToolTip("Generate 9 lightbox images per scene (stage 8)")
+        btn_run.setToolTip("Generate three seed variants per model-specific visual beat")
         btn_run.clicked.connect(lambda: self.run_stage("final_images"))
         btn_refresh = QPushButton("Refresh")
         btn_refresh.clicked.connect(self._refresh_lightbox)
@@ -958,8 +959,26 @@ class MainWindow(QMainWindow):
         self._lightbox_status_label.setText(
             f"{len(scene_files)} scene(s), {total_images} image(s) \u2014 check images to include in Final Clips")
 
-        VARIANT_ORDER = self._LIGHTBOX_VARIANT_ORDER
         THUMB_W, THUMB_H = 180, 102
+
+        def _variant_parts(fname: str):
+            match = re.match(
+                r"^scene_\d+_(schnell|dev|flux2)_b(\d+)_v(\d+)\.png$", fname, re.IGNORECASE)
+            if match:
+                model_key, beat, variant = match.groups()
+                return model_key.lower(), int(beat), int(variant)
+            legacy = re.match(
+                r"^scene_\d+_(schnell|dev|flux2)_v(\d+)\.png$", fname, re.IGNORECASE)
+            if legacy:
+                model_key, variant = legacy.groups()
+                return model_key.lower(), 1, int(variant)
+            return "other", 999, 999
+
+        model_rank = {"schnell": 0, "dev": 1, "flux2": 2, "other": 3}
+
+        def _variant_order(fname: str):
+            model_key, beat, variant = _variant_parts(fname)
+            return model_rank[model_key], beat, variant, fname
 
         for sid in sorted(scene_files.keys()):
             selected_set = saved_selections.get(sid, set())
@@ -981,8 +1000,13 @@ class MainWindow(QMainWindow):
             thumb_grid.setSpacing(8)
             self._lightbox_checkboxes[sid] = {}
 
-            for variant_index, (variant_key, variant_label) in enumerate(VARIANT_ORDER):
-                fname = f"scene_{sid:03d}_{variant_key}.png"
+            ordered_files = sorted(scene_files[sid], key=_variant_order)
+            for variant_index, fname in enumerate(ordered_files):
+                model_key, beat_idx, seed_variant = _variant_parts(fname)
+                variant_label = (
+                    f"{model_key.upper()} | beat {beat_idx} | seed {seed_variant}"
+                    if model_key != "other" else fname
+                )
                 img_path = os.path.join(lightbox_dir, fname)
 
                 cell = QWidget()
@@ -1034,10 +1058,9 @@ class MainWindow(QMainWindow):
 
         # Build ordered flat list used by the navigable viewer.
         self._lightbox_image_list = [
-            os.path.join(lightbox_dir, f"scene_{sid:03d}_{vk}.png")
+            os.path.join(lightbox_dir, fname)
             for sid in sorted(scene_files.keys())
-            for vk, _ in VARIANT_ORDER
-            if os.path.exists(os.path.join(lightbox_dir, f"scene_{sid:03d}_{vk}.png"))
+            for fname in sorted(scene_files[sid], key=_variant_order)
         ]
 
     def _lightbox_set_all(self, checked: bool) -> None:
@@ -1065,13 +1088,14 @@ class MainWindow(QMainWindow):
             return
 
         selections: dict = {}
-        variant_rank = {vk: i for i, (vk, _) in enumerate(self._LIGHTBOX_VARIANT_ORDER)}
-
-        def _order_key(fname: str) -> int:
-            """Rank a lightbox filename by its position in the display order (Schnell→Dev→FLUX.2)."""
-            stem = os.path.splitext(fname)[0]
-            variant_key = "_".join(stem.split("_")[2:])   # scene_003_schnell_v1 -> schnell_v1
-            return variant_rank.get(variant_key, len(variant_rank))
+        def _order_key(fname: str):
+            match = re.match(
+                r"^scene_\d+_(schnell|dev|flux2)(?:_b(\d+))?_v(\d+)\.png$",
+                fname, re.IGNORECASE)
+            if not match:
+                return 3, 999, 999, fname
+            model_key, beat, variant = match.groups()
+            return {"schnell": 0, "dev": 1, "flux2": 2}[model_key.lower()], int(beat or 1), int(variant), fname
 
         for sid, fname_dict in sorted(self._lightbox_checkboxes.items()):
             chosen = [fname for fname in sorted(fname_dict.keys(), key=_order_key)
@@ -1453,7 +1477,7 @@ class MainWindow(QMainWindow):
                 style_preset=self.style_preset_input.currentText(),
                 default_aspect_ratio=self.aspect_ratio_input.currentText(),
                 use_ollama=self.use_ollama_input.isChecked(),
-                ollama_model=self.ollama_model_input.text().strip() or "llama3",
+                ollama_model=self.ollama_model_input.text().strip() or "qwen3:8b",
                 ollama_host=self.ollama_host_input.text().strip() or "http://localhost:11434",
             )
             rebuilt = builder.build_prompt({"id": scene_id, "text": scene_text})
@@ -1862,7 +1886,7 @@ class MainWindow(QMainWindow):
         for model_key, title in (("schnell", "Schnell"), ("dev", "Dev"), ("flux2", "FLUX.2")):
             model_page = QWidget()
             model_layout = QVBoxLayout(model_page)
-            profile_label = QLabel("Llama instructions")
+            profile_label = QLabel("Qwen instructions")
             profile_label.setStyleSheet("font-weight:bold;")
             profile_editor = QPlainTextEdit()
             profile_editor.setMaximumHeight(110)
@@ -1923,7 +1947,7 @@ class MainWindow(QMainWindow):
             Path(path).write_text(
                 _yaml.safe_dump(profile, allow_unicode=True, sort_keys=False), encoding="utf-8"
             )
-            self._prompts_status_label.setText(f"Saved {model_key} Llama instructions.")
+            self._prompts_status_label.setText(f"Saved {model_key} Qwen instructions.")
         except Exception as exc:
             QMessageBox.critical(self, "Save instructions failed", str(exc))
 
@@ -2029,16 +2053,20 @@ class MainWindow(QMainWindow):
                     text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
                     value_label = QLabel(f"{index}. {text}")
                     value_label.setWordWrap(True)
-                    value_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                    value_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                    value_label.setToolTip("Open this visual beat")
                     value_label.setStyleSheet(
                         "color:#C9A6E6; font-size:12px; background:#131118; "
                         "border:1px solid #2a2830; border-radius:2px; padding:5px;"
+                    )
+                    value_label.mousePressEvent = (
+                        lambda event, s=sid, key=model_key, beat=index:
+                        self._open_prompt_beat_dialog(s, key, beat)
                     )
                     layout.addWidget(value_label)
                 if not rows:
                     layout.addWidget(QLabel("Not generated"))
 
-                card.mousePressEvent = lambda event, s=sid, key=model_key: self._edit_model_prompts(s, key)
                 cards_layout.insertWidget(cards_layout.count() - 1, card)
 
         self._prompts_status_label.setText(
@@ -2070,7 +2098,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(editor, 1)
         actions = QHBoxLayout()
         actions.addStretch(1)
-        cancel = QPushButton("Cancel")
+        cancel = QPushButton("Close")
         save = QPushButton("Save Manual Prompts")
         actions.addWidget(cancel)
         actions.addWidget(save)
@@ -2109,6 +2137,337 @@ class MainWindow(QMainWindow):
 
         cancel.clicked.connect(dialog.reject)
         save.clicked.connect(_save)
+        dialog.exec()
+
+    def _open_prompt_beat_dialog(self, scene_id: int, model_key: str, beat_index: int) -> None:
+        import yaml as _yaml
+        from PyQt6.QtWidgets import QDialog, QTextEdit
+        from prompts.model_prompt_service import ModelPromptService
+
+        project = self.project_path_input.text().strip()
+        prompts_path = os.path.join(project, "output", "model_prompts.yaml")
+        scenes, _dubbing, _prompts, _overrides = self._prompts_project_data()
+        scene = next((item for item in scenes if int(item["id"]) == scene_id), {})
+        try:
+            data = _yaml.safe_load(Path(prompts_path).read_text(encoding="utf-8")) or {}
+            scene_entry = data.get(scene_id) or data.get(str(scene_id)) or {}
+            model_entry = scene_entry.get("models", {}).get(model_key, {})
+            rows = model_entry.get("prompts", [])
+            row = rows[beat_index - 1]
+        except Exception as exc:
+            QMessageBox.warning(self, "Prompt unavailable", str(exc))
+            return
+
+        visual_beat = str(row.get("visual_beat") or scene.get("text", ""))
+        generated_prompt = str(row.get("generated_prompt") or row.get("text", ""))
+        lightbox_dir = os.path.join(project, "output", "lightbox")
+        preview_dir = (
+            os.path.join(project, "output", "draft")
+            if model_key == "schnell" else lightbox_dir
+        )
+        preview_candidates = [
+            os.path.join(preview_dir, f"scene_{scene_id:03d}_{model_key}_b{beat_index:02d}_v{variant}.png")
+            for variant in (2, 1, 3)
+        ]
+        image_path = next((path for path in preview_candidates if os.path.exists(path)), "")
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Scene {scene_id} | {model_key} | Beat {beat_index}")
+        dialog.resize(900, 820)
+        layout = QVBoxLayout(dialog)
+
+        popup_controls = QHBoxLayout()
+        popup_controls.addStretch(1)
+        popup_controls.addWidget(QLabel("Text size:"))
+        font_slider = QSlider(Qt.Orientation.Horizontal)
+        font_slider.setRange(8, 36)
+        font_slider.setValue(15)
+        font_slider.setFixedWidth(120)
+        font_slider.setToolTip("Adjust popup text size")
+        popup_controls.addWidget(font_slider)
+        font_size_label = QLabel("15px")
+        font_size_label.setFixedWidth(32)
+        popup_controls.addWidget(font_size_label)
+        fullscreen_button = QPushButton("⛶")
+        fullscreen_button.setFixedSize(30, 30)
+        fullscreen_button.setToolTip("Toggle full screen")
+        popup_controls.addWidget(fullscreen_button)
+        layout.addLayout(popup_controls)
+
+        preview = QLabel("No image has been generated for this beat")
+        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview.setMinimumHeight(220)
+        if image_path:
+            pixmap = QPixmap(image_path)
+            preview.setPixmap(pixmap.scaled(
+                840, 300, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+            preview.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            preview.mousePressEvent = lambda event: self._open_image_viewer(image_path)
+        layout.addWidget(preview)
+
+        popup_text_editors = []
+
+        def _readonly_section(title: str, text: str, height: int, color: str):
+            title_label = QLabel(title)
+            title_label.setStyleSheet(f"color:{color}; font-weight:bold;")
+            layout.addWidget(title_label)
+            editor = QTextEdit()
+            editor.setPlainText(text)
+            editor.setReadOnly(True)
+            editor.setFixedHeight(height)
+            palette = editor.palette()
+            palette.setColor(editor.backgroundRole(), QColor("#131118"))
+            palette.setColor(editor.foregroundRole(), QColor(color))
+            palette.setColor(palette.ColorRole.Base, QColor("#131118"))
+            palette.setColor(palette.ColorRole.Text, QColor(color))
+            editor.setPalette(palette)
+            layout.addWidget(editor)
+            popup_text_editors.append((editor, color, height))
+
+        _readonly_section("Original script", str(scene.get("text", "")), 75, "#96BDE2")
+        _readonly_section("Visual beat identified by Qwen", visual_beat, 75, "#9FD6B8")
+        _readonly_section("Original prompt generated by Qwen", generated_prompt, 105, "#C9A6E6")
+
+        layout.addWidget(QLabel("Working prompt"))
+        prompt_editor = QTextEdit()
+        prompt_editor.setPlainText(str(row.get("text", "")))
+        prompt_editor.setMinimumHeight(130)
+        layout.addWidget(prompt_editor)
+        popup_text_editors.append((prompt_editor, "#E6E1E5", None))
+
+        def _set_popup_font_size(size: int):
+            font_size_label.setText(f"{size}px")
+            for editor, color, _normal_height in popup_text_editors:
+                font = editor.font()
+                font.setPixelSize(size)
+                text_format = QTextCharFormat()
+                text_format.setFont(font)
+                text_format.setForeground(QColor(color))
+                cursor = editor.textCursor()
+                cursor_position = cursor.position()
+                cursor.select(QTextCursor.SelectionType.Document)
+                cursor.mergeCharFormat(text_format)
+                cursor.clearSelection()
+                cursor.setPosition(min(cursor_position, len(editor.toPlainText())))
+                editor.setTextCursor(cursor)
+                editor.setCurrentCharFormat(text_format)
+
+        def _set_prompt_sections_expanded(expanded: bool):
+            for editor, _color, normal_height in popup_text_editors:
+                if expanded:
+                    editor.setMinimumHeight(75)
+                    editor.setMaximumHeight(16777215)
+                    layout.setStretchFactor(editor, 1)
+                elif normal_height is not None:
+                    editor.setFixedHeight(normal_height)
+                    layout.setStretchFactor(editor, 0)
+                else:
+                    editor.setMinimumHeight(130)
+                    editor.setMaximumHeight(16777215)
+                    layout.setStretchFactor(editor, 1)
+
+        def _toggle_fullscreen():
+            if dialog.isFullScreen():
+                _set_prompt_sections_expanded(False)
+                dialog.showNormal()
+                fullscreen_button.setText("⛶")
+                fullscreen_button.setToolTip("Enter full screen")
+            else:
+                _set_prompt_sections_expanded(True)
+                dialog.showFullScreen()
+                fullscreen_button.setText("▣")
+                fullscreen_button.setToolTip("Exit full screen")
+
+        font_slider.valueChanged.connect(_set_popup_font_size)
+        fullscreen_button.clicked.connect(_toggle_fullscreen)
+        _set_popup_font_size(font_slider.value())
+
+        status = QLabel("")
+        layout.addWidget(status)
+        progress = QProgressBar()
+        progress.setRange(0, 100)
+        progress.setVisible(False)
+        layout.addWidget(progress)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        cancel = QPushButton("Close")
+        regenerate = QPushButton("Regenerate with Qwen")
+        save = QPushButton("Save Prompt")
+        generate_image = QPushButton("Generate Image")
+        save_image = QPushButton(
+            "Save in Preview" if model_key == "schnell" else "Save in Lightbox")
+        save_image.setEnabled(False)
+        actions.addWidget(cancel)
+        actions.addWidget(regenerate)
+        actions.addWidget(save)
+        actions.addWidget(generate_image)
+        actions.addWidget(save_image)
+        layout.addLayout(actions)
+        candidate_state = {"path": ""}
+
+        def _regenerate():
+            service = ModelPromptService(
+                self._prompt_profiles_dir(),
+                self.ollama_model_input.text().strip() or "qwen3:8b",
+                self.ollama_host_input.text().strip() or "http://localhost:11434",
+            )
+            regenerate.setEnabled(False)
+            status.setText("Regenerating this prompt...")
+            try:
+                replacement = service.regenerate_prompt(scene, model_key, visual_beat)
+                prompt_editor.setPlainText(replacement)
+                row["generated_prompt"] = replacement
+                status.setText("New Qwen prompt ready. Save to keep it.")
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Llama regeneration failed", str(exc))
+                status.clear()
+            finally:
+                regenerate.setEnabled(True)
+
+        def _save(close_dialog: bool = True):
+            text = prompt_editor.toPlainText().strip()
+            if not text:
+                QMessageBox.warning(dialog, "Empty prompt", "Enter a prompt before saving.")
+                return False
+            previous_text = str(row.get("text", "")).strip()
+            row["text"] = text
+            row["source"] = "manually_edited"
+            data[scene_id] = scene_entry
+            data.pop(str(scene_id), None)
+            Path(prompts_path).write_text(
+                _yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
+            )
+            if model_key == "schnell" and beat_index == 1:
+                legacy_path = os.path.join(project, "output", "prompts.yaml")
+                try:
+                    legacy = _yaml.safe_load(Path(legacy_path).read_text(encoding="utf-8")) or {}
+                except Exception:
+                    legacy = {}
+                legacy[scene_id] = text
+                legacy.pop(str(scene_id), None)
+                Path(legacy_path).write_text(
+                    _yaml.safe_dump(legacy, allow_unicode=True, sort_keys=False), encoding="utf-8"
+                )
+            if text != previous_text:
+                invalidated = {
+                    f"scene_{scene_id:03d}_{model_key}_b{beat_index:02d}_v{variant}.png"
+                    for variant in (1, 2, 3)
+                }
+                for filename in invalidated:
+                    path = os.path.join(lightbox_dir, filename)
+                    if os.path.exists(path):
+                        os.remove(path)
+                selections_path = os.path.join(project, "output", "lightbox_selections.yaml")
+                if os.path.exists(selections_path):
+                    selections = _yaml.safe_load(
+                        Path(selections_path).read_text(encoding="utf-8")) or {}
+                    key = scene_id if scene_id in selections else str(scene_id)
+                    if key in selections and isinstance(selections[key], list):
+                        selections[key] = [name for name in selections[key] if name not in invalidated]
+                        if not selections[key]:
+                            selections.pop(key)
+                        Path(selections_path).write_text(
+                            _yaml.safe_dump(selections, allow_unicode=True, sort_keys=False),
+                            encoding="utf-8",
+                        )
+            if close_dialog:
+                dialog.accept()
+                self._prompts_refresh()
+                self._refresh_lightbox()
+            else:
+                status.setText("Prompt saved.")
+            return True
+
+        def _set_image_running(running: bool):
+            generate_image.setEnabled(not running)
+            regenerate.setEnabled(not running)
+            save.setEnabled(not running)
+            cancel.setEnabled(not running)
+            save_image.setEnabled(not running and bool(candidate_state["path"]))
+            progress.setVisible(running)
+
+        def _generate_image():
+            prompt = prompt_editor.toPlainText().strip()
+            if not prompt:
+                QMessageBox.warning(dialog, "Empty prompt", "Enter a prompt before generating an image.")
+                return
+            if getattr(self.controller, "_thread", None) is not None:
+                QMessageBox.warning(dialog, "Pipeline busy", "Wait for the current pipeline operation to finish.")
+                return
+            _set_image_running(True)
+            progress.setValue(0)
+            status.setText(f"Generating neutral-seed {model_key} image...")
+
+            def _show_progress(value: int, message: str):
+                progress.setValue(value)
+                status.setText(message)
+
+            def _show_candidate(success: bool, payload: str):
+                try:
+                    self.controller.pipeline_finished.disconnect(_show_candidate)
+                    self.controller.pipeline_progress.disconnect(_show_progress)
+                except Exception:
+                    pass
+                _set_image_running(False)
+                if not success:
+                    status.setText(f"Image generation failed: {payload}")
+                    return
+                candidate_state["path"] = payload
+                save_image.setEnabled(True)
+                pixmap = QPixmap(payload)
+                if not pixmap.isNull():
+                    preview.setPixmap(pixmap.scaled(
+                        840, 300, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    ))
+                    preview.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                    preview.mousePressEvent = lambda event: self._open_image_viewer(payload)
+                progress.setValue(100)
+                status.setText("Candidate ready. Save it or adjust the prompt and generate again.")
+
+            self.controller.pipeline_progress.connect(_show_progress)
+            self.controller.pipeline_finished.connect(_show_candidate)
+            self.controller.run_pipeline("prompt_image_candidate", {
+                "preview_scene_id": scene_id,
+                "preview_beat_index": beat_index,
+                "preview_model_key": model_key,
+                "preview_prompt": prompt,
+            })
+
+        def _save_image():
+            candidate_path = candidate_state["path"]
+            if not candidate_path or not os.path.exists(candidate_path):
+                QMessageBox.warning(dialog, "No candidate", "Generate an image first.")
+                return
+            if not _save(close_dialog=False):
+                return
+            if model_key == "schnell":
+                destination_dir = os.path.join(project, "output", "draft")
+            else:
+                destination_dir = lightbox_dir
+            os.makedirs(destination_dir, exist_ok=True)
+            destination = os.path.join(
+                destination_dir,
+                f"scene_{scene_id:03d}_{model_key}_b{beat_index:02d}_v2.png",
+            )
+            import shutil as _shutil
+            _shutil.copy2(candidate_path, destination)
+            os.remove(candidate_path)
+            candidate_state["path"] = ""
+            save_image.setEnabled(False)
+            preview.mousePressEvent = lambda event: self._open_image_viewer(destination)
+            status.setText(f"Saved neutral image to {destination_dir}.")
+            self._prompts_refresh()
+            self._refresh_draft_grid()
+            self._refresh_lightbox()
+
+        cancel.clicked.connect(dialog.reject)
+        regenerate.clicked.connect(_regenerate)
+        save.clicked.connect(lambda: _save(close_dialog=False))
+        generate_image.clicked.connect(_generate_image)
+        save_image.clicked.connect(_save_image)
         dialog.exec()
 
     def _open_prompt_scene_dialog(self, scene_id: int, candidate: bool = False,
@@ -2191,8 +2550,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(prompt_edit)
 
         tuning = QHBoxLayout()
-        tuning.addWidget(QLabel("Llama model:"))
-        llama_model = QLineEdit(self.ollama_model_input.text().strip() or "llama3")
+        tuning.addWidget(QLabel("Qwen model:"))
+        llama_model = QLineEdit(self.ollama_model_input.text().strip() or "qwen3:8b")
         tuning.addWidget(llama_model, 1)
         tuning.addWidget(QLabel("Schnell steps:"))
         steps = QSpinBox()
@@ -2209,7 +2568,7 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         btn_close = QPushButton("Discard Candidate" if candidate else "Close")
-        btn_llama = QPushButton("Regenerate with Llama")
+        btn_llama = QPushButton("Regenerate with Qwen")
         btn_run = QPushButton("Run FLUX Schnell")
         btn_commit = QPushButton("Commit to Preview Images")
         btn_commit.setEnabled(candidate)
@@ -2230,7 +2589,7 @@ class MainWindow(QMainWindow):
             Path(overrides_path).write_text(
                 _yaml.safe_dump(overrides, allow_unicode=True, sort_keys=False), encoding="utf-8"
             )
-            self.ollama_model_input.setText(llama_model.text().strip() or "llama3")
+            self.ollama_model_input.setText(llama_model.text().strip() or "qwen3:8b")
             self.schnell_steps_input.setValue(steps.value())
             self.schnell_guidance_input.setValue(guidance.value())
             self.controller.blockSignals(True)
@@ -2343,7 +2702,7 @@ class MainWindow(QMainWindow):
                 style_preset=self.style_preset_input.currentText(),
                 default_aspect_ratio=self.aspect_ratio_input.currentText(),
                 use_ollama=True,
-                ollama_model=llama_model.text().strip() or "llama3",
+                ollama_model=llama_model.text().strip() or "qwen3:8b",
                 ollama_host=self.ollama_host_input.text().strip() or "http://localhost:11434",
             )
             try:
@@ -3663,6 +4022,9 @@ class MainWindow(QMainWindow):
 
         if success:
             QTimer.singleShot(0, self._prompts_refresh)
+            if payload and os.path.basename(payload) == "model_prompts.yaml":
+                QTimer.singleShot(0, self._refresh_draft_grid)
+                QTimer.singleShot(0, self._refresh_lightbox)
 
         if success:
             self.pipeline_status_label.setText("Pipeline complete")
@@ -3713,7 +4075,7 @@ class MainWindow(QMainWindow):
         self.fade_in_input.setValue(float(settings.get("fade_in", 0.0)))
         self.fade_out_input.setValue(float(settings.get("fade_out", 0.0)))
         self.use_ollama_input.setChecked(bool(settings.get("use_ollama", False)))
-        self.ollama_model_input.setText(str(settings.get("ollama_model", "llama3")))
+        self.ollama_model_input.setText(str(settings.get("ollama_model", "qwen3:8b")))
         self.ollama_host_input.setText(str(settings.get("ollama_host", "http://localhost:11434")))
 
         # TTS
@@ -3761,7 +4123,7 @@ class MainWindow(QMainWindow):
             "fade_in": self.fade_in_input.value(),
             "fade_out": self.fade_out_input.value(),
             "use_ollama": self.use_ollama_input.isChecked(),
-            "ollama_model": self.ollama_model_input.text().strip() or "llama3",
+            "ollama_model": self.ollama_model_input.text().strip() or "qwen3:8b",
             "ollama_host": self.ollama_host_input.text().strip() or "http://localhost:11434",
             "tts_voice": self.tts_voice_input.currentData() or "it-IT-DiegoNeural",
             "tts_rate": f"{self.tts_rate_input.value():+d}%",
