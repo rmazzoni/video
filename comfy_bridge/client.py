@@ -80,6 +80,27 @@ class ComfyClient:
     def interrupt(self) -> None:
         requests.post(f"{self.base_url}/interrupt", timeout=10)
 
+    def clear_queue(self) -> None:
+        """Drops any pending (not yet started) queue entries left over from a previous run."""
+        requests.post(f"{self.base_url}/queue", json={"clear": True}, timeout=10)
+
+    def reset_stale_state(self) -> None:
+        """
+        Best-effort cleanup before starting a new generation: interrupts whatever ComfyUI
+        thinks is currently running and clears any queued-but-not-started entries. Without
+        this, a job left dangling by a cancelled/crashed previous run can silently occupy
+        the GPU/queue and cause the next generation to hang waiting for history that never
+        arrives.
+        """
+        try:
+            self.interrupt()
+        except requests.RequestException:
+            pass
+        try:
+            self.clear_queue()
+        except requests.RequestException:
+            pass
+
     # ------------------------------------------------------------------
     # High-level workflow API
     # ------------------------------------------------------------------
@@ -133,16 +154,30 @@ class ComfyClient:
         result["completed"] = True
         return result
 
-    def wait_for_result(self, prompt_id: str, timeout: float = 300.0, poll_interval: float = 1.0) -> Dict[str, Any]:
-        """Blocking convenience wrapper that polls `get_result` until completion or timeout."""
+    def wait_for_result(
+        self,
+        prompt_id: str,
+        timeout: float = 300.0,
+        poll_interval: float = 1.0,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Blocking convenience wrapper that polls `get_result` until completion or timeout.
+        If `cancel_check` returns True mid-wait, the ComfyUI job is interrupted so it can't
+        keep occupying the queue for the next generation, and a RuntimeError is raised.
+        """
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
+            if cancel_check is not None and cancel_check():
+                self.interrupt()
+                raise RuntimeError(f"ComfyUI prompt {prompt_id} cancelled while waiting.")
             status = self.get_result(prompt_id)
             if status.get("completed"):
                 return status
             time.sleep(poll_interval)
 
+        self.interrupt()
         raise TimeoutError(f"Timed out waiting for ComfyUI prompt {prompt_id}")
 
     # ------------------------------------------------------------------

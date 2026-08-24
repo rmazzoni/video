@@ -689,7 +689,7 @@ class PipelineWorker(QObject):
                 try:
                     self._check_cancel()
                     self._emit_progress(35, f"Generating scene {scene_id}")
-                    image_gen.generate_image(prompt, scene_id)
+                    image_gen.generate_image(prompt, scene_id, cancel_check=lambda: self._cancel_requested)
                 finally:
                     image_gen.unload()
                 image_path = os.path.join(draft_dir, f"scene_{scene_id:03d}.png")
@@ -722,6 +722,7 @@ class PipelineWorker(QObject):
                         scene_id,
                         seed_override=int(self.config.get("seed", 42)),
                         filename_suffix=suffix,
+                        cancel_check=lambda: self._cancel_requested,
                     )
                 finally:
                     image_gen.unload()
@@ -830,6 +831,7 @@ class PipelineWorker(QObject):
                         sid,
                         seed_override=int(self.config.get("seed", 42)),
                         filename_suffix=f"_schnell_b{beat_idx:02d}_v2",
+                        cancel_check=lambda: self._cancel_requested,
                     )
                     self._emit_progress(10 + int((idx / total) * 85), f"Preview image {idx}/{total}")
 
@@ -956,7 +958,10 @@ class PipelineWorker(QObject):
                         suffix = f"_{model_key}_b{beat_idx:02d}_v{v_idx}"
                         self.log.emit(
                             f"Scene {sid} [{model_key} beat {beat_idx} v{v_idx} seed={seed_val}]: generating...")
-                        image_gen.generate_image(prompt, sid, seed_override=seed_val, filename_suffix=suffix)
+                        image_gen.generate_image(
+                            prompt, sid, seed_override=seed_val, filename_suffix=suffix,
+                            cancel_check=lambda: self._cancel_requested,
+                        )
                         done_ops += 1
                         self._emit_progress(10 + int((done_ops / total_ops) * 85),
                                             f"Lightbox {done_ops}/{total_ops}")

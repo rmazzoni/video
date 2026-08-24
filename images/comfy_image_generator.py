@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 import yaml
 
@@ -57,9 +57,13 @@ class ComfyImageGenerator:
         scene_id: int,
         seed_override: Optional[int] = None,
         filename_suffix: str = "",
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> str:
         if not self.client.is_alive():
             raise ConnectionError("ComfyUI is not running or is not reachable.")
+        # Clear any stuck/leftover job from a previous (cancelled or timed-out) generation
+        # so it can't block this one from ever showing up in /history.
+        self.client.reset_stale_state()
         active_seed = self.seed if seed_override is None else seed_override
         prefix = f"vid/{self.model_type}/scene_{scene_id:03d}{filename_suffix}"
         params: Dict[str, object] = {
@@ -72,7 +76,7 @@ class ComfyImageGenerator:
             "filename_prefix": prefix,
         }
         prompt_id = self.client.execute_workflow(self.workflow, params)
-        result = self.client.wait_for_result(prompt_id, timeout=self.timeout)
+        result = self.client.wait_for_result(prompt_id, timeout=self.timeout, cancel_check=cancel_check)
         status = result.get("status", {})
         if status.get("status_str") == "error" or not status.get("completed", True):
             messages = status.get("messages", [])
