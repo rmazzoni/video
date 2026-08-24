@@ -744,25 +744,50 @@ class PipelineWorker(QObject):
                     with open(overrides_path, "r", encoding="utf-8") as fh:
                         prompt_overrides = yaml.safe_load(fh) or {}
 
-                # Scan existing draft images
-                existing_drafts: set = set()
-                if os.path.isdir(draft_dir):
-                    for f in os.listdir(draft_dir):
-                        if f.startswith("scene_") and f.lower().endswith((".png", ".jpg", ".jpeg")):
-                            try:
-                                existing_drafts.add(int(f.split("_")[1].split(".")[0]))
-                            except (IndexError, ValueError):
-                                pass
+                model_prompts_path = os.path.join(self.project_path, "output", "model_prompts.yaml")
+                model_prompts = {}
+                if os.path.exists(model_prompts_path):
+                    with open(model_prompts_path, "r", encoding="utf-8") as fh:
+                        model_prompts = yaml.safe_load(fh) or {}
 
-                scenes_needed = [s for s in scenes if int(s["id"]) not in existing_drafts]
-                if not scenes_needed:
+                def _schnell_rows(scene):
+                    sid = int(scene["id"])
+                    scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
+                    model_entry = scene_entry.get("models", {}).get("schnell", {})
+                    rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
+                    usable = [
+                        row for row in rows
+                        if isinstance(row, dict) and str(row.get("text", "")).strip()
+                    ]
+                    if usable:
+                        return usable
+                    fallback = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
+                                or cached_prompts.get(sid) or cached_prompts.get(str(sid))
+                                or scene.get("text", ""))
+                    return [{"beat": 1, "text": fallback}]
+
+                preview_work = []
+                for scene in scenes:
+                    sid = int(scene["id"])
+                    for row_index, row in enumerate(_schnell_rows(scene), 1):
+                        beat_idx = int(row.get("beat", row_index))
+                        output_path = os.path.join(
+                            draft_dir, f"scene_{sid:03d}_schnell_b{beat_idx:02d}_v2.png")
+                        legacy_path = os.path.join(draft_dir, f"scene_{sid:03d}.png")
+                        if beat_idx == 1 and not os.path.exists(output_path) and os.path.exists(legacy_path):
+                            shutil.copy2(legacy_path, output_path)
+                            self.log.emit(f"Scene {sid} beat 1: migrated legacy preview image.")
+                        if not os.path.exists(output_path):
+                            preview_work.append((sid, beat_idx, str(row["text"]).strip()))
+
+                if not preview_work:
                     self.log.emit("All preview images already exist â€” skipping.")
                     self._emit_progress(100, "Preview images up to date")
                     self.finished.emit(True, draft_dir)
                     return
 
                 # Generate missing prompts
-                scenes_no_prompt = [s for s in scenes_needed
+                scenes_no_prompt = [s for s in scenes
                                     if int(s["id"]) not in cached_prompts]
                 if scenes_no_prompt:
                     prompt_builder = PromptBuilder(
@@ -788,15 +813,16 @@ class PipelineWorker(QObject):
                         self.log.emit(f"Ollama unload skipped ({_e})")
 
                 image_gen = _make_image_gen("flux-schnell", draft_dir)
-                total = len(scenes_needed)
-                for idx, scene in enumerate(scenes_needed, 1):
+                total = len(preview_work)
+                for idx, (sid, beat_idx, prompt) in enumerate(preview_work, 1):
                     self._check_cancel()
-                    sid = int(scene["id"])
-                    prompt = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
-                              or cached_prompts.get(sid) or cached_prompts.get(str(sid))
-                              or scene.get("text", ""))
-                    self.log.emit(f"Scene {sid}: generating preview imageâ€¦")
-                    image_gen.generate_image(prompt, sid)
+                    self.log.emit(f"Scene {sid} beat {beat_idx}: generating preview imageâ€¦")
+                    image_gen.generate_image(
+                        prompt,
+                        sid,
+                        seed_override=int(self.config.get("seed", 42)),
+                        filename_suffix=f"_schnell_b{beat_idx:02d}_v2",
+                    )
                     self._emit_progress(10 + int((idx / total) * 85), f"Preview image {idx}/{total}")
 
                 _log_vram("before preview_images unload")

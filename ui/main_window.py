@@ -1580,24 +1580,35 @@ class MainWindow(QMainWindow):
         final_images = _images_from(images_dir)
         draft_images = _images_from(draft_dir)
 
-        # Build a merged per-scene list: prefer final image, fall back to draft.
-        # Keys are scene ids so every scene appears exactly once.
+        # Build merged per-scene lists: prefer final images when present, otherwise
+        # retain every draft beat/variant belonging to the scene.
         def _scene_id_from(fname: str) -> int:
             try:
                 return int(fname.split("_")[1].split(".")[0])
             except Exception:
                 return 0
 
-        scene_entries: dict = {}  # scene_id -> (dir, fname)
+        scene_entries: dict = {}  # scene_id -> [(dir, fname), ...]
         for fname in draft_images:
             sid = _scene_id_from(fname)
-            scene_entries[sid] = (draft_dir, fname)
-        for fname in final_images:  # final overwrites draft when both exist
+            if sid > 0:
+                scene_entries.setdefault(sid, []).append((draft_dir, fname))
+        final_scene_ids = {_scene_id_from(fname) for fname in final_images}
+        for sid in final_scene_ids:
+            if sid > 0:
+                scene_entries[sid] = []
+        for fname in final_images:
             sid = _scene_id_from(fname)
-            scene_entries[sid] = (images_dir, fname)
+            if sid > 0:
+                scene_entries.setdefault(sid, []).append((images_dir, fname))
 
-        n_final = sum(1 for d, _ in scene_entries.values() if d == images_dir)
-        n_draft = len(scene_entries) - n_final
+        entries = [
+            (sid, directory, fname)
+            for sid, scene_images in sorted(scene_entries.items())
+            for directory, fname in scene_images
+        ]
+        n_final = sum(1 for _, directory, _ in entries if directory == images_dir)
+        n_draft = len(entries) - n_final
         source_label = (
             f"{n_final} final + {n_draft} draft" if n_final and n_draft
             else ("final images" if n_final else "draft images")
@@ -1624,12 +1635,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        images = [fname for _, (_, fname) in sorted(scene_entries.items())]
-        self._draft_status_label.setText(f"{len(images)} image(s) — showing {source_label}")
+        self._draft_status_label.setText(f"{len(entries)} image(s) — showing {source_label}")
 
-        for fname in images:
-            sid = _scene_id_from(fname)
-            active_dir, fname = scene_entries[sid]
+        for sid, active_dir, fname in entries:
             scene_id = sid
 
             card = QWidget()
@@ -1651,7 +1659,12 @@ class MainWindow(QMainWindow):
             card_layout.addWidget(img_label)
 
             text_block = QVBoxLayout()
-            id_lbl = QLabel(f"Scene {scene_id}")
+            beat_match = re.search(r"_schnell_b(\d+)_v(\d+)\.", fname, re.IGNORECASE)
+            image_detail = (
+                f" | Beat {int(beat_match.group(1))} | Seed {int(beat_match.group(2))}"
+                if beat_match else ""
+            )
+            id_lbl = QLabel(f"Scene {scene_id}{image_detail}")
             id_lbl.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; background:transparent; border:none;")
             text_lbl = QLabel(scene_texts.get(scene_id, ""))
             text_lbl.setWordWrap(True)
@@ -2016,6 +2029,23 @@ class MainWindow(QMainWindow):
         except Exception:
             model_prompts = {}
 
+        saved_preview_beats = set()
+        draft_dir = os.path.join(project, "output", "draft")
+        if os.path.isdir(draft_dir):
+            for filename in os.listdir(draft_dir):
+                match = re.match(
+                    r"^scene_(\d+)_schnell_b(\d+)_v\d+\.(?:png|jpg|jpeg)$",
+                    filename,
+                    re.IGNORECASE,
+                )
+                if match:
+                    saved_preview_beats.add((int(match.group(1)), int(match.group(2))))
+                    continue
+                legacy_match = re.match(
+                    r"^scene_(\d+)\.(?:png|jpg|jpeg)$", filename, re.IGNORECASE)
+                if legacy_match:
+                    saved_preview_beats.add((int(legacy_match.group(1)), 1))
+
         for model_key, editor in self._prompt_profile_editors.items():
             try:
                 profile_path = os.path.join(self._prompt_profiles_dir(), f"{model_key}.yaml")
@@ -2051,14 +2081,23 @@ class MainWindow(QMainWindow):
                 layout.addWidget(title)
                 for index, row in enumerate(rows, 1):
                     text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
+                    beat_index = int(row.get("beat", index)) if isinstance(row, dict) else index
+                    has_preview = model_key == "schnell" and (sid, beat_index) in saved_preview_beats
                     value_label = QLabel(f"{index}. {text}")
                     value_label.setWordWrap(True)
                     value_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                    value_label.setToolTip("Open this visual beat")
-                    value_label.setStyleSheet(
-                        "color:#C9A6E6; font-size:12px; background:#131118; "
-                        "border:1px solid #2a2830; border-radius:2px; padding:5px;"
-                    )
+                    if has_preview:
+                        value_label.setToolTip("Preview image saved. Click to open this visual beat")
+                        value_label.setStyleSheet(
+                            "color:#C9A6E6; font-size:12px; background:#173326; "
+                            "border:2px solid #9FD6B8; border-radius:2px; padding:5px;"
+                        )
+                    else:
+                        value_label.setToolTip("Open this visual beat")
+                        value_label.setStyleSheet(
+                            "color:#C9A6E6; font-size:12px; background:#131118; "
+                            "border:1px solid #2a2830; border-radius:2px; padding:5px;"
+                        )
                     value_label.mousePressEvent = (
                         lambda event, s=sid, key=model_key, beat=index:
                         self._open_prompt_beat_dialog(s, key, beat)
@@ -2169,6 +2208,8 @@ class MainWindow(QMainWindow):
             os.path.join(preview_dir, f"scene_{scene_id:03d}_{model_key}_b{beat_index:02d}_v{variant}.png")
             for variant in (2, 1, 3)
         ]
+        if model_key == "schnell" and beat_index == 1:
+            preview_candidates.append(os.path.join(preview_dir, f"scene_{scene_id:03d}.png"))
         image_path = next((path for path in preview_candidates if os.path.exists(path)), "")
 
         dialog = QDialog(self)
@@ -2306,6 +2347,24 @@ class MainWindow(QMainWindow):
         actions.addWidget(save_image)
         layout.addLayout(actions)
         candidate_state = {"path": ""}
+        saved_prompt_state = {"text": prompt_editor.toPlainText().strip()}
+
+        def _set_save_button_style(button: QPushButton, needs_save: bool):
+            if needs_save:
+                button.setStyleSheet(
+                    "QPushButton { background:#5B2026; color:#FFD7D9; border:1px solid #E73A4B; }"
+                    "QPushButton:hover { background:#7A2B33; }"
+                )
+            else:
+                button.setStyleSheet("")
+
+        def _update_save_states():
+            prompt_changed = prompt_editor.toPlainText().strip() != saved_prompt_state["text"]
+            _set_save_button_style(save, prompt_changed)
+            _set_save_button_style(save_image, bool(candidate_state["path"]))
+
+        prompt_editor.textChanged.connect(_update_save_states)
+        _update_save_states()
 
         def _regenerate():
             service = ModelPromptService(
@@ -2339,6 +2398,8 @@ class MainWindow(QMainWindow):
             Path(prompts_path).write_text(
                 _yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
             )
+            saved_prompt_state["text"] = text
+            _update_save_states()
             if model_key == "schnell" and beat_index == 1:
                 legacy_path = os.path.join(project, "output", "prompts.yaml")
                 try:
@@ -2416,6 +2477,7 @@ class MainWindow(QMainWindow):
                     return
                 candidate_state["path"] = payload
                 save_image.setEnabled(True)
+                _update_save_states()
                 pixmap = QPixmap(payload)
                 if not pixmap.isNull():
                     preview.setPixmap(pixmap.scaled(
@@ -2457,6 +2519,7 @@ class MainWindow(QMainWindow):
             os.remove(candidate_path)
             candidate_state["path"] = ""
             save_image.setEnabled(False)
+            _update_save_states()
             preview.mousePressEvent = lambda event: self._open_image_viewer(destination)
             status.setText(f"Saved neutral image to {destination_dir}.")
             self._prompts_refresh()
