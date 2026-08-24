@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor
+from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor, QFont
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl, QCoreApplication
 from ui.pipeline_controller import PipelineController
 from ui.comfy_controller import ComfyController
@@ -2019,9 +2019,9 @@ class MainWindow(QMainWindow):
         self._save_project_profile_key(str(key or "none"))
 
     def _open_project_profiles_dialog(self) -> None:
-        from PyQt6.QtWidgets import QDialog, QListWidget, QListWidgetItem
+        from PyQt6.QtWidgets import QDialog, QListWidget, QListWidgetItem, QCheckBox
         from prompts.project_profiles import (
-            load_project_profiles, save_project_profiles,
+            load_project_profiles, save_project_profiles, profiles_path,
         )
 
         config_dir = self._project_profiles_config_dir()
@@ -2031,7 +2031,7 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("Manage Project Aesthetic Profiles")
         dialog.resize(900, 600)
         dialog.setStyleSheet(
-            "QListWidget, QLineEdit, QPlainTextEdit, QLabel, QPushButton { font-size:14px; }"
+            "QListWidget, QLineEdit, QPlainTextEdit, QLabel, QPushButton, QCheckBox { font-size:14px; }"
         )
         layout = QHBoxLayout(dialog)
 
@@ -2041,12 +2041,88 @@ class MainWindow(QMainWindow):
         layout.addWidget(list_widget, 1)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Profile key (letters, digits, underscore):"))
+
+        chk_show_yaml = QCheckBox("Show YAML source")
+        right.addWidget(chk_show_yaml)
+
+        editor_label = QLabel("Profile key (letters, digits, underscore):")
+        right.addWidget(editor_label)
         key_input = QLineEdit()
         right.addWidget(key_input)
-        right.addWidget(QLabel("Steering text (appended after each model's Qwen instructions):"))
+        text_label = QLabel("Steering text (appended after each model's Qwen instructions):")
+        right.addWidget(text_label)
         text_editor = QPlainTextEdit()
         right.addWidget(text_editor, 1)
+
+        yaml_viewer = QPlainTextEdit()
+        yaml_viewer.setReadOnly(True)
+        yaml_viewer.setFont(QFont("Consolas", 11))
+        yaml_viewer.hide()
+        right.addWidget(yaml_viewer, 1)
+
+        yaml_buttons_row = QHBoxLayout()
+        btn_edit_yaml = QPushButton("Edit YAML")
+        btn_save_yaml = QPushButton("Save YAML")
+        btn_edit_yaml.hide()
+        btn_save_yaml.hide()
+        btn_save_yaml.setEnabled(False)
+        yaml_buttons_row.addWidget(btn_edit_yaml)
+        yaml_buttons_row.addWidget(btn_save_yaml)
+        right.addLayout(yaml_buttons_row)
+
+        def _refresh_yaml_viewer() -> None:
+            try:
+                yaml_viewer.setPlainText(Path(profiles_path(config_dir)).read_text(encoding="utf-8"))
+            except Exception as exc:
+                yaml_viewer.setPlainText(f"# Unable to read YAML file: {exc}")
+
+        def _toggle_yaml_view(checked: bool) -> None:
+            key_input.setEnabled(not checked)
+            text_editor.setEnabled(not checked)
+            editor_label.setVisible(not checked)
+            text_label.setVisible(not checked)
+            text_editor.setVisible(not checked)
+            yaml_viewer.setVisible(checked)
+            btn_edit_yaml.setVisible(checked)
+            btn_save_yaml.setVisible(checked)
+            yaml_viewer.setReadOnly(True)
+            btn_save_yaml.setEnabled(False)
+            if checked:
+                _refresh_yaml_viewer()
+
+        def _enable_yaml_edit() -> None:
+            yaml_viewer.setReadOnly(False)
+            btn_save_yaml.setEnabled(True)
+            yaml_viewer.setFocus()
+
+        def _save_yaml() -> None:
+            import yaml as _yaml
+
+            raw = yaml_viewer.toPlainText()
+            try:
+                parsed = _yaml.safe_load(raw) or {}
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Invalid YAML", f"Could not parse YAML:\n{exc}")
+                return
+            if not isinstance(parsed, dict) or not all(isinstance(v, str) for v in parsed.values()):
+                QMessageBox.warning(dialog, "Invalid YAML", "YAML must be a mapping of profile_key: text.")
+                return
+            profiles.clear()
+            profiles.update(parsed)
+            save_project_profiles(config_dir, profiles)
+            list_widget.clear()
+            for existing_key in sorted(profiles.keys()):
+                list_widget.addItem(QListWidgetItem(existing_key))
+            key_input.clear()
+            text_editor.clear()
+            self._populate_project_profile_combo()
+            yaml_viewer.setReadOnly(True)
+            btn_save_yaml.setEnabled(False)
+            _refresh_yaml_viewer()
+
+        chk_show_yaml.toggled.connect(_toggle_yaml_view)
+        btn_edit_yaml.clicked.connect(_enable_yaml_edit)
+        btn_save_yaml.clicked.connect(_save_yaml)
 
         buttons_row = QHBoxLayout()
         btn_new = QPushButton("New")
@@ -2090,6 +2166,8 @@ class MainWindow(QMainWindow):
             for existing_key in sorted(profiles.keys()):
                 list_widget.addItem(QListWidgetItem(existing_key))
             self._populate_project_profile_combo()
+            if chk_show_yaml.isChecked():
+                _refresh_yaml_viewer()
 
         def _delete() -> None:
             item = list_widget.currentItem()
@@ -2105,6 +2183,8 @@ class MainWindow(QMainWindow):
             key_input.clear()
             text_editor.clear()
             self._populate_project_profile_combo()
+            if chk_show_yaml.isChecked():
+                _refresh_yaml_viewer()
 
         list_widget.currentItemChanged.connect(lambda current, _prev: _load_selected(current))
         btn_new.clicked.connect(_new)
@@ -2303,7 +2383,7 @@ class MainWindow(QMainWindow):
                             "border:1px solid #2a2830; border-radius:2px; padding:5px;"
                         )
                     value_label.mousePressEvent = (
-                        lambda event, s=sid, key=model_key, beat=index:
+                        lambda event, s=sid, key=model_key, beat=beat_index:
                         self._open_prompt_beat_dialog(s, key, beat)
                     )
                     layout.addWidget(value_label)
@@ -2396,7 +2476,14 @@ class MainWindow(QMainWindow):
             scene_entry = data.get(scene_id) or data.get(str(scene_id)) or {}
             model_entry = scene_entry.get("models", {}).get(model_key, {})
             rows = model_entry.get("prompts", [])
-            row = rows[beat_index - 1]
+            # Match by the row's own "beat" field first — list position can drift
+            # from the beat number once rows are regenerated/edited out of order.
+            row = next(
+                (r for r in rows if isinstance(r, dict) and int(r.get("beat", 0)) == beat_index),
+                None,
+            )
+            if row is None:
+                row = rows[beat_index - 1]
         except Exception as exc:
             QMessageBox.warning(self, "Prompt unavailable", str(exc))
             return
@@ -2588,7 +2675,8 @@ class MainWindow(QMainWindow):
             try:
                 replacement = service.regenerate_prompt(scene, model_key, visual_beat)
                 prompt_editor.setPlainText(replacement)
-                row["generated_prompt"] = replacement
+                # Do NOT touch row["generated_prompt"] here — it must keep recording
+                # Qwen's true original output, not the latest regeneration.
                 status.setText("New Qwen prompt ready. Save to keep it.")
             except Exception as exc:
                 QMessageBox.warning(dialog, "Llama regeneration failed", str(exc))

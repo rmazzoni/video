@@ -56,8 +56,16 @@ def load_project_profiles(config_dir: str) -> Dict[str, str]:
 
 def save_project_profiles(config_dir: str, profiles: Dict[str, str]) -> None:
     os.makedirs(config_dir, exist_ok=True)
+
+    def _literal_str_representer(dumper: yaml.Dumper, data: str):
+        style = "|" if "\n" in data else None
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+    dumper = yaml.SafeDumper
+    dumper.add_representer(str, _literal_str_representer)
     with open(profiles_path(config_dir), "w", encoding="utf-8") as handle:
-        yaml.safe_dump(profiles, handle, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(profiles, handle, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
 
 
 def get_profile_text(profiles: Dict[str, str], selected_key: str) -> str:
