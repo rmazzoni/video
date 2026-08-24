@@ -77,9 +77,19 @@ class ModelPromptService:
     def regenerate_prompt(self, scene: Dict[str, Any], model_key: str, visual_beat: str) -> str:
         """Generate one replacement prompt while keeping the selected visual beat fixed."""
         profile = self.load_profile(model_key)
+        override_note = ""
+        if self.project_profile_text:
+            # The stored visual_beat text may already describe wardrobe/setting details
+            # that predate or ignore the project profile; force the constraints to win.
+            override_note = (
+                "\n\nThe visual beat description above may not reflect the PROJECT GEOGRAPHIC "
+                "& CULTURAL CONSTRAINTS given in your system instructions. Apply those "
+                "constraints regardless, replacing any conflicting clothing, uniforms, or "
+                "architecture in the beat description with constraint-compliant equivalents."
+            )
         focused_scene = dict(scene)
         focused_scene["text"] = (
-            f"Original script:\n{scene['text']}\n\nVisual beat to depict:\n{visual_beat}"
+            f"Original script:\n{scene['text']}\n\nVisual beat to depict:\n{visual_beat}{override_note}"
         )
         focused_profile = dict(profile)
         focused_profile["max_prompts_per_scene"] = 1
