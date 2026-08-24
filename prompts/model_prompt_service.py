@@ -13,6 +13,26 @@ from prompts.response_sanitizer import sanitize_generated_prompt
 MODEL_KEYS = ("schnell", "dev", "flux2")
 MODEL_TYPES = {"schnell": "flux-schnell", "dev": "flux-dev", "flux2": "flux2"}
 
+DEV_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "prompts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "visual_beat": {"type": "string"},
+                    "prompt": {"type": "string"},
+                },
+                "required": ["visual_beat", "prompt"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["prompts"],
+    "additionalProperties": False,
+}
+
 
 class ModelPromptService:
     def __init__(self, profiles_dir: str, ollama_model: str, ollama_host: str,
@@ -68,17 +88,29 @@ class ModelPromptService:
         try:
             import ollama
 
+            model_key = str(profile.get("model_key", ""))
+            system_instruction = str(profile.get("system_instruction", ""))
+            response_format = "json"
+            if model_key == "dev":
+                response_format = DEV_RESPONSE_SCHEMA
+                system_instruction += (
+                    "\n\nThe Ollama API wraps your answer in JSON. Return one object in the enforced "
+                    "schema. Put only clean FLUX Dev visual prose in each prompt field and the "
+                    "concise shot description in visual_beat. Do not place JSON, field names, "
+                    "script labels, commentary, or markdown inside either string."
+                )
+
             client = ollama.Client(host=self.ollama_host)
             response = client.chat(
                 model=self.ollama_model,
-                format="json",
+                format=response_format,
                 options={
                     "temperature": 0.6,
                     "top_p": 0.85,
                     "stop": ["\nScript Segment", "\nNarration:", "\nUser:"],
                 },
                 messages=[
-                    {"role": "system", "content": str(profile.get("system_instruction", ""))},
+                    {"role": "system", "content": system_instruction},
                     {
                         "role": "user",
                         "content": json.dumps({

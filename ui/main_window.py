@@ -2046,6 +2046,30 @@ class MainWindow(QMainWindow):
                 if legacy_match:
                     saved_preview_beats.add((int(legacy_match.group(1)), 1))
 
+        saved_lightbox_beats = set()
+        lightbox_dir = os.path.join(project, "output", "lightbox")
+        if os.path.isdir(lightbox_dir):
+            for filename in os.listdir(lightbox_dir):
+                match = re.match(
+                    r"^scene_(\d+)_(dev|flux2)_b(\d+)_v\d+\.(?:png|jpg|jpeg)$",
+                    filename,
+                    re.IGNORECASE,
+                )
+                if match:
+                    saved_lightbox_beats.add(
+                        (match.group(2).lower(), int(match.group(1)), int(match.group(3)))
+                    )
+                    continue
+                legacy_match = re.match(
+                    r"^scene_(\d+)_(dev|flux2)_v\d+\.(?:png|jpg|jpeg)$",
+                    filename,
+                    re.IGNORECASE,
+                )
+                if legacy_match:
+                    saved_lightbox_beats.add(
+                        (legacy_match.group(2).lower(), int(legacy_match.group(1)), 1)
+                    )
+
         for model_key, editor in self._prompt_profile_editors.items():
             try:
                 profile_path = os.path.join(self._prompt_profiles_dir(), f"{model_key}.yaml")
@@ -2083,11 +2107,18 @@ class MainWindow(QMainWindow):
                     text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
                     beat_index = int(row.get("beat", index)) if isinstance(row, dict) else index
                     has_preview = model_key == "schnell" and (sid, beat_index) in saved_preview_beats
+                    has_lightbox = (
+                        model_key in ("dev", "flux2")
+                        and (model_key, sid, beat_index) in saved_lightbox_beats
+                    )
+                    has_saved_image = has_preview or has_lightbox
                     value_label = QLabel(f"{index}. {text}")
                     value_label.setWordWrap(True)
                     value_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                    if has_preview:
-                        value_label.setToolTip("Preview image saved. Click to open this visual beat")
+                    if has_saved_image:
+                        saved_location = "Preview" if has_preview else "Lightbox"
+                        value_label.setToolTip(
+                            f"{saved_location} image saved. Click to open this visual beat")
                         value_label.setStyleSheet(
                             "color:#C9A6E6; font-size:12px; background:#173326; "
                             "border:2px solid #9FD6B8; border-radius:2px; padding:5px;"
