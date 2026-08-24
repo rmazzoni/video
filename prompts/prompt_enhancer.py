@@ -1,6 +1,8 @@
 import logging
 from typing import Optional
 
+from prompts.response_sanitizer import sanitize_generated_prompt
+
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
@@ -50,6 +52,11 @@ class PromptEnhancer:
             client = ollama.Client(host=self._host)
             response = client.chat(
                 model=self._model,
+                options={
+                    "temperature": 0.6,
+                    "top_p": 0.85,
+                    "stop": ["\nScript Segment", "\nNarration:", "\nUser:"],
+                },
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user",   "content": user_message},
@@ -61,7 +68,8 @@ class PromptEnhancer:
                 result = getattr(msg, "content", "") or ""
             else:
                 result = response["message"]["content"]
-            result = " ".join(result.strip().splitlines())
+            result = sanitize_generated_prompt(result)
+            result = " ".join(result.splitlines())
             return result if result else None
         except Exception as exc:
             logger.warning("Ollama prompt enhancement failed: %s", exc)

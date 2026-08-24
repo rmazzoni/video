@@ -49,9 +49,8 @@ system_instruction: 'You are an expert cinematic director and master prompt engi
   debris scattered outward away from it.
 
 
-
-
-  Output ONLY the raw, long, single-paragraph text block. No quotation marks.'
+  Output ONLY the raw, long, single-paragraph text block. Always precede your output
+  with the marker "PROMPT_START:" and do not include anything else.'
 requirements:
 - Write visual_beat as a concise description of only the action shown in that shot;
   do not copy the full scene text.

@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 import yaml
 
 from prompts.prompt_builder import PromptBuilder, structure_prompt_for_model
+from prompts.response_sanitizer import sanitize_generated_prompt
 
 
 MODEL_KEYS = ("schnell", "dev", "flux2")
@@ -71,6 +72,11 @@ class ModelPromptService:
             response = client.chat(
                 model=self.ollama_model,
                 format="json",
+                options={
+                    "temperature": 0.6,
+                    "top_p": 0.85,
+                    "stop": ["\nScript Segment", "\nNarration:", "\nUser:"],
+                },
                 messages=[
                     {"role": "system", "content": str(profile.get("system_instruction", ""))},
                     {
@@ -89,14 +95,17 @@ class ModelPromptService:
             content = getattr(message, "content", "") if message is not None else response["message"]["content"]
             payload = json.loads(content)
             limit = int(profile.get("max_prompts_per_scene", 3))
-            return [
-                {
-                    "visual_beat": str(item.get("visual_beat", "")).strip() or str(scene["text"]),
-                    "prompt": str(item.get("prompt", "")).strip(),
-                }
-                for item in payload.get("prompts", [])[:limit]
-                if isinstance(item, dict) and str(item.get("prompt", "")).strip()
-            ]
+            prompts = []
+            for item in payload.get("prompts", [])[:limit]:
+                if not isinstance(item, dict):
+                    continue
+                clean_prompt = sanitize_generated_prompt(item.get("prompt", ""))
+                if clean_prompt:
+                    prompts.append({
+                        "visual_beat": str(item.get("visual_beat", "")).strip() or str(scene["text"]),
+                        "prompt": clean_prompt,
+                    })
+            return prompts
         except Exception:
             return []
 
