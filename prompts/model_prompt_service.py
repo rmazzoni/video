@@ -36,11 +36,12 @@ DEV_RESPONSE_SCHEMA = {
 
 class ModelPromptService:
     def __init__(self, profiles_dir: str, ollama_model: str, ollama_host: str,
-                 max_visual_beats: int = None):
+                 max_visual_beats: int = None, project_profile_text: str = ""):
         self.profiles_dir = profiles_dir
         self.ollama_model = ollama_model
         self.ollama_host = ollama_host
         self.max_visual_beats = max_visual_beats
+        self.project_profile_text = (project_profile_text or "").strip()
 
     def load_profile(self, model_key: str) -> Dict[str, Any]:
         if model_key not in MODEL_KEYS:
@@ -51,6 +52,9 @@ class ModelPromptService:
         profile["model_key"] = model_key
         if self.max_visual_beats is not None:
             profile["max_prompts_per_scene"] = int(self.max_visual_beats)
+        if self.project_profile_text:
+            base_instruction = str(profile.get("system_instruction", ""))
+            profile["system_instruction"] = f"{base_instruction}\n\n{self.project_profile_text}"
         return profile
 
     def generate(self, scene: Dict[str, Any], model_key: str) -> List[Dict[str, Any]]:

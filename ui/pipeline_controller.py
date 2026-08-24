@@ -182,13 +182,21 @@ class PipelineWorker(QObject):
                     with open(model_prompts_path, "r", encoding="utf-8") as fh:
                         model_prompts = yaml.safe_load(fh) or {}
 
+                profiles_dir = self._resolve_path(str(self.config.get(
+                    "prompt_profiles_dir", "src/config/prompt_profiles")))
+                from prompts.project_profiles import get_profile_text, load_project_profiles
+
+                project_profile_key = str(self.config.get("project_profile_key", "")).strip()
+                project_profile_text = get_profile_text(
+                    load_project_profiles(os.path.dirname(profiles_dir)), project_profile_key
+                )
                 service = ModelPromptService(
-                    profiles_dir=self._resolve_path(str(self.config.get(
-                        "prompt_profiles_dir", "src/config/prompt_profiles"))),
+                    profiles_dir=profiles_dir,
                     ollama_model=str(self.config.get("ollama_model", "qwen3:8b")),
                     ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
                     max_visual_beats=(int(self.config["max_visual_beats"])
                                       if self.config.get("max_visual_beats") is not None else None),
+                    project_profile_text=project_profile_text,
                 )
                 requested_model = str(self.config.get("prompt_model_key", "")).strip().lower()
                 active_models = (requested_model,) if requested_model in MODEL_KEYS else MODEL_KEYS

@@ -1893,6 +1893,20 @@ class MainWindow(QMainWindow):
         self._prompts_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
         root.addWidget(self._prompts_status_label)
 
+        profile_bar = QHBoxLayout()
+        profile_bar.addWidget(QLabel("Project Aesthetic Profile:"))
+        self._project_profile_combo = QComboBox()
+        self._project_profile_combo.setToolTip(
+            "Geographic, historical, or stylistic constraints appended to every model's "
+            "Qwen instructions (applies uniformly to Schnell, Dev, and FLUX.2)."
+        )
+        self._project_profile_combo.currentIndexChanged.connect(self._on_project_profile_selected)
+        profile_bar.addWidget(self._project_profile_combo, 1)
+        btn_manage_profiles = QPushButton("Manage Profiles…")
+        btn_manage_profiles.clicked.connect(self._open_project_profiles_dialog)
+        profile_bar.addWidget(btn_manage_profiles)
+        root.addLayout(profile_bar)
+
         self._prompt_model_tabs = QTabWidget()
         self._prompt_model_layouts = {}
         self._prompt_profile_editors = {}
@@ -1938,7 +1952,7 @@ class MainWindow(QMainWindow):
         actions.addStretch(1)
         btn_build = QPushButton("Build Prompts")
         btn_build.setToolTip("Generate missing Llama prompts from each scene's English text")
-        btn_build.clicked.connect(lambda: self.run_stage("prompts"))
+        btn_build.clicked.connect(self._prompts_build_all)
         btn_reload = QPushButton("Reload from Dubbing")
         btn_reload.setToolTip("Reload Italian translations from output/dubbing.yaml")
         btn_reload.clicked.connect(self._prompts_reload_from_dubbing)
@@ -1949,6 +1963,162 @@ class MainWindow(QMainWindow):
 
     def _prompt_profiles_dir(self) -> str:
         return os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "prompt_profiles")
+
+    def _project_profiles_config_dir(self) -> str:
+        return os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
+
+    def _project_profile_settings_path(self) -> str:
+        project = self.project_path_input.text().strip()
+        return os.path.join(project, "output", "project_profile.yaml")
+
+    def _load_project_profile_key(self) -> str:
+        import yaml as _yaml
+        from prompts.project_profiles import NONE_KEY
+
+        path = self._project_profile_settings_path()
+        if not os.path.exists(path):
+            return NONE_KEY
+        try:
+            data = _yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            return str(data.get("selected_profile_key", NONE_KEY)) or NONE_KEY
+        except Exception:
+            return NONE_KEY
+
+    def _save_project_profile_key(self, key: str) -> None:
+        import yaml as _yaml
+
+        project = self.project_path_input.text().strip()
+        if not project:
+            return
+        path = self._project_profile_settings_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        Path(path).write_text(
+            _yaml.safe_dump({"selected_profile_key": key}, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+
+    def _populate_project_profile_combo(self) -> None:
+        from prompts.project_profiles import NONE_KEY, NONE_LABEL, load_project_profiles
+
+        if not hasattr(self, "_project_profile_combo"):
+            return
+        profiles = load_project_profiles(self._project_profiles_config_dir())
+        combo = self._project_profile_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(NONE_LABEL, NONE_KEY)
+        for key in sorted(profiles.keys()):
+            combo.addItem(key.replace("_", " ").title(), key)
+        selected = self._load_project_profile_key()
+        index = combo.findData(selected)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _on_project_profile_selected(self, _index: int) -> None:
+        key = self._project_profile_combo.currentData()
+        self._save_project_profile_key(str(key or "none"))
+
+    def _open_project_profiles_dialog(self) -> None:
+        from PyQt6.QtWidgets import QDialog, QListWidget, QListWidgetItem
+        from prompts.project_profiles import (
+            load_project_profiles, save_project_profiles,
+        )
+
+        config_dir = self._project_profiles_config_dir()
+        profiles = load_project_profiles(config_dir)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Manage Project Aesthetic Profiles")
+        dialog.resize(900, 600)
+        dialog.setStyleSheet(
+            "QListWidget, QLineEdit, QPlainTextEdit, QLabel, QPushButton { font-size:14px; }"
+        )
+        layout = QHBoxLayout(dialog)
+
+        list_widget = QListWidget()
+        for key in sorted(profiles.keys()):
+            list_widget.addItem(QListWidgetItem(key))
+        layout.addWidget(list_widget, 1)
+
+        right = QVBoxLayout()
+        right.addWidget(QLabel("Profile key (letters, digits, underscore):"))
+        key_input = QLineEdit()
+        right.addWidget(key_input)
+        right.addWidget(QLabel("Steering text (appended after each model's Qwen instructions):"))
+        text_editor = QPlainTextEdit()
+        right.addWidget(text_editor, 1)
+
+        buttons_row = QHBoxLayout()
+        btn_new = QPushButton("New")
+        btn_save = QPushButton("Save")
+        btn_delete = QPushButton("Delete")
+        buttons_row.addWidget(btn_new)
+        buttons_row.addWidget(btn_save)
+        buttons_row.addWidget(btn_delete)
+        right.addLayout(buttons_row)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        btn_close = QPushButton("Close")
+        close_row.addWidget(btn_close)
+        right.addLayout(close_row)
+        layout.addLayout(right, 1)
+
+        def _load_selected(item) -> None:
+            if item is None:
+                key_input.clear()
+                text_editor.clear()
+                return
+            key = item.text()
+            key_input.setText(key)
+            text_editor.setPlainText(profiles.get(key, ""))
+
+        def _new() -> None:
+            list_widget.clearSelection()
+            key_input.clear()
+            text_editor.clear()
+            key_input.setFocus()
+
+        def _save() -> None:
+            key = key_input.text().strip().lower().replace(" ", "_")
+            if not key or not re.match(r"^[a-z0-9_]+$", key):
+                QMessageBox.warning(dialog, "Invalid key", "Use lowercase letters, digits, and underscores only.")
+                return
+            profiles[key] = text_editor.toPlainText().strip()
+            save_project_profiles(config_dir, profiles)
+            list_widget.clear()
+            for existing_key in sorted(profiles.keys()):
+                list_widget.addItem(QListWidgetItem(existing_key))
+            self._populate_project_profile_combo()
+
+        def _delete() -> None:
+            item = list_widget.currentItem()
+            if item is None:
+                return
+            key = item.text()
+            answer = QMessageBox.question(dialog, "Delete profile", f"Delete profile '{key}'?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            profiles.pop(key, None)
+            save_project_profiles(config_dir, profiles)
+            list_widget.takeItem(list_widget.row(item))
+            key_input.clear()
+            text_editor.clear()
+            self._populate_project_profile_combo()
+
+        list_widget.currentItemChanged.connect(lambda current, _prev: _load_selected(current))
+        btn_new.clicked.connect(_new)
+        btn_save.clicked.connect(_save)
+        btn_delete.clicked.connect(_delete)
+        btn_close.clicked.connect(dialog.accept)
+        dialog.exec()
+
+    def _prompts_build_all(self) -> None:
+        path = self.project_path_input.text().strip()
+        if path:
+            self.controller.set_project_path(path)
+        key = self._project_profile_combo.currentData() if hasattr(self, "_project_profile_combo") else None
+        self.controller.run_pipeline("prompts", {"project_profile_key": str(key or "none")})
 
     def _save_prompt_profile(self, model_key: str) -> None:
         import yaml as _yaml
@@ -1976,9 +2146,11 @@ class MainWindow(QMainWindow):
         path = self.project_path_input.text().strip()
         if path:
             self.controller.set_project_path(path)
+        key = self._project_profile_combo.currentData() if hasattr(self, "_project_profile_combo") else None
         self.controller.run_pipeline("prompts", {
             "prompt_model_key": model_key,
             "force_regenerate_prompts": True,
+            "project_profile_key": str(key or "none"),
         })
 
     def _prompts_reload_from_dubbing(self) -> None:
@@ -2010,6 +2182,7 @@ class MainWindow(QMainWindow):
     def _prompts_refresh(self) -> None:
         if not hasattr(self, "_prompt_model_layouts"):
             return
+        self._populate_project_profile_combo()
         for cards_layout in self._prompt_model_layouts.values():
             while cards_layout.count() > 1:
                 item = cards_layout.takeAt(0)
@@ -2398,10 +2571,17 @@ class MainWindow(QMainWindow):
         _update_save_states()
 
         def _regenerate():
+            from prompts.project_profiles import get_profile_text, load_project_profiles
+
+            project_key = self._load_project_profile_key()
+            project_profile_text = get_profile_text(
+                load_project_profiles(self._project_profiles_config_dir()), project_key
+            )
             service = ModelPromptService(
                 self._prompt_profiles_dir(),
                 self.ollama_model_input.text().strip() or "qwen3:8b",
                 self.ollama_host_input.text().strip() or "http://localhost:11434",
+                project_profile_text=project_profile_text,
             )
             regenerate.setEnabled(False)
             status.setText("Regenerating this prompt...")
