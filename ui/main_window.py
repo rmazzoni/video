@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -2748,6 +2749,56 @@ class MainWindow(QMainWindow):
             save_image.setEnabled(not running and bool(candidate_state["path"]))
             progress.setVisible(running)
 
+        # Defined once (not re-created per click) so a stray connection left over from
+        # a previous click, or from this dialog being closed mid-generation, can always
+        # be found and disconnected by identity instead of silently piling up on the
+        # controller's shared signals — each extra stray connection would otherwise fire
+        # against this dialog's widgets even after they were deleted, raising a
+        # RuntimeError deep inside Qt's signal dispatch and stalling the event loop.
+        def _show_progress(value: int, message: str):
+            if sip.isdeleted(dialog):
+                return
+            progress.setValue(value)
+            status.setText(message)
+
+        def _show_candidate(success: bool, payload: str):
+            try:
+                self.controller.pipeline_finished.disconnect(_show_candidate)
+                self.controller.pipeline_progress.disconnect(_show_progress)
+            except Exception:
+                pass
+            if sip.isdeleted(dialog):
+                return
+            _set_image_running(False)
+            if not success:
+                status.setText(f"Image generation failed: {payload}")
+                return
+            candidate_state["path"] = payload
+            save_image.setEnabled(True)
+            _update_save_states()
+            pixmap = QPixmap(payload)
+            if not pixmap.isNull():
+                preview.setPixmap(pixmap.scaled(
+                    840, 300, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+                preview.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                preview.mousePressEvent = lambda event: self._open_image_viewer(payload)
+            progress.setValue(100)
+            status.setText("Candidate ready. Save it or adjust the prompt and generate again.")
+
+        def _disconnect_generation_signals():
+            try:
+                self.controller.pipeline_finished.disconnect(_show_candidate)
+            except Exception:
+                pass
+            try:
+                self.controller.pipeline_progress.disconnect(_show_progress)
+            except Exception:
+                pass
+
+        dialog.finished.connect(lambda _result: _disconnect_generation_signals())
+
         def _generate_image():
             prompt = prompt_editor.toPlainText().strip()
             if not prompt:
@@ -2756,38 +2807,12 @@ class MainWindow(QMainWindow):
             if getattr(self.controller, "_thread", None) is not None:
                 QMessageBox.warning(dialog, "Pipeline busy", "Wait for the current pipeline operation to finish.")
                 return
+            # Guard against a leftover connection from a previous click in this same
+            # dialog (e.g. Generate Image clicked twice before the first finished).
+            _disconnect_generation_signals()
             _set_image_running(True)
             progress.setValue(0)
             status.setText(f"Generating neutral-seed {model_key} image...")
-
-            def _show_progress(value: int, message: str):
-                progress.setValue(value)
-                status.setText(message)
-
-            def _show_candidate(success: bool, payload: str):
-                try:
-                    self.controller.pipeline_finished.disconnect(_show_candidate)
-                    self.controller.pipeline_progress.disconnect(_show_progress)
-                except Exception:
-                    pass
-                _set_image_running(False)
-                if not success:
-                    status.setText(f"Image generation failed: {payload}")
-                    return
-                candidate_state["path"] = payload
-                save_image.setEnabled(True)
-                _update_save_states()
-                pixmap = QPixmap(payload)
-                if not pixmap.isNull():
-                    preview.setPixmap(pixmap.scaled(
-                        840, 300, Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    ))
-                    preview.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                    preview.mousePressEvent = lambda event: self._open_image_viewer(payload)
-                progress.setValue(100)
-                status.setText("Candidate ready. Save it or adjust the prompt and generate again.")
-
             self.controller.pipeline_progress.connect(_show_progress)
             self.controller.pipeline_finished.connect(_show_candidate)
             self.controller.run_pipeline("prompt_image_candidate", {
