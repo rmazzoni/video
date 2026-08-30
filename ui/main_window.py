@@ -887,7 +887,12 @@ class MainWindow(QMainWindow):
         btn_select_all.clicked.connect(lambda: self._lightbox_set_all(True))
         btn_deselect_all = QPushButton("Deselect All")
         btn_deselect_all.clicked.connect(lambda: self._lightbox_set_all(False))
-        for b in (btn_run, btn_refresh, btn_save, btn_select_all, btn_deselect_all):
+        self._lightbox_unselected_btn = QPushButton("Hide Unselected")
+        self._lightbox_unselected_btn.setCheckable(True)
+        self._lightbox_unselected_btn.setToolTip("Hide images that are not selected for Final Clips")
+        self._lightbox_unselected_btn.toggled.connect(self._lightbox_toggle_unselected)
+        for b in (btn_run, btn_refresh, btn_save, btn_select_all, btn_deselect_all,
+                  self._lightbox_unselected_btn):
             header_row.addWidget(b)
         root.addLayout(header_row)
 
@@ -902,6 +907,8 @@ class MainWindow(QMainWindow):
         root.addWidget(scroll, 1)
 
         self._lightbox_checkboxes: dict = {}
+        self._lightbox_cells: dict = {}
+        self._lightbox_scene_cards: dict = {}
         return page
 
     def _refresh_lightbox(self) -> None:
@@ -915,6 +922,8 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self._lightbox_checkboxes.clear()
+        self._lightbox_cells.clear()
+        self._lightbox_scene_cards.clear()
 
         if not lightbox_dir or not os.path.isdir(lightbox_dir):
             self._lightbox_status_label.setText(
@@ -1000,6 +1009,8 @@ class MainWindow(QMainWindow):
             thumb_grid = QGridLayout()
             thumb_grid.setSpacing(8)
             self._lightbox_checkboxes[sid] = {}
+            self._lightbox_cells[sid] = {}
+            self._lightbox_scene_cards[sid] = scene_card
 
             ordered_files = sorted(scene_files[sid], key=_variant_order)
             for variant_index, fname in enumerate(ordered_files):
@@ -1045,12 +1056,15 @@ class MainWindow(QMainWindow):
                 chk.setChecked(fname in selected_set or (not selected_set and os.path.exists(img_path)))
                 chk.setToolTip(f"Include {fname} in Final Clips")
                 chk.setEnabled(os.path.exists(img_path))
-                chk.toggled.connect(lambda _checked: self._save_lightbox_selections(silent=True))
+                chk.toggled.connect(
+                    lambda _checked, s=sid: self._lightbox_selection_changed(s)
+                )
                 lbl_row.addWidget(vlbl, 1)
                 lbl_row.addWidget(chk)
                 cell_lay.addLayout(lbl_row)
 
                 self._lightbox_checkboxes[sid][fname] = chk
+                self._lightbox_cells[sid][fname] = cell
                 thumb_grid.addWidget(cell, variant_index // 3, variant_index % 3)
 
             scene_vlay.addLayout(thumb_grid)
@@ -1063,6 +1077,32 @@ class MainWindow(QMainWindow):
             for sid in sorted(scene_files.keys())
             for fname in sorted(scene_files[sid], key=_variant_order)
         ]
+        self._lightbox_apply_unselected_filter()
+
+    def _lightbox_toggle_unselected(self, hide_unselected: bool) -> None:
+        self._lightbox_unselected_btn.setText(
+            "Show Unselected" if hide_unselected else "Hide Unselected"
+        )
+        self._lightbox_apply_unselected_filter()
+
+    def _lightbox_selection_changed(self, sid: int) -> None:
+        self._save_lightbox_selections(silent=True)
+        if self._lightbox_unselected_btn.isChecked():
+            self._lightbox_apply_unselected_filter(sid)
+
+    def _lightbox_apply_unselected_filter(self, only_sid: int = None) -> None:
+        hide_unselected = self._lightbox_unselected_btn.isChecked()
+        scene_ids = [only_sid] if only_sid is not None else self._lightbox_cells.keys()
+        for sid in scene_ids:
+            cells = self._lightbox_cells.get(sid, {})
+            checkboxes = self._lightbox_checkboxes.get(sid, {})
+            for fname, cell in cells.items():
+                cell.setVisible(not hide_unselected or checkboxes[fname].isChecked())
+            card = self._lightbox_scene_cards.get(sid)
+            if card is not None:
+                card.setVisible(not hide_unselected or any(
+                    checkbox.isChecked() for checkbox in checkboxes.values()
+                ))
 
     def _lightbox_set_all(self, checked: bool) -> None:
         for sid_dict in self._lightbox_checkboxes.values():
@@ -1072,6 +1112,7 @@ class MainWindow(QMainWindow):
                     chk.setChecked(checked)
                     chk.blockSignals(False)
         self._save_lightbox_selections(silent=True)
+        self._lightbox_apply_unselected_filter()
 
     def _save_lightbox_selections(self, silent: bool = False) -> None:
         import yaml as _yaml
@@ -1159,7 +1200,18 @@ class MainWindow(QMainWindow):
         from PyQt6.QtCore import Qt as _Qt
         from PyQt6.QtGui import QKeyEvent
 
-        image_list: list = getattr(self, "_lightbox_image_list", [])
+        all_images: list = getattr(self, "_lightbox_image_list", [])
+        hide_unselected = self._lightbox_unselected_btn.isChecked()
+        image_list = [
+            path for path in all_images
+            if not hide_unselected
+            or (
+                (checkbox := self._lightbox_checkboxes
+                 .get(int(os.path.basename(path).split("_")[1]), {})
+                 .get(os.path.basename(path))) is not None
+                and checkbox.isChecked()
+            )
+        ]
         if not image_list:
             self._open_image_viewer(image_path)
             return
@@ -1188,6 +1240,11 @@ class MainWindow(QMainWindow):
         img_lbl = QLabel()
         img_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(img_lbl, 1)
+
+        metadata_lbl = QLabel()
+        metadata_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+        metadata_lbl.setStyleSheet("color:#E6E1E5; font-size:13px; font-weight:bold;")
+        lay.addWidget(metadata_lbl)
 
         # ── Selection checkbox row ────────────────────────────────────────────
         chk_row = QHBoxLayout()
@@ -1232,6 +1289,19 @@ class MainWindow(QMainWindow):
             return (getattr(self, "_lightbox_checkboxes", {})
                     .get(sid, {}).get(fname))
 
+        def _image_metadata(path: str):
+            match = re.match(
+                r"^scene_(\d+)_(schnell|dev|flux2)(?:_b(\d+))?_v\d+\.png$",
+                os.path.basename(path), re.IGNORECASE,
+            )
+            if not match:
+                return None
+            scene, model_key, beat = match.groups()
+            model_name = {"schnell": "Schnell", "dev": "DEV", "flux2": "FLUX.2"}[
+                model_key.lower()
+            ]
+            return int(scene), int(beat or 1), model_name
+
         # Sync the viewer checkbox → grid checkbox (one direction)
         def _on_viewer_chk(checked: int):
             grid_chk = _grid_checkbox(image_list[state["idx"]])
@@ -1256,6 +1326,11 @@ class MainWindow(QMainWindow):
                 img_lbl.setText("(cannot load image)")
             name = os.path.basename(path)
             dlg.setWindowTitle(name)
+            metadata = _image_metadata(path)
+            metadata_lbl.setText(
+                f"Scene {metadata[0]}  |  Beat {metadata[1]}  |  {metadata[2]}"
+                if metadata else name
+            )
             info_lbl.setText(
                 f"{name}   [{idx + 1} / {len(image_list)}]"
                 "   ◀ ▶  or  ← →  to navigate   ·  Esc to close"
@@ -3520,6 +3595,10 @@ class MainWindow(QMainWindow):
             preview_btn.setToolTip("Synthesise and play this segment")
             preview_btn.clicked.connect(lambda _, s=sid: self._dub_preview_segment(s))
 
+            deepl_btn = QPushButton("DeepL")
+            deepl_btn.setFixedHeight(28)
+            deepl_btn.setToolTip("Select this translation and send Ctrl+C twice to DeepL")
+
             bm_btn = QPushButton("🔖")
             bm_btn.setFixedSize(28, 28)
             bm_btn.setCheckable(True)
@@ -3532,6 +3611,7 @@ class MainWindow(QMainWindow):
             hdr.addWidget(char_lbl, 1)
             hdr.addWidget(speed_lbl)
             hdr.addWidget(duration_lbl)
+            hdr.addWidget(deepl_btn)
             hdr.addWidget(bm_btn)
             hdr.addWidget(preview_btn)
             cl.addLayout(hdr)
@@ -3576,6 +3656,7 @@ class MainWindow(QMainWindow):
             ed.customContextMenuRequested.connect(
                 lambda pos, e=ed: self._dub_show_editor_context_menu(e, pos)
             )
+            deepl_btn.clicked.connect(lambda _checked, e=ed: self._dub_send_to_deepl(e))
 
             cl.addWidget(ed)
             self._dub_editors[sid]      = ed
@@ -3610,6 +3691,23 @@ class MainWindow(QMainWindow):
         self._dub_update_total_duration()
         self._dub_has_unsaved = not from_disk
         self._dub_mark_unsaved() if self._dub_has_unsaved else self._dub_mark_saved()
+
+    def _dub_send_to_deepl(self, editor: QPlainTextEdit) -> None:
+        """Select one scene translation and invoke DeepL's double-copy shortcut."""
+        import ctypes
+
+        editor.setFocus()
+        editor.selectAll()
+
+        user32 = ctypes.windll.user32
+        key_up = 0x0002
+        vk_control = 0x11
+        vk_c = 0x43
+        for _ in range(2):
+            user32.keybd_event(vk_control, 0, 0, 0)
+            user32.keybd_event(vk_c, 0, 0, 0)
+            user32.keybd_event(vk_c, 0, key_up, 0)
+            user32.keybd_event(vk_control, 0, key_up, 0)
 
     def _dub_mark_unsaved(self) -> None:
         self._dub_update_save_btn()
