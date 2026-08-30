@@ -1422,11 +1422,14 @@ class MainWindow(QMainWindow):
             scene_id = int(fname.split("_")[1].split(".")[0])
         except Exception:
             scene_id = None
+        beat_match = re.search(r"_schnell_b(\d+)_v\d+\.png$", fname, re.IGNORECASE)
+        beat_index = int(beat_match.group(1)) if beat_match else 1
 
         project = self.project_path_input.text().strip()
         scenes_yaml  = os.path.join(project, "output", "scenes.yaml")
         prompts_yaml = os.path.join(project, "output", "prompts.yaml")
         overrides_yaml = os.path.join(project, "output", "prompt_overrides.yaml")
+        model_prompts_yaml = os.path.join(project, "output", "model_prompts.yaml")
 
         # Load narration text
         scene_text = ""
@@ -1443,6 +1446,8 @@ class MainWindow(QMainWindow):
         # Load prompt
         prompts: dict = {}
         overrides: dict = {}
+        model_prompts: dict = {}
+        schnell_row = None
         current_prompt = ""
         if scene_id is not None and os.path.exists(prompts_yaml):
             try:
@@ -1450,11 +1455,28 @@ class MainWindow(QMainWindow):
                 current_prompt = prompts.get(scene_id) or prompts.get(str(scene_id)) or ""
             except Exception:
                 pass
+        if scene_id is not None and os.path.exists(model_prompts_yaml):
+            try:
+                model_prompts = yaml.safe_load(
+                    Path(model_prompts_yaml).read_text(encoding="utf-8")
+                ) or {}
+                scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
+                schnell_rows = scene_entry.get("models", {}).get("schnell", {}).get("prompts", [])
+                schnell_row = next(
+                    (row for row in schnell_rows
+                     if isinstance(row, dict) and int(row.get("beat", 0)) == beat_index),
+                    None,
+                )
+                if schnell_row is not None:
+                    current_prompt = str(schnell_row.get("text", "")).strip() or current_prompt
+            except Exception:
+                schnell_row = None
         if scene_id is not None and os.path.exists(overrides_yaml):
             try:
                 overrides = yaml.safe_load(Path(overrides_yaml).read_text(encoding="utf-8")) or {}
-                current_prompt = (overrides.get(scene_id) or overrides.get(str(scene_id))
-                                  or current_prompt)
+                if schnell_row is None:
+                    current_prompt = (overrides.get(scene_id) or overrides.get(str(scene_id))
+                                      or current_prompt)
             except Exception:
                 pass
 
@@ -1601,11 +1623,26 @@ class MainWindow(QMainWindow):
             new_prompt = prompt_edit.toPlainText().strip()
             if scene_id is None:
                 return False
-            overrides[scene_id] = new_prompt
-            overrides.pop(str(scene_id), None)
             try:
-                with open(overrides_yaml, "w", encoding="utf-8") as fh:
-                    yaml.safe_dump(overrides, fh, allow_unicode=True, sort_keys=False)
+                if schnell_row is not None:
+                    schnell_row["text"] = new_prompt
+                    schnell_row["source"] = "manually_edited"
+                    model_prompts[scene_id] = model_prompts.get(scene_id) or model_prompts.pop(
+                        str(scene_id), {}
+                    )
+                    Path(model_prompts_yaml).write_text(
+                        yaml.safe_dump(model_prompts, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8",
+                    )
+                if beat_index == 1:
+                    overrides[scene_id] = new_prompt
+                    overrides.pop(str(scene_id), None)
+                    with open(overrides_yaml, "w", encoding="utf-8") as fh:
+                        yaml.safe_dump(overrides, fh, allow_unicode=True, sort_keys=False)
+                    prompts[scene_id] = new_prompt
+                    prompts.pop(str(scene_id), None)
+                    with open(prompts_yaml, "w", encoding="utf-8") as fh:
+                        yaml.safe_dump(prompts, fh, allow_unicode=True, sort_keys=False)
             except Exception as exc:
                 QMessageBox.warning(dlg, "Save failed", str(exc))
                 return False
@@ -1615,6 +1652,7 @@ class MainWindow(QMainWindow):
                 except Exception as exc:
                     QMessageBox.warning(dlg, "Delete failed", str(exc))
                     return False
+                    self._prompts_refresh()
             return True
 
         def _save_and_redo():
