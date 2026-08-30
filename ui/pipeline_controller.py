@@ -343,12 +343,13 @@ class PipelineWorker(QObject):
                     rate=self.config.get("tts_rate", "+0%"),
                     pitch=self.config.get("tts_pitch", "+0Hz"),
                     volume=self.config.get("tts_volume", "+0%"),
+                    fixups_path=os.path.join(self.root_dir, "config", "tts_fixups.yaml"),
                 )
                 engine.synthesise_scenes(
                     tts_scenes,
                     timings_path=timings_path,
                     on_progress=_on_tts_progress,
-                    skip_existing=True,
+                    skip_existing=stage == "full",
                 )
                 self._emit_progress(100, "TTS synthesis complete")
                 self.finished.emit(True, tts_dir)

@@ -3998,6 +3998,10 @@ class MainWindow(QMainWindow):
         text = ed.toPlainText().strip()
         if not text:
             return
+        from narration.tts_engine import apply_tts_fixups
+        text = apply_tts_fixups(
+            text, os.path.join(self.controller.config_dir, "tts_fixups.yaml")
+        )
 
         btn = self._dub_preview_btns.get(sid)
         if btn:

@@ -43,10 +43,38 @@ _TEXT_FIXUPS: List[Tuple[str, str]] = [
 ]
 
 
-def _apply_fixups(text: str) -> str:
-    for pattern, replacement in _TEXT_FIXUPS:
+def apply_tts_fixups(text: str, fixups_path: Optional[str] = None) -> str:
+    for pattern, replacement in _TEXT_FIXUPS + _load_fixups(fixups_path):
         text = re.sub(pattern, replacement, text)
     return text
+
+
+def _load_fixups(path: Optional[str]) -> List[Tuple[str, str]]:
+    if not path or not os.path.exists(path):
+        return []
+
+    with open(path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"TTS fixups must be grouped in a mapping: {path}")
+
+    fixups: List[Tuple[str, str]] = []
+    for group_name, entries in data.items():
+        if not isinstance(entries, list):
+            raise ValueError(f"TTS fixup group '{group_name}' must be a list: {path}")
+        for entry in entries:
+            if not isinstance(entry, dict) or "pattern" not in entry or "replacement" not in entry:
+                raise ValueError(
+                    f"Each TTS fixup in '{group_name}' needs pattern and replacement: {path}"
+                )
+            pattern = str(entry["pattern"])
+            replacement = str(entry["replacement"])
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"Invalid TTS fixup regex {pattern!r} in {path}: {exc}") from exc
+            fixups.append((pattern, replacement))
+    return fixups
 
 
 # ── Edge TTS voice catalogue ──────────────────────────────────────────────────
@@ -95,6 +123,7 @@ class TTSEngine:
         rate: str = "+0%",
         pitch: str = "+0Hz",
         volume: str = "+0%",
+        fixups_path: Optional[str] = None,
     ):
         """
         :param output_dir: directory to save audio files
@@ -108,6 +137,7 @@ class TTSEngine:
         self.rate = rate
         self.pitch = pitch
         self.volume = volume
+        self.fixups_path = fixups_path
         os.makedirs(output_dir, exist_ok=True)
 
     # ---------------------------------------------------------
@@ -145,7 +175,7 @@ class TTSEngine:
                     on_progress(scene_id, index, total, skipped=True)
                 continue
 
-            text = _apply_fixups(scene["text"])
+            text = apply_tts_fixups(scene["text"], self.fixups_path)
             self._synthesise_subprocess(text, audio_path)
             self._trim_edge_silence(audio_path)
 
