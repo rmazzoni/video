@@ -1,4 +1,5 @@
 import os
+import math
 import re
 import subprocess
 import sys
@@ -1152,6 +1153,7 @@ class MainWindow(QMainWindow):
         total = sum(len(v) for v in selections.values())
         self._lightbox_status_label.setText(
             f"Saved {total} selection(s) across {len(selections)} scene(s) \u2192 lightbox_selections.yaml")
+        self._dub_update_image_badges()
         if not silent:
             self._append_log(f"Lightbox selections saved: {total} image(s) in {len(selections)} scene(s).")
 
@@ -3254,6 +3256,59 @@ class MainWindow(QMainWindow):
         minutes, secs = divmod(total, 60)
         return f"{minutes:02d}:{secs:02d}"
 
+    def _dub_segment_duration_seconds(self, sid: int) -> float:
+        audio_path = self._dub_audio_path(sid)
+        if not os.path.exists(audio_path):
+            return 0.0
+        try:
+            from mutagen.mp3 import MP3
+            return float(MP3(audio_path).info.length)
+        except Exception:
+            try:
+                from moviepy import AudioFileClip
+                clip = AudioFileClip(audio_path)
+                duration = float(clip.duration)
+                clip.close()
+                return duration
+            except Exception:
+                return 0.0
+
+    def _dub_expected_clip_duration(self) -> float:
+        config = self.controller.config
+        if str(config.get("clip_engine", "ken_burns")).strip().lower() == "ken_burns":
+            return max(0.1, float(config.get("ken_burns_duration", 5.0)))
+        return max(0.1, int(config.get("num_frames", 14)) / max(1, int(config.get("fps", 8))))
+
+    def _dub_selected_image_counts(self) -> dict:
+        project = self.project_path_input.text().strip()
+        path = os.path.join(project, "output", "lightbox_selections.yaml") if project else ""
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            import yaml as _yaml
+            data = _yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            return {int(sid): len(files) for sid, files in data.items() if isinstance(files, list)}
+        except Exception:
+            return {}
+
+    def _dub_update_image_badges(self, only_sid: int = None) -> None:
+        labels = getattr(self, "_dub_image_labels", {})
+        selected_counts = self._dub_selected_image_counts()
+        scene_ids = [only_sid] if only_sid is not None else labels.keys()
+        clip_duration = self._dub_expected_clip_duration()
+        for sid in scene_ids:
+            label = labels.get(sid)
+            if label is None:
+                continue
+            audio_duration = self._dub_segment_duration_seconds(sid)
+            optimum = math.ceil(audio_duration / clip_duration) if audio_duration else 0
+            selected = selected_counts.get(sid, 0)
+            label.setText(f"Images {selected} / {optimum}")
+            label.setToolTip(
+                f"{selected} selected Lightbox image(s); {optimum} estimated optimum "
+                f"at {clip_duration:.1f} seconds per clip"
+            )
+
     def _dub_update_segment_badges(self, sid: int) -> None:
         """Refresh a single scene card's speed/duration badges."""
         speed_lbl = getattr(self, "_dub_speed_labels", {}).get(sid)
@@ -3262,6 +3317,7 @@ class MainWindow(QMainWindow):
         dur_lbl = getattr(self, "_dub_duration_labels", {}).get(sid)
         if dur_lbl:
             dur_lbl.setText(self._dub_segment_duration(sid))
+        self._dub_update_image_badges(sid)
 
     def _dub_bookmark_path(self) -> str:
         project = self.project_path_input.text().strip()
@@ -3539,6 +3595,7 @@ class MainWindow(QMainWindow):
         self._dub_spell_highlighters  = {}   # sid → _SpellHighlighter
         self._dub_speed_labels: dict  = {}   # sid → QLabel (speed badge)
         self._dub_duration_labels: dict = {} # sid → QLabel (duration badge)
+        self._dub_image_labels: dict = {}    # sid → QLabel (selected / optimum images)
         self._dub_rates:   dict       = {}   # sid → TTS rate % used for its current audio
         self._dub_selected_sid = None
         # Load bookmark from disk for this project
@@ -3590,6 +3647,12 @@ class MainWindow(QMainWindow):
                 "border:1px solid #2F5B41; border-radius:8px; padding:1px 6px;"
             )
 
+            image_lbl = QLabel()
+            image_lbl.setStyleSheet(
+                "color:#F3C98B; font-size:10px; font-weight:bold; background:#3A2D1E; "
+                "border:1px solid #6B5130; border-radius:8px; padding:1px 6px;"
+            )
+
             preview_btn = QPushButton("▶")
             preview_btn.setFixedSize(28, 28)
             preview_btn.setToolTip("Synthesise and play this segment")
@@ -3611,6 +3674,7 @@ class MainWindow(QMainWindow):
             hdr.addWidget(char_lbl, 1)
             hdr.addWidget(speed_lbl)
             hdr.addWidget(duration_lbl)
+            hdr.addWidget(image_lbl)
             hdr.addWidget(deepl_btn)
             hdr.addWidget(bm_btn)
             hdr.addWidget(preview_btn)
@@ -3664,6 +3728,7 @@ class MainWindow(QMainWindow):
             self._dub_preview_btns[sid] = preview_btn
             self._dub_speed_labels[sid]    = speed_lbl
             self._dub_duration_labels[sid] = duration_lbl
+            self._dub_image_labels[sid] = image_lbl
             # Attach spell-check highlighter — block signals so rehighlight()
             # does not fire textChanged and spuriously mark the scene as dirty.
             lang = getattr(self, "_dub_spell_lang", "it")
@@ -3689,6 +3754,7 @@ class MainWindow(QMainWindow):
 
         self._dub_status_label.setText(f"{len(scenes)} scene(s) loaded.")
         self._dub_update_total_duration()
+        self._dub_update_image_badges()
         self._dub_has_unsaved = not from_disk
         self._dub_mark_unsaved() if self._dub_has_unsaved else self._dub_mark_saved()
 
@@ -3957,7 +4023,13 @@ class MainWindow(QMainWindow):
         if has_audio < total:
             return "all_stale"   # red — missing audio
         # All scenes have audio; check if any text was edited after last dub
-        any_dirty = any(self._dub_dirty.get(sid, False) for sid in self._dub_editors)
+        fixups_path = os.path.join(self.controller.config_dir, "tts_fixups.yaml")
+        fixups_mtime = os.path.getmtime(fixups_path) if os.path.exists(fixups_path) else 0
+        any_dirty = any(
+            self._dub_dirty.get(sid, False)
+            or os.path.getmtime(self._dub_audio_path(sid)) < fixups_mtime
+            for sid in self._dub_editors
+        )
         return "stale" if any_dirty else "complete"
 
     def _dub_refresh_status(self) -> None:
@@ -4140,9 +4212,13 @@ class MainWindow(QMainWindow):
             ids = sorted(self._dub_editors.keys())
         else:
             # Only queue segments that have no audio yet or whose text has changed
+            fixups_path = os.path.join(self.controller.config_dir, "tts_fixups.yaml")
+            fixups_mtime = os.path.getmtime(fixups_path) if os.path.exists(fixups_path) else 0
             ids = sorted(
                 sid for sid in self._dub_editors
-                if not os.path.exists(self._dub_audio_path(sid)) or self._dub_dirty.get(sid, False)
+                if not os.path.exists(self._dub_audio_path(sid))
+                or self._dub_dirty.get(sid, False)
+                or os.path.getmtime(self._dub_audio_path(sid)) < fixups_mtime
             )
         if not ids:
             self._dub_status_label.setText("All segments already dubbed and up to date.")
@@ -4532,6 +4608,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Pipeline failed", payload)
 
     def _on_settings_saved(self, path: str) -> None:
+        self._dub_update_image_badges()
         QMessageBox.information(self, "Settings saved", f"Settings saved to:\n{path}")
 
     def _load_settings_to_form(self, settings: dict) -> None:
