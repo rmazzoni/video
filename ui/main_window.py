@@ -3711,6 +3711,17 @@ class MainWindow(QMainWindow):
                 "border:1px solid #6B5130; border-radius:8px; padding:1px 6px;"
             )
 
+            font_size_slider = QSlider(Qt.Orientation.Horizontal)
+            font_size_slider.setRange(8, 36)
+            font_size_slider.setValue(15)
+            font_size_slider.setFixedWidth(90)
+            font_size_slider.setToolTip("Adjust translated text size for this scene")
+            font_size_lbl = QLabel("15px")
+            font_size_lbl.setFixedWidth(28)
+            font_size_lbl.setStyleSheet(
+                "color:#8E8B90; font-size:10px; background:transparent; border:none;"
+            )
+
             preview_btn = QPushButton("▶")
             preview_btn.setFixedSize(28, 28)
             preview_btn.setToolTip("Synthesise and play this segment")
@@ -3733,6 +3744,9 @@ class MainWindow(QMainWindow):
             hdr.addWidget(speed_lbl)
             hdr.addWidget(duration_lbl)
             hdr.addWidget(image_lbl)
+            hdr.addWidget(QLabel("Text size:"))
+            hdr.addWidget(font_size_slider)
+            hdr.addWidget(font_size_lbl)
             hdr.addWidget(deepl_btn)
             hdr.addWidget(bm_btn)
             hdr.addWidget(preview_btn)
@@ -3754,12 +3768,18 @@ class MainWindow(QMainWindow):
             ed.setMinimumHeight(70)
             ed.setMaximumHeight(160)
             ed.setCursorWidth(2)
-            ed.setStyleSheet(
-                "QPlainTextEdit { background:#1D1B20; color:#E6E1E5; "
-                "border:1px solid #36343B; border-radius:2px; padding:4px; "
-                "font-family:'Segoe UI',sans-serif; font-size:15px; }"
-                "QPlainTextEdit:focus { border:1px solid #96BDE2; }"
-            )
+
+            def _apply_font_size(size: int, e=ed, lbl=font_size_lbl):
+                lbl.setText(f"{size}px")
+                e.setStyleSheet(
+                    "QPlainTextEdit { background:#1D1B20; color:#E6E1E5; "
+                    "border:1px solid #36343B; border-radius:2px; padding:4px; "
+                    f"font-family:'Segoe UI',sans-serif; font-size:{size}px; }}"
+                    "QPlainTextEdit:focus { border:1px solid #96BDE2; }"
+                )
+
+            _apply_font_size(font_size_slider.value())
+            font_size_slider.valueChanged.connect(_apply_font_size)
 
             def _on_text_changed(s=sid, lbl=char_lbl, e=ed):
                 lbl.setText(f"{len(e.toPlainText())} chars")
