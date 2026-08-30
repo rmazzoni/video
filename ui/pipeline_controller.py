@@ -902,6 +902,16 @@ class PipelineWorker(QObject):
                     ("flux-dev",     "dev"),
                     ("flux2",        "flux2"),
                 ]
+                target_scene = int(self.config.get("lightbox_scene_id", 0))
+                target_beat = int(self.config.get("lightbox_beat_index", 0))
+                target_model = str(self.config.get("lightbox_model_key", "")).strip().lower()
+                force_target_update = bool(self.config.get("force_lightbox_update", False))
+                if target_model:
+                    model_variants = [
+                        item for item in model_variants if item[1] == target_model
+                    ]
+                    if not model_variants:
+                        raise ValueError(f"Unknown Lightbox model: {target_model}")
 
                 def _model_prompt_rows(scene, model_key):
                     sid = int(scene["id"])
@@ -921,9 +931,14 @@ class PipelineWorker(QObject):
                         lightbox_dir, f"scene_{sid:03d}_{model_key}_b{beat_idx:02d}_v{v_idx}.png")
 
                 total_ops = sum(
-                    len(_model_prompt_rows(scene, model_key)) * len(seed_offsets)
-                    for scene in scenes for _model_type, model_key in model_variants
+                    len(seed_offsets)
+                    for scene in scenes if not target_scene or int(scene["id"]) == target_scene
+                    for _model_type, model_key in model_variants
+                    for row in _model_prompt_rows(scene, model_key)
+                    if not target_beat or int(row.get("beat", 1)) == target_beat
                 )
+                if total_ops == 0:
+                    raise ValueError("No prompt found for the requested Lightbox scene and beat.")
                 done_ops = 0
 
                 for model_type, model_key in model_variants:
@@ -931,11 +946,18 @@ class PipelineWorker(QObject):
                     work = []
                     for scene in scenes:
                         sid = int(scene["id"])
+                        if target_scene and sid != target_scene:
+                            continue
                         for row_index, row in enumerate(_model_prompt_rows(scene, model_key), 1):
                             beat_idx = int(row.get("beat", row_index))
+                            if target_beat and beat_idx != target_beat:
+                                continue
                             for v_idx, offset in enumerate(seed_offsets, 1):
                                 out = _variant_path(sid, model_key, beat_idx, v_idx)
-                                if model_key == "schnell" and v_idx == 2 and not os.path.exists(out):
+                                if force_target_update and os.path.exists(out):
+                                    os.remove(out)
+                                if (model_key == "schnell" and v_idx == 2 and not target_scene
+                                    and not os.path.exists(out)):
                                     preview_path = os.path.join(
                                         draft_dir,
                                         f"scene_{sid:03d}_schnell_b{beat_idx:02d}_v2.png",

@@ -910,6 +910,7 @@ class MainWindow(QMainWindow):
         self._lightbox_checkboxes: dict = {}
         self._lightbox_cells: dict = {}
         self._lightbox_scene_cards: dict = {}
+        self._lightbox_image_labels: dict = {}
         return page
 
     def _refresh_lightbox(self) -> None:
@@ -925,6 +926,7 @@ class MainWindow(QMainWindow):
         self._lightbox_checkboxes.clear()
         self._lightbox_cells.clear()
         self._lightbox_scene_cards.clear()
+        self._lightbox_image_labels.clear()
 
         if not lightbox_dir or not os.path.isdir(lightbox_dir):
             self._lightbox_status_label.setText(
@@ -1001,17 +1003,26 @@ class MainWindow(QMainWindow):
             scene_vlay.setContentsMargins(10, 8, 10, 8)
             scene_vlay.setSpacing(4)
 
+            header_row = QHBoxLayout()
             hdr = QLabel(f"Scene {sid}  \u2014  {scene_texts.get(sid, '')[:120]}")
             hdr.setStyleSheet(
                 "color:#96BDE2; font-weight:bold; font-size:11px; background:transparent; border:none;")
             hdr.setWordWrap(True)
-            scene_vlay.addWidget(hdr)
+            image_lbl = QLabel()
+            image_lbl.setStyleSheet(
+                "color:#F3C98B; font-size:12px; font-weight:bold; background:#3A2D1E; "
+                "border:1px solid #6B5130; border-radius:8px; padding:1px 6px;"
+            )
+            header_row.addWidget(hdr, 1)
+            header_row.addWidget(image_lbl)
+            scene_vlay.addLayout(header_row)
 
             thumb_grid = QGridLayout()
             thumb_grid.setSpacing(8)
             self._lightbox_checkboxes[sid] = {}
             self._lightbox_cells[sid] = {}
             self._lightbox_scene_cards[sid] = scene_card
+            self._lightbox_image_labels[sid] = image_lbl
 
             ordered_files = sorted(scene_files[sid], key=_variant_order)
             for variant_index, fname in enumerate(ordered_files):
@@ -1078,6 +1089,7 @@ class MainWindow(QMainWindow):
             for sid in sorted(scene_files.keys())
             for fname in sorted(scene_files[sid], key=_variant_order)
         ]
+        self._lightbox_update_image_badges()
         self._lightbox_apply_unselected_filter()
 
     def _lightbox_toggle_unselected(self, hide_unselected: bool) -> None:
@@ -1090,6 +1102,26 @@ class MainWindow(QMainWindow):
         self._save_lightbox_selections(silent=True)
         if self._lightbox_unselected_btn.isChecked():
             self._lightbox_apply_unselected_filter(sid)
+
+    def _lightbox_update_image_badges(self, only_sid: int = None) -> None:
+        labels = getattr(self, "_lightbox_image_labels", {})
+        scene_ids = [only_sid] if only_sid is not None else labels.keys()
+        clip_duration = self._dub_expected_clip_duration()
+        for sid in scene_ids:
+            label = labels.get(sid)
+            if label is None:
+                continue
+            selected = sum(
+                checkbox.isChecked()
+                for checkbox in self._lightbox_checkboxes.get(sid, {}).values()
+            )
+            audio_duration = self._dub_segment_duration_seconds(sid)
+            optimum = math.ceil(audio_duration / clip_duration) if audio_duration else 0
+            label.setText(f"Images {selected} / {optimum}")
+            label.setToolTip(
+                f"{selected} selected image(s); {optimum} estimated optimum "
+                f"at {clip_duration:.1f} seconds per clip"
+            )
 
     def _lightbox_apply_unselected_filter(self, only_sid: int = None) -> None:
         hide_unselected = self._lightbox_unselected_btn.isChecked()
@@ -1154,6 +1186,7 @@ class MainWindow(QMainWindow):
         self._lightbox_status_label.setText(
             f"Saved {total} selection(s) across {len(selections)} scene(s) \u2192 lightbox_selections.yaml")
         self._dub_update_image_badges()
+        self._lightbox_update_image_badges()
         if not silent:
             self._append_log(f"Lightbox selections saved: {total} image(s) in {len(selections)} scene(s).")
 
@@ -2706,6 +2739,10 @@ class MainWindow(QMainWindow):
         regenerate = QPushButton("Regenerate with Qwen")
         save = QPushButton("Save Prompt")
         generate_image = QPushButton("Generate Image")
+        update_lightbox = QPushButton("Update Lightbox")
+        update_lightbox.setToolTip(
+            "Save this prompt and regenerate its three Lightbox variants"
+        )
         save_image = QPushButton(
             "Save in Preview" if model_key == "schnell" else "Save in Lightbox")
         save_image.setEnabled(False)
@@ -2713,6 +2750,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(regenerate)
         actions.addWidget(save)
         actions.addWidget(generate_image)
+        actions.addWidget(update_lightbox)
         actions.addWidget(save_image)
         layout.addLayout(actions)
         candidate_state = {"path": ""}
@@ -2927,10 +2965,29 @@ class MainWindow(QMainWindow):
             self._refresh_draft_grid()
             self._refresh_lightbox()
 
+        def _update_lightbox():
+            if getattr(self.controller, "_thread", None) is not None:
+                QMessageBox.warning(
+                    dialog, "Pipeline busy", "Wait for the current pipeline operation to finish."
+                )
+                return
+            if not _save(close_dialog=False):
+                return
+            dialog.accept()
+            self._prompts_refresh()
+            self._refresh_lightbox()
+            self.controller.run_pipeline("final_images", {
+                "lightbox_scene_id": scene_id,
+                "lightbox_beat_index": beat_index,
+                "lightbox_model_key": model_key,
+                "force_lightbox_update": True,
+            })
+
         cancel.clicked.connect(dialog.reject)
         regenerate.clicked.connect(_regenerate)
         save.clicked.connect(lambda: _save(close_dialog=False))
         generate_image.clicked.connect(_generate_image)
+        update_lightbox.clicked.connect(_update_lightbox)
         save_image.clicked.connect(_save_image)
         dialog.exec()
 
@@ -3318,6 +3375,7 @@ class MainWindow(QMainWindow):
         if dur_lbl:
             dur_lbl.setText(self._dub_segment_duration(sid))
         self._dub_update_image_badges(sid)
+        self._lightbox_update_image_badges(sid)
 
     def _dub_bookmark_path(self) -> str:
         project = self.project_path_input.text().strip()
@@ -3649,7 +3707,7 @@ class MainWindow(QMainWindow):
 
             image_lbl = QLabel()
             image_lbl.setStyleSheet(
-                "color:#F3C98B; font-size:10px; font-weight:bold; background:#3A2D1E; "
+                "color:#F3C98B; font-size:12px; font-weight:bold; background:#3A2D1E; "
                 "border:1px solid #6B5130; border-radius:8px; padding:1px 6px;"
             )
 
@@ -4609,6 +4667,7 @@ class MainWindow(QMainWindow):
 
     def _on_settings_saved(self, path: str) -> None:
         self._dub_update_image_badges()
+        self._lightbox_update_image_badges()
         QMessageBox.information(self, "Settings saved", f"Settings saved to:\n{path}")
 
     def _load_settings_to_form(self, settings: dict) -> None:
