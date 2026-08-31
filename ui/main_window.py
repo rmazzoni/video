@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor, QFont
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl, QCoreApplication
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl, QCoreApplication, QTimer
 from ui.pipeline_controller import PipelineController
 from ui.comfy_controller import ComfyController
 from ui.widgets.workflow_selector import WorkflowSelector
@@ -3754,6 +3754,9 @@ class MainWindow(QMainWindow):
             font_size_slider.setValue(15)
             font_size_slider.setFixedWidth(90)
             font_size_slider.setToolTip("Adjust translated text size for this scene")
+            font_size_title = QLabel("Text size:")
+            font_size_title.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            font_size_title.setToolTip("Click to reset text size to 15px")
             font_size_lbl = QLabel("15px")
             font_size_lbl.setFixedWidth(28)
             font_size_lbl.setStyleSheet(
@@ -3782,7 +3785,7 @@ class MainWindow(QMainWindow):
             hdr.addWidget(speed_lbl)
             hdr.addWidget(duration_lbl)
             hdr.addWidget(image_lbl)
-            hdr.addWidget(QLabel("Text size:"))
+            hdr.addWidget(font_size_title)
             hdr.addWidget(font_size_slider)
             hdr.addWidget(font_size_lbl)
             hdr.addWidget(deepl_btn)
@@ -3804,10 +3807,27 @@ class MainWindow(QMainWindow):
             ed.setPlainText(dubbed)
             ed.setPlaceholderText("Enter dubbed / translated text here…")
             ed.setMinimumHeight(70)
-            ed.setMaximumHeight(160)
+            ed.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            ed.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             ed.setCursorWidth(2)
 
-            def _apply_font_size(size: int, e=ed, lbl=font_size_lbl):
+            def _resize_editor(e=ed):
+                last_block = e.document().lastBlock()
+                document_height = math.ceil(e.blockBoundingGeometry(last_block).bottom())
+                margins = e.contentsMargins()
+                widget_chrome = (
+                    margins.top() + margins.bottom() + e.frameWidth() * 2
+                    + 12
+                )
+                target_height = max(70, document_height + widget_chrome)
+                if e.height() != target_height:
+                    e.setFixedHeight(target_height)
+
+            def _on_editor_resize(event, e=ed, resize_editor=_resize_editor):
+                QPlainTextEdit.resizeEvent(e, event)
+                QTimer.singleShot(0, lambda: resize_editor(e))
+
+            def _apply_font_size(size: int, e=ed, lbl=font_size_lbl, resize_editor=_resize_editor):
                 lbl.setText(f"{size}px")
                 e.setStyleSheet(
                     "QPlainTextEdit { background:#1D1B20; color:#E6E1E5; "
@@ -3815,12 +3835,22 @@ class MainWindow(QMainWindow):
                     f"font-family:'Segoe UI',sans-serif; font-size:{size}px; }}"
                     "QPlainTextEdit:focus { border:1px solid #96BDE2; }"
                 )
+                resize_editor(e)
 
             _apply_font_size(font_size_slider.value())
             font_size_slider.valueChanged.connect(_apply_font_size)
+            font_size_title.mousePressEvent = (
+                lambda event, slider=font_size_slider: slider.setValue(15)
+                if event.button() == Qt.MouseButton.LeftButton else None
+            )
+            ed.document().documentLayout().documentSizeChanged.connect(
+                lambda _size, e=ed, resize_editor=_resize_editor: resize_editor(e)
+            )
+            ed.resizeEvent = _on_editor_resize
 
-            def _on_text_changed(s=sid, lbl=char_lbl, e=ed):
+            def _on_text_changed(s=sid, lbl=char_lbl, e=ed, resize_editor=_resize_editor):
                 lbl.setText(f"{len(e.toPlainText())} chars")
+                resize_editor(e)
                 self._dub_dirty[s] = True
                 self._dub_has_unsaved = True
                 self._dub_apply_card_state(s)
