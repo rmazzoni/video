@@ -1526,6 +1526,14 @@ class MainWindow(QMainWindow):
         img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(img_lbl)
 
+        run_status = QLabel("")
+        run_status.setStyleSheet("color:#8E8B90; font-size:11px;")
+        lay.addWidget(run_status)
+        run_progress = QProgressBar()
+        run_progress.setRange(0, 100)
+        run_progress.setVisible(False)
+        lay.addWidget(run_progress)
+
         def _sep():
             f = QFrame()
             f.setFrameShape(QFrame.Shape.HLine)
@@ -1586,13 +1594,21 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background:#3578B8; }"
         )
 
-        btn_save_clip = QPushButton("\U0001f3ac  Save & Redo Image + Clip")
-        btn_save_clip.setToolTip(
-            "Save the edited prompt, regenerate the draft image, then regenerate the preview clip")
+        btn_save_clip = QPushButton("\U0001f3ac  Redo Clip")
+        btn_save_clip.setToolTip("Regenerate the preview clip from the current draft image")
         btn_save_clip.setStyleSheet(
             "QPushButton { background:#256040; color:white; font-weight:bold;"
             " border:none; border-radius:4px; padding:6px 20px; }"
             "QPushButton:hover { background:#2e7a50; }"
+        )
+
+        btn_update_lightbox = QPushButton("\U0001f5bc  Update Lightbox")
+        btn_update_lightbox.setToolTip(
+            "Regenerate this scene/beat's three Lightbox variants using the current prompt")
+        btn_update_lightbox.setStyleSheet(
+            "QPushButton { background:#6B5130; color:white; font-weight:bold;"
+            " border:none; border-radius:4px; padding:6px 20px; }"
+            "QPushButton:hover { background:#8A6A3E; }"
         )
 
         btn_reset = QPushButton("\u21bb  Reset to Auto-Generated")
@@ -1656,16 +1672,92 @@ class MainWindow(QMainWindow):
                     self._prompts_refresh()
             return True
 
+        def _set_running(running: bool):
+            btn_save.setEnabled(not running)
+            btn_save_clip.setEnabled(not running)
+            btn_update_lightbox.setEnabled(not running)
+            btn_reset.setEnabled(not running)
+            btn_close.setEnabled(not running)
+            run_progress.setVisible(running)
+
+        def _reload_image():
+            if sip.isdeleted(dlg) or not os.path.exists(image_path):
+                return
+            fresh = QPixmap(image_path)
+            if fresh.isNull():
+                return
+            rescaled = fresh.scaled(
+                img_max_w, img_max_h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            img_lbl.setPixmap(rescaled)
+
+        def _disconnect_generation_signals():
+            try:
+                self.controller.pipeline_finished.disconnect(_on_images_done)
+            except Exception:
+                pass
+            try:
+                self.controller.pipeline_progress.disconnect(_on_progress)
+            except Exception:
+                pass
+
+        dlg.finished.connect(lambda _result: _disconnect_generation_signals())
+
+        def _on_progress(value: int, message: str):
+            if sip.isdeleted(dlg):
+                return
+            run_progress.setValue(value)
+            run_status.setText(message)
+
+        def _on_images_done(success: bool, payload: str):
+            _disconnect_generation_signals()
+            if sip.isdeleted(dlg):
+                return
+            _set_running(False)
+            if not success:
+                run_status.setText(f"Generation failed: {payload}")
+                return
+            _reload_image()
+            run_progress.setValue(100)
+            run_status.setText(f"Scene {scene_id} image updated.")
+
+        def _on_clip_done(success: bool, payload: str):
+            _disconnect_generation_signals()
+            if sip.isdeleted(dlg):
+                return
+            _set_running(False)
+            run_progress.setValue(100)
+            run_status.setText(
+                f"Scene {scene_id} preview clip updated." if success
+                else f"Clip generation failed: {payload}"
+            )
+
+        def _on_lightbox_done(success: bool, payload: str):
+            _disconnect_generation_signals()
+            if sip.isdeleted(dlg):
+                return
+            _set_running(False)
+            run_progress.setValue(100)
+            if success:
+                self._refresh_lightbox()
+                run_status.setText(f"Scene {scene_id} beat {beat_index} Lightbox variants updated.")
+            else:
+                run_status.setText(f"Lightbox update failed: {payload}")
+
         def _save_and_redo():
             if not _persist_prompt_and_delete_image():
                 return
-            dlg.accept()
+            _set_running(True)
+            run_progress.setValue(0)
+            run_status.setText(f"Regenerating scene {scene_id} image...")
+            self.controller.pipeline_progress.connect(_on_progress)
+            self.controller.pipeline_finished.connect(_on_images_done)
             self.run_stage("preview_images")
 
-        def _save_and_redo_clip():
-            if not _persist_prompt_and_delete_image():
-                return
-            # Also delete the matching draft clip so preview_clips regenerates it.
+        def _redo_clip():
+            # Regenerate the preview clip from the already-updated draft image.
             clip_path = os.path.join(
                 self.project_path_input.text().strip(),
                 "output", "draft_clips", f"scene_{scene_id:03d}.mp4"
@@ -1676,24 +1768,38 @@ class MainWindow(QMainWindow):
                 except Exception as exc:
                     QMessageBox.warning(dlg, "Delete clip failed", str(exc))
                     return
-            dlg.accept()
-            # Chain: run preview_images, then automatically run preview_clips after.
-            def _chain(success: bool, payload: str):
-                try:
-                    self.controller.pipeline_finished.disconnect(_chain)
-                except Exception:
-                    return  # already disconnected (e.g. button double-clicked)
-                if success:
-                    self.run_stage("preview_clips")
-            self.controller.pipeline_finished.connect(_chain)
-            self.run_stage("preview_images")
+            _set_running(True)
+            run_progress.setValue(0)
+            run_status.setText(f"Regenerating scene {scene_id} preview clip...")
+            self.controller.pipeline_progress.connect(_on_progress)
+            self.controller.pipeline_finished.connect(_on_clip_done)
+            self.run_stage("preview_clips")
 
         btn_save.clicked.connect(_save_and_redo)
-        btn_save_clip.clicked.connect(_save_and_redo_clip)
+        btn_save_clip.clicked.connect(_redo_clip)
+
+        def _update_lightbox():
+            if getattr(self.controller, "_thread", None) is not None:
+                QMessageBox.warning(dlg, "Pipeline busy", "Wait for the current pipeline operation to finish.")
+                return
+            _set_running(True)
+            run_progress.setValue(0)
+            run_status.setText(f"Updating Lightbox for scene {scene_id} beat {beat_index}...")
+            self.controller.pipeline_progress.connect(_on_progress)
+            self.controller.pipeline_finished.connect(_on_lightbox_done)
+            self.controller.run_pipeline("final_images", {
+                "lightbox_scene_id": scene_id,
+                "lightbox_beat_index": beat_index,
+                "lightbox_model_key": "schnell",
+                "force_lightbox_update": True,
+            })
+
+        btn_update_lightbox.clicked.connect(_update_lightbox)
         btn_row.addWidget(btn_reset)
         btn_row.addWidget(btn_close)
         btn_row.addWidget(btn_save)
         btn_row.addWidget(btn_save_clip)
+        btn_row.addWidget(btn_update_lightbox)
         lay.addLayout(btn_row)
 
         # Suppress grid rebuilds while this dialog's nested event loop is running —
