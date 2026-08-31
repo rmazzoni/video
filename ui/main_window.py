@@ -4169,11 +4169,8 @@ class MainWindow(QMainWindow):
         if has_audio < total:
             return "all_stale"   # red — missing audio
         # All scenes have audio; check if any text was edited after last dub
-        fixups_path = os.path.join(self.controller.config_dir, "tts_fixups.yaml")
-        fixups_mtime = os.path.getmtime(fixups_path) if os.path.exists(fixups_path) else 0
         any_dirty = any(
             self._dub_dirty.get(sid, False)
-            or os.path.getmtime(self._dub_audio_path(sid)) < fixups_mtime
             for sid in self._dub_editors
         )
         return "stale" if any_dirty else "complete"
@@ -4358,13 +4355,10 @@ class MainWindow(QMainWindow):
             ids = sorted(self._dub_editors.keys())
         else:
             # Only queue segments that have no audio yet or whose text has changed
-            fixups_path = os.path.join(self.controller.config_dir, "tts_fixups.yaml")
-            fixups_mtime = os.path.getmtime(fixups_path) if os.path.exists(fixups_path) else 0
             ids = sorted(
                 sid for sid in self._dub_editors
                 if not os.path.exists(self._dub_audio_path(sid))
                 or self._dub_dirty.get(sid, False)
-                or os.path.getmtime(self._dub_audio_path(sid)) < fixups_mtime
             )
         if not ids:
             self._dub_status_label.setText("All segments already dubbed and up to date.")
