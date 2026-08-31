@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor, QFont
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl, QCoreApplication, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl, QCoreApplication, QTimer, QEvent
 from ui.pipeline_controller import PipelineController
 from ui.comfy_controller import ComfyController
 from ui.widgets.workflow_selector import WorkflowSelector
@@ -1118,6 +1118,7 @@ class MainWindow(QMainWindow):
             audio_duration = self._dub_segment_duration_seconds(sid)
             optimum = math.ceil(audio_duration / clip_duration) if audio_duration else 0
             label.setText(f"Images {selected} / {optimum}")
+            label.setStyleSheet(self._image_badge_style(selected, optimum))
             label.setToolTip(
                 f"{selected} selected image(s); {optimum} estimated optimum "
                 f"at {clip_duration:.1f} seconds per clip"
@@ -3386,6 +3387,18 @@ class MainWindow(QMainWindow):
         except Exception:
             return {}
 
+    def _image_badge_style(self, selected: int, optimum: int) -> str:
+        if selected < optimum:
+            bg, border, color = "#3A2D1E", "#6B5130", "#F3C98B"   # orange — under
+        elif selected == optimum:
+            bg, border, color = "#1E3A2C", "#2F5B41", "#9FD6B8"   # green — matched
+        else:
+            bg, border, color = "#3A1E1E", "#6B3030", "#F3908B"   # red — over
+        return (
+            f"color:{color}; font-size:12px; font-weight:bold; background:{bg}; "
+            f"border:1px solid {border}; border-radius:8px; padding:1px 6px;"
+        )
+
     def _dub_update_image_badges(self, only_sid: int = None) -> None:
         labels = getattr(self, "_dub_image_labels", {})
         selected_counts = self._dub_selected_image_counts()
@@ -3399,6 +3412,7 @@ class MainWindow(QMainWindow):
             optimum = math.ceil(audio_duration / clip_duration) if audio_duration else 0
             selected = selected_counts.get(sid, 0)
             label.setText(f"Images {selected} / {optimum}")
+            label.setStyleSheet(self._image_badge_style(selected, optimum))
             label.setToolTip(
                 f"{selected} selected Lightbox image(s); {optimum} estimated optimum "
                 f"at {clip_duration:.1f} seconds per clip"
@@ -3869,6 +3883,9 @@ class MainWindow(QMainWindow):
             deepl_btn.clicked.connect(lambda _checked, e=ed: self._dub_send_to_deepl(e))
 
             cl.addWidget(ed)
+            for card_widget in [card, *card.findChildren(QWidget)]:
+                card_widget.setProperty("dubSceneId", sid)
+                card_widget.installEventFilter(self)
             self._dub_editors[sid]      = ed
             self._dub_cards[sid]        = card
             self._dub_preview_btns[sid] = preview_btn
@@ -3936,6 +3953,13 @@ class MainWindow(QMainWindow):
             self._dub_apply_card_state(sid)
         if hasattr(self, "_dub_status_label"):
             self._dub_status_label.setText(f"Scene {sid} selected for playback.")
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            sid = watched.property("dubSceneId")
+            if sid is not None and event.button() == Qt.MouseButton.LeftButton:
+                self._dub_select_scene(int(sid))
+        return super().eventFilter(watched, event)
 
     def _dub_mark_saved(self) -> None:
         self._dub_update_save_btn()
@@ -4113,8 +4137,9 @@ class MainWindow(QMainWindow):
             fname = os.path.basename(path)          # scene_003.mp3
             sid = int(fname.split("_")[1].split(".")[0])
             card = self._dub_cards.get(sid)
+            self._dub_select_scene(sid)
             if card and hasattr(self, "_dub_scroll_area"):
-                self._dub_scroll_area.ensureWidgetVisible(card)
+                self._dub_scroll_area.ensureWidgetVisible(card, 0, 12)
             total = len(queue)
             self._dub_status_label.setText(
                 f"Playing scene {sid}  ({idx + 1}/{total})"
