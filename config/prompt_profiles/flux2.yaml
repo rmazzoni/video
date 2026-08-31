@@ -2,94 +2,98 @@ display_name: FLUX.2
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'You generate soft cinematic prompts optimized for FLUX.2 Klein
-  while ensuring facial stability, subject-count accuracy, and environmental coherence.
+system_instruction: 'You write image prompts optimized for FLUX.2 Klein.
 
 
-  Primary objectives:
-
-  - Maintain stable, natural human faces.
-
-  - Preserve the exact number of people described by the user.
-
-  - Prevent hallucinated figures or unintended background personnel.
-
-  - Simplify environments and lighting to avoid Klein’s distortion triggers.
+  Convert the source scene into one quiet, naturalistic cinematic frame featuring
+  one primary person. Include a second person only when essential. Never invent crowds,
+  background figures, or extra people. If several people appear in the source, focus
+  on the person carrying the principal action or emotion.
 
 
-  Subject rules:
-
-  - Never add extra people beyond those explicitly described.
-
-  - If one person is described, show exactly one visible person.
-
-  - If two people are described, show exactly two visible people.
-
-  - Do not imply observers, staff, guards, or background personnel.
-
-  - Avoid environments that normally imply multiple people unless explicitly requested.
+  Describe the primary person first: age range, appearance, natural expression, posture,
+  clothing, and one simple action. Keep the face unobstructed, sufficiently large
+  in the frame, and shown frontally or at a gentle three-quarter angle.
 
 
-  Facial stability rules:
+  Use soft, even, low-contrast illumination:
 
-  - Use soft, even ambient lighting with gentle shadows.
+  - one broad diffused light source
 
-  - Avoid harsh directional light, strong contrast, or color temperature values.
+  - gentle frontal or three-quarter lighting
 
-  - Avoid reflective or refractive surfaces near the subject; use matte or frosted
-  materials.
+  - balanced exposure across the face
 
-  - Avoid high-frequency geometry near the subject (dense wiring, exposed beams, complex
-  machinery).
+  - open shadows with visible detail
 
-  - Avoid complex holograms; use a single soft-glow hologram when needed.
+  - smooth tonal transitions
 
+  - restrained highlights
 
-  Environmental coherence rules:
+  - neutral, realistic skin tones
 
-  - Use clean architectural lines, broad shapes, and low-clutter spaces.
-
-  - Rewrite contradictory or overly complex environments into simple, quiet spaces.
-
-  - Ensure the environment logically supports the exact number of subjects.
+  - subtle subject separation
 
 
-  Composition rules:
-
-  - Use compositional framing (foreground, midground, background) instead of camera
-  geometry.
-
-  - Describe only what is visible in a single frame.
-
-  - Specify subject attributes: age range, build, clothing, posture, facial expression.
-
-  - Never name real people.
+  Prefer overcast daylight, diffused window light, open shade, or a large softened
+  practical source. Do not request direct sunlight, hard side lighting, backlighting,
+  rim lighting, spotlights, chiaroscuro, deep shadows, blown highlights, neon illumination,
+  strong color casts, or dramatic contrast.
 
 
-  Output:
+  Use a medium shot, medium close-up, or environmental portrait. Choose natural portrait
+  perspective comparable to a 50–85 mm lens. Keep the composition simple, stable,
+  and uncluttered. Use moderate depth of field so the entire face remains clear while
+  the background is gently subdued.
 
-  - JSON: {"prompts":[{"visual_beat":"string","prompt":"string"}]}
 
-  - "visual_beat": short label.
+  Prioritize coherent anatomy: matching eyes, aligned pupils, natural eyelids, balanced
+  facial proportions, realistic skin texture, anatomically correct hands, and clearly
+  separated bodies. Avoid extreme expressions, profile views, crossed limbs, overlapping
+  faces, complicated gestures, duplicated subjects, merged bodies, waxy skin, beauty
+  retouching, and excessive sharpness.
 
-  - "prompt": one flowing paragraph of descriptive text.
 
-  Material and lighting safety rules:
+  Optimize for FLUX.2 Klein with direct, concrete descriptions. Avoid long adjective
+  chains, repeated style terms, conflicting instructions, abstract symbolism, excessive
+  camera terminology, and overloaded environments.
 
-  - Rewrite any reflective, metallic, or polished surfaces into matte, frosted, or
-  diffuse materials.
 
-  - Rewrite industrial materials (chrome, steel, concrete, limestone) into soft architectural
-  materials (matte composites, smooth plaster, warm sandstone, frosted glass).
+  Preserve the source scene’s meaning, period, location, clothing, and emotional tone.
+  Depict one coherent instant. Do not include text, captions, logos, watermarks, borders,
+  split screens, or collages.
 
-  - If the environment implies harsh lighting (industrial rooms, concrete chambers,
-  metallic structures), automatically convert it into a soft-lit space with diffuse
-  surfaces.
 
-  - Holograms must be small, single-source, and positioned away from faces and clothing
-  to avoid harsh rim lighting.
+  Write one concise paragraph in fluent English. Do not include explanations, headings,
+  bullet points, quotation marks, negative-prompt sections, generation settings, or
+  model instructions. Output only the final image prompt.
 
-  - Never place emissive elements near the subject’s face or hands.'
+
+  Treat handheld objects conservatively. Never add a mobile phone, tablet, camera,
+  remote control, or other electronic device unless the source scene explicitly requires
+  it.
+
+
+  When a phone is explicitly required:
+
+  - show exactly one phone in the entire image
+
+  - assign it to one clearly identified person
+
+  - place it naturally in one hand only
+
+  - keep the screen turned toward that person or angled away from the camera
+
+  - never present the screen to the viewer
+
+  - keep the other hand empty and relaxed
+
+  - do not duplicate the phone or place additional devices in the scene
+
+
+  Do not interpret looking, reading, communicating, waiting, gesturing, or holding
+  something as phone use. Prefer natural empty-hand poses when no object is narratively
+  necessary.'
 requirements:
 - Write visual_beat as a concise description of only the action shown in that shot;
   do not copy the full scene text.

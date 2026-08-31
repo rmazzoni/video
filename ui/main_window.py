@@ -999,9 +999,25 @@ class MainWindow(QMainWindow):
             scene_card = QWidget()
             scene_card.setStyleSheet(
                 "background:#1D1B20; border:1px solid #36343B; border-radius:4px;")
-            scene_vlay = QVBoxLayout(scene_card)
-            scene_vlay.setContentsMargins(10, 8, 10, 8)
+            scene_layout = QHBoxLayout(scene_card)
+            scene_layout.setContentsMargins(10, 8, 10, 8)
+            scene_layout.setSpacing(10)
+
+            scene_number = QLabel(str(sid))
+            scene_number.setFixedWidth(72)
+            scene_number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            scene_number.setStyleSheet(
+                "color:#96BDE2; font-size:36px; font-weight:bold; "
+                "background:transparent; border:none;"
+            )
+            scene_layout.addWidget(scene_number, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            scene_content = QWidget()
+            scene_content.setStyleSheet("background:transparent; border:none;")
+            scene_vlay = QVBoxLayout(scene_content)
+            scene_vlay.setContentsMargins(0, 0, 0, 0)
             scene_vlay.setSpacing(4)
+            scene_layout.addWidget(scene_content, 1)
 
             header_row = QHBoxLayout()
             hdr = QLabel(f"Scene {sid}  \u2014  {scene_texts.get(sid, '')[:120]}")

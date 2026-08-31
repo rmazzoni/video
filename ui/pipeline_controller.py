@@ -207,7 +207,24 @@ class PipelineWorker(QObject):
                     self._check_cancel()
                     scene_id = int(scene["id"])
                     scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
-                    updated_entry = {"scene_id": scene_id, "models": {}}
+                    visual_beats = scene_entry.get("visual_beats", []) if isinstance(scene_entry, dict) else []
+                    visual_beats = [str(beat).strip() for beat in visual_beats if str(beat).strip()]
+                    beat_source = str(scene_entry.get("visual_beats_source", "")) if isinstance(scene_entry, dict) else ""
+                    if not visual_beats or beat_source != str(scene.get("text", "")):
+                        self._emit_progress(
+                            25 + int(((index - 1) / max(total_scenes, 1)) * 70),
+                            f"Extracting visual beats for scene {scene_id}",
+                        )
+                        visual_beats = service.extract_visual_beats(scene)
+                        self.log.emit(
+                            f"Scene {scene_id}: identified {len(visual_beats)} shared visual beat(s)."
+                        )
+                    updated_entry = {
+                        "scene_id": scene_id,
+                        "visual_beats": visual_beats,
+                        "visual_beats_source": str(scene.get("text", "")),
+                        "models": {},
+                    }
                     existing_models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
                     for model_key in MODEL_KEYS:
                         existing = existing_models.get(model_key, {})
@@ -215,15 +232,25 @@ class PipelineWorker(QObject):
                             updated_entry["models"][model_key] = existing
                             continue
                         existing_rows = existing.get("prompts", []) if isinstance(existing, dict) else []
-                        if any(row.get("source") == "manually_edited" for row in existing_rows
-                               if isinstance(row, dict)) and not force_regenerate:
-                            updated_entry["models"][model_key] = existing
-                            self.log.emit(f"Scene {scene_id} [{model_key}]: preserved manual prompts.")
-                            continue
                         profile = service.load_profile(model_key)
+                        generated_rows = service.generate_for_beats(
+                            scene, model_key, visual_beats
+                        )
+                        if not force_regenerate:
+                            manual_by_beat = {
+                                int(row.get("beat", row_index)): row
+                                for row_index, row in enumerate(existing_rows, 1)
+                                if isinstance(row, dict)
+                                and row.get("source") == "manually_edited"
+                            }
+                            for row in generated_rows:
+                                manual = manual_by_beat.get(int(row["beat"]))
+                                if manual:
+                                    row["text"] = str(manual.get("text", row["text"]))
+                                    row["source"] = "manually_edited"
                         updated_entry["models"][model_key] = {
                             "profile": f"{model_key}.yaml",
-                            "prompts": service.generate(scene, model_key),
+                            "prompts": generated_rows,
                             "max_prompts_per_scene": int(profile.get("max_prompts_per_scene", 3)),
                         }
                         new_count += 1

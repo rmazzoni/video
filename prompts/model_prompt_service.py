@@ -33,6 +33,18 @@ DEV_RESPONSE_SCHEMA = {
     "additionalProperties": False,
 }
 
+BEATS_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "visual_beats": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": ["visual_beats"],
+    "additionalProperties": False,
+}
+
 
 class ModelPromptService:
     def __init__(self, profiles_dir: str, ollama_model: str, ollama_host: str,
@@ -73,6 +85,68 @@ class ModelPromptService:
             }
             for index, item in enumerate(generated, 1)
         ]
+
+    def extract_visual_beats(self, scene: Dict[str, Any]) -> List[str]:
+        """Identify model-independent shots once for reuse by every image model."""
+        limit = self.max_visual_beats or 3
+        try:
+            import ollama
+
+            client = ollama.Client(host=self.ollama_host)
+            response = client.chat(
+                model=self.ollama_model,
+                format=BEATS_RESPONSE_SCHEMA,
+                options={"temperature": 0.2, "top_p": 0.8},
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Analyze narration for storyboard shots independently of any image model. "
+                            "Return the fewest distinct visual beats needed to represent the scene, "
+                            "up to the requested maximum. Each beat must describe one concrete, "
+                            "visually distinct action or moment in one concise sentence. Do not write "
+                            "image prompts, camera language, lighting, style, or model instructions."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps({
+                            "scene_id": int(scene["id"]),
+                            "narration": scene["text"],
+                            "maximum_visual_beats": int(limit),
+                        }, ensure_ascii=False),
+                    },
+                ],
+            )
+            message = getattr(response, "message", None)
+            content = getattr(message, "content", "") if message is not None else response["message"]["content"]
+            payload = json.loads(content)
+            beats = [
+                str(beat).strip()
+                for beat in payload.get("visual_beats", [])[:int(limit)]
+                if str(beat).strip()
+            ]
+            if beats:
+                return beats
+        except Exception:
+            pass
+        return [str(scene.get("text", "")).strip()]
+
+    def generate_for_beats(self, scene: Dict[str, Any], model_key: str,
+                           visual_beats: List[str]) -> List[Dict[str, Any]]:
+        """Generate model-specific wording without allowing the model to redefine shots."""
+        rows = []
+        for index, visual_beat in enumerate(visual_beats, 1):
+            prompt = self.regenerate_prompt(scene, model_key, visual_beat)
+            rows.append({
+                "id": f"scene_{int(scene['id']):03d}_beat_{index:02d}_{model_key}",
+                "beat": index,
+                "visual_beat": visual_beat,
+                "text": prompt,
+                "generated_prompt": prompt,
+                "source": "generated",
+            })
+        return rows
 
     def regenerate_prompt(self, scene: Dict[str, Any], model_key: str, visual_beat: str) -> str:
         """Generate one replacement prompt while keeping the selected visual beat fixed."""
