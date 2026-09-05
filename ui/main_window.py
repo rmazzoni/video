@@ -2165,6 +2165,20 @@ class MainWindow(QMainWindow):
         self._prompts_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
         root.addWidget(self._prompts_status_label)
 
+        from prompts.visual_styles import visual_style_choices
+
+        style_bar = QHBoxLayout()
+        style_bar.addWidget(QLabel("Main Visual Style:"))
+        self._visual_style_combo = QComboBox()
+        for key, label in visual_style_choices().items():
+            self._visual_style_combo.addItem(label, key)
+        self._visual_style_combo.setToolTip(
+            "Applies one coordinated visual style, tuned separately for Schnell, Dev, and FLUX.2."
+        )
+        self._visual_style_combo.currentIndexChanged.connect(self._on_visual_style_selected)
+        style_bar.addWidget(self._visual_style_combo, 1)
+        root.addLayout(style_bar)
+
         profile_bar = QHBoxLayout()
         profile_bar.addWidget(QLabel("Project Aesthetic Profile:"))
         self._project_profile_combo = QComboBox()
@@ -2189,7 +2203,7 @@ class MainWindow(QMainWindow):
             profile_label.setStyleSheet("font-weight:bold;")
             profile_editor = QPlainTextEdit()
             profile_editor.setMaximumHeight(110)
-            profile_editor.setPlaceholderText("Instructions used by Llama for this model")
+            profile_editor.setPlaceholderText("Base instructions used by Qwen for this model")
             self._prompt_profile_editors[model_key] = profile_editor
             btn_save_profile = QPushButton("Save Instructions")
             btn_save_profile.clicked.connect(
@@ -2223,7 +2237,7 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout()
         actions.addStretch(1)
         btn_build = QPushButton("Build Prompts")
-        btn_build.setToolTip("Generate missing Llama prompts from each scene's English text")
+        btn_build.setToolTip("Generate Qwen prompts from each scene using the selected visual style")
         btn_build.clicked.connect(self._prompts_build_all)
         btn_reload = QPushButton("Reload from Dubbing")
         btn_reload.setToolTip("Reload Italian translations from output/dubbing.yaml")
@@ -2289,6 +2303,10 @@ class MainWindow(QMainWindow):
     def _on_project_profile_selected(self, _index: int) -> None:
         key = self._project_profile_combo.currentData()
         self._save_project_profile_key(str(key or "none"))
+
+    def _on_visual_style_selected(self, _index: int) -> None:
+        key = str(self._visual_style_combo.currentData() or "cinematic")
+        self.controller.update_setting("visual_style", key)
 
     def _open_project_profiles_dialog(self) -> None:
         from PyQt6.QtWidgets import QDialog, QListWidget, QListWidgetItem, QCheckBox
@@ -2470,7 +2488,11 @@ class MainWindow(QMainWindow):
         if path:
             self.controller.set_project_path(path)
         key = self._project_profile_combo.currentData() if hasattr(self, "_project_profile_combo") else None
-        self.controller.run_pipeline("prompts", {"project_profile_key": str(key or "none")})
+        style_key = self._visual_style_combo.currentData()
+        self.controller.run_pipeline("prompts", {
+            "project_profile_key": str(key or "none"),
+            "visual_style": str(style_key or "cinematic"),
+        })
 
     def _save_prompt_profile(self, model_key: str) -> None:
         import yaml as _yaml
@@ -2499,10 +2521,12 @@ class MainWindow(QMainWindow):
         if path:
             self.controller.set_project_path(path)
         key = self._project_profile_combo.currentData() if hasattr(self, "_project_profile_combo") else None
+        style_key = self._visual_style_combo.currentData()
         self.controller.run_pipeline("prompts", {
             "prompt_model_key": model_key,
             "force_regenerate_prompts": True,
             "project_profile_key": str(key or "none"),
+            "visual_style": str(style_key or "cinematic"),
         })
 
     def _prompts_reload_from_dubbing(self) -> None:
@@ -2946,6 +2970,7 @@ class MainWindow(QMainWindow):
                 self.ollama_model_input.text().strip() or "qwen3:8b",
                 self.ollama_host_input.text().strip() or "http://localhost:11434",
                 project_profile_text=project_profile_text,
+                visual_style_key=str(self._visual_style_combo.currentData() or "cinematic"),
             )
             regenerate.setEnabled(False)
             status.setText("Regenerating this prompt...")
@@ -4900,6 +4925,12 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Settings saved", f"Settings saved to:\n{path}")
 
     def _load_settings_to_form(self, settings: dict) -> None:
+        if hasattr(self, "_visual_style_combo"):
+            style_key = str(settings.get("visual_style", "cinematic"))
+            index = self._visual_style_combo.findData(style_key)
+            self._visual_style_combo.blockSignals(True)
+            self._visual_style_combo.setCurrentIndex(index if index >= 0 else 0)
+            self._visual_style_combo.blockSignals(False)
         self.style_preset_input.setCurrentText(str(settings.get("style_preset", "cinematic")))
         self.aspect_ratio_input.setCurrentText(str(settings.get("aspect_ratio", "16:9")))
         self.seed_input.setValue(int(settings.get("seed", 42)))
@@ -4948,6 +4979,7 @@ class MainWindow(QMainWindow):
     def _collect_settings_from_form(self) -> dict:
         return {
             "style_preset": self.style_preset_input.currentText(),
+            "visual_style": str(self._visual_style_combo.currentData() or "cinematic"),
             "aspect_ratio": self.aspect_ratio_input.currentText(),
             "seed": self.seed_input.value(),
             "fps": self.fps_input.value(),

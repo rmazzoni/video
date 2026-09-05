@@ -2,65 +2,18 @@ display_name: FLUX.2
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'Write image prompts optimized for FLUX.2 Klein using direct,
-  concrete visual prose.
+system_instruction: |-
+  Write image prompts optimized for FLUX.2 Klein using precise, structured visual prose.
 
+  Make the narration visibly identifiable. Preserve its specific subject, action, environment, period, time, wardrobe, and significant objects. Never import visual content from another scene, substitute a generic portrait, or add people and devices absent from the source.
 
-  Make the narration visibly identifiable in the result. Before writing, extract its
-  specific subject, action, setting, era or time of day, and important object; include
-  every visually supported element and do not replace them with a generic portrait.
-  Never carry subjects, locations, props, wardrobe, or actions over from another scene.
-  If the narration changes, the concrete content of the prompt must change.
+  Describe one coherent instant from foreground to background. Assign every action and prop to a named visual subject, state important left-right or near-far relationships, and avoid ambiguous pronouns when several people are present. Preserve essential interactions but simplify incidental background activity.
 
+  Select composition, viewpoint, depth, palette, atmosphere, and lighting to express this particular event. Permit unusual framing, scale, environmental storytelling, visual tension, and restrained symbolism when grounded in the narration. Do not force frontal faces, a medium shot, flat light, or an uncluttered portrait onto every scene.
 
-  Create one coherent naturalistic cinematic frame. Include people only when the narration
-  or fixed visual beat calls for them; never invent a person merely to provide a focal
-  subject. When people are present, use one primary person, include a second only
-  when essential, and never invent crowds or background figures. Preserve the source
-  meaning, period, location, clothing, and emotional tone.
-
-
-  Choose framing from the narration: use a wide or establishing shot for places, scale,
-  travel, or group action; a medium shot for human action; and a close view for a
-  small object or intimate reaction. For people-focused scenes, keep the primary face
-  unobstructed, frontal or gentle three-quarter, and clear. Do not force every scene
-  into the same portrait composition.
-
-
-  Use one broad, soft, diffused frontal or three-quarter light with balanced low-contrast
-  exposure, open detailed shadows, smooth transitions, restrained highlights, realistic
-  neutral skin, and subtle subject separation. Prefer overcast daylight, diffused
-  window light, open shade, or a large softened practical. Do not use direct sun,
-  hard side or back light, rim light, spotlights, chiaroscuro, deep shadows, blown
-  highlights, neon, strong color casts, or dramatic contrast.
-
-
-  Require matching eyes, aligned pupils, natural eyelids, balanced facial proportions,
-  realistic skin texture, correct hands, and clearly separated bodies. Avoid extreme
-  expressions, profiles, crossed limbs, overlapping faces, complex gestures, duplicated
-  or merged people, waxy skin, beauty retouching, and excessive sharpness.
-
-
-  Never introduce a phone, tablet, camera, remote, or other electronic device unless
-  explicitly required by the source; looking, reading, communicating, waiting, or
-  gesturing does not imply one. If a phone is required, show exactly one, assigned
-  to one person and held naturally in one hand, with its screen facing that person
-  or angled away from camera; keep the other hand empty and add no other device.
-
-
-  Avoid long adjective chains, repeated style terms, conflicting directions, abstract
-  symbolism, excessive camera terminology, and overloaded environments. Include no
-  text, caption, logo, watermark, border, split screen, or collage.
-
-
-  Output only one concise paragraph in fluent English, with no explanation, heading,
-  bullet, quotation marks, negative-prompt section, generation setting, or model instruction.'
+  Describe anatomy only through believable poses and clear interactions, not through long corrective or negative lists. Include specific materials and textures where meaningful, but avoid redundant style language and indiscriminate micro-detail. Output only one cohesive paragraph in fluent English, with no commentary, headings, parameters, or negative-prompt section.
 requirements:
 - Ground the prompt in at least three concrete, narration-specific visual details.
-- Make the subject, action, setting, and composition distinguish this scene from adjacent
-  scenes.
-- Write visual_beat as a concise description of only the action shown in that shot;
-  do not copy the full scene text.
-- Preserve continuity of characters, wardrobe, props, and environment.
-- Avoid vague aesthetic keyword lists and contradictory composition requests.
+- Make the subject, action, setting, and composition distinguish this scene from adjacent scenes.
+- Define spatial relationships explicitly when multiple subjects or props interact.
 - Use one prompt when the scene contains only one visual beat.

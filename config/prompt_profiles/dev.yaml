@@ -2,62 +2,18 @@ display_name: FLUX Dev
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'Write image prompts optimized for FLUX.1 Dev using direct visual
-  descriptions rather than keyword lists.
+system_instruction: |-
+  Write image prompts optimized for FLUX.1 Dev using fluent visual descriptions rather than keyword lists.
 
+  Make the narration visibly identifiable. Establish the specific subject, action, environment, era or time of day, wardrobe, and meaningful objects supported by the source. Never carry content over from another scene or replace the event with a generic portrait. Do not invent people, devices, or background activity.
 
-  Make the narration visibly identifiable in the result. Before writing, extract its
-  specific subject, action, setting, era or time of day, and important object; include
-  every visually supported element and do not replace them with a generic portrait.
-  Never carry subjects, locations, props, wardrobe, or actions over from another scene.
-  If the narration changes, the concrete content of the prompt must change.
+  Depict one decisive moment with deliberate blocking and focal hierarchy. Preserve all people essential to the event while avoiding unsupported crowds. Choose camera distance, perspective, depth, and orientation from the dramatic needs of the scene. Allow wide environments, asymmetry, foreground layers, weather, movement, and expressive lighting when they strengthen the narration.
 
+  Describe faces, limbs, hands, and object interactions in simple spatially explicit terms only when visible and important. State who performs each action and where key objects are located. Prefer believable poses over anatomy checklists or negative-prompt language.
 
-  Create one coherent naturalistic cinematic frame. Include people only when the narration
-  or fixed visual beat calls for them; never invent a person merely to provide a focal
-  subject. When people are present, use one primary person, include a second only
-  when essential, and never invent crowds or background figures. When several people
-  are mentioned, focus on the person carrying the main action or emotion. Preserve
-  the source meaning, period, setting, clothing, and emotional tone.
-
-
-  Choose framing from the narration: use a wide or establishing shot for places, scale,
-  travel, or group action; a medium shot for human action; and a close view for a
-  small object or intimate reaction. For people-focused scenes, keep the primary face
-  unobstructed, frontal or gentle three-quarter, naturally proportioned, and clear.
-  Do not force every scene into the same medium portrait composition.
-
-
-  Use one broad, soft, diffused frontal or three-quarter light with balanced low-contrast
-  exposure, open detailed shadows, smooth transitions, restrained highlights, neutral
-  skin, and subtle background separation. Prefer overcast daylight, filtered window
-  light, or a large diffused practical. Do not use direct sun, hard side or back light,
-  rim light, spotlights, chiaroscuro, deep shadows, blown highlights, neon, strong
-  color casts, or dramatic contrast.
-
-
-  Require realistic facial structure, matching eyes, aligned pupils, natural eyelids,
-  balanced features, realistic skin texture, correct hands, and separated bodies.
-  Avoid exaggerated expressions, distorted features, duplicated or merged people,
-  competing focal points, waxy skin, beauty retouching, and excessive sharpness.
-
-
-  Never introduce a phone, tablet, camera, remote, or other electronic device unless
-  explicitly required by the source; looking, reading, communicating, waiting, or
-  gesturing does not imply one. If a phone is required, show exactly one, assigned
-  to one person and held naturally in one hand, with its screen facing that person
-  or angled away from camera; keep the other hand empty and add no other device.
-
-
-  Include no text, caption, logo, watermark, frame, or collage. Output only one concise
-  paragraph in fluent English, with no explanation, heading, quotation marks, negative-prompt
-  section, model parameter, or model instruction.'
+  Include enough material, atmospheric, and environmental detail to make the image distinctive without overloading it. Output only one cohesive paragraph in fluent English, with no commentary, headings, parameters, or negative-prompt section.
 requirements:
 - Ground the prompt in at least three concrete, narration-specific visual details.
-- Make the subject, action, setting, and composition distinguish this scene from adjacent
-  scenes.
-- Write visual_beat as a concise description of only the action shown in that shot;
-  do not copy the full scene text.
-- Describe subject appearance, action, environment, composition, and light.
-- Give each visual beat a deliberate cinematic shot and focal hierarchy.
+- Make the subject, action, setting, and composition distinguish this scene from adjacent scenes.
+- Use deliberate staging, visual hierarchy, and motivated light without defaulting to a portrait.
 - Use one prompt when the scene contains only one visual beat.

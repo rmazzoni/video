@@ -197,6 +197,7 @@ class PipelineWorker(QObject):
                     max_visual_beats=(int(self.config["max_visual_beats"])
                                       if self.config.get("max_visual_beats") is not None else None),
                     project_profile_text=project_profile_text,
+                    visual_style_key=str(self.config.get("visual_style", "cinematic")),
                 )
                 requested_model = str(self.config.get("prompt_model_key", "")).strip().lower()
                 active_models = (requested_model,) if requested_model in MODEL_KEYS else MODEL_KEYS
@@ -1207,6 +1208,7 @@ class PipelineController(QObject):
 
     DEFAULT_SETTINGS = {
         "style_preset": "cinematic",
+        "visual_style": "cinematic",
         "aspect_ratio": "16:9",
         "seed": 42,
         "fps": 8,
@@ -1312,6 +1314,11 @@ class PipelineController(QObject):
         settings_path = os.path.join(self.config_dir, "settings.yaml")
         self.settings_saved.emit(settings_path)
         self.log.info(f"Saved settings: {settings_path}")
+
+    def update_setting(self, key: str, value) -> None:
+        """Persist one setting without opening the Settings-saved notification."""
+        self.config[key] = value
+        self.config_loader.save_settings(self.config)
 
     def run_full_pipeline(self) -> None:
         self.run_pipeline("full")

@@ -8,6 +8,11 @@ import yaml
 
 from prompts.prompt_builder import PromptBuilder, structure_prompt_for_model
 from prompts.response_sanitizer import sanitize_generated_prompt
+from prompts.visual_styles import (
+    DEFAULT_VISUAL_STYLE,
+    visual_style_fallback_preset,
+    visual_style_instruction,
+)
 
 
 MODEL_KEYS = ("schnell", "dev", "flux2")
@@ -48,12 +53,14 @@ BEATS_RESPONSE_SCHEMA = {
 
 class ModelPromptService:
     def __init__(self, profiles_dir: str, ollama_model: str, ollama_host: str,
-                 max_visual_beats: int = None, project_profile_text: str = ""):
+                 max_visual_beats: int = None, project_profile_text: str = "",
+                 visual_style_key: str = DEFAULT_VISUAL_STYLE):
         self.profiles_dir = profiles_dir
         self.ollama_model = ollama_model
         self.ollama_host = ollama_host
         self.max_visual_beats = max_visual_beats
         self.project_profile_text = (project_profile_text or "").strip()
+        self.visual_style_key = visual_style_key
 
     def load_profile(self, model_key: str) -> Dict[str, Any]:
         if model_key not in MODEL_KEYS:
@@ -64,6 +71,13 @@ class ModelPromptService:
         profile["model_key"] = model_key
         if self.max_visual_beats is not None:
             profile["max_prompts_per_scene"] = int(self.max_visual_beats)
+        profile["style_preset"] = visual_style_fallback_preset(self.visual_style_key)
+        style_instruction = visual_style_instruction(self.visual_style_key, model_key)
+        if style_instruction:
+            base_instruction = str(profile.get("system_instruction", ""))
+            profile["system_instruction"] = (
+                f"{base_instruction}\n\nGLOBAL VISUAL STYLE:\n{style_instruction}"
+            )
         if self.project_profile_text:
             base_instruction = str(profile.get("system_instruction", ""))
             profile["system_instruction"] = f"{base_instruction}\n\n{self.project_profile_text}"

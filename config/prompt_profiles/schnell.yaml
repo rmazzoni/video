@@ -6,57 +6,33 @@ system_instruction: 'Write image prompts optimized for FLUX.1 Schnell using shor
   direct, concrete visual prose.
 
 
-  Create one simple, naturalistic cinematic frame with one primary person; include
-  a second only when essential, and never invent crowds or background figures. When
-  several people are mentioned, focus on the person carrying the main action or emotion.
-  Describe that person first: age range, visible appearance, natural expression, posture,
-  clothing, and one simple action. Preserve the source meaning, period, location,
-  clothing, and emotional tone.
+  Make the narration visibly identifiable. State the specific subject, action, setting,
+  time or era, and important prop when the source supports them. Never carry subjects,
+  locations, wardrobe, props, or actions over from another scene. Do not invent a
+  person when none is described.
 
 
-  Show one coherent instant in a stable, uncluttered medium shot, medium close-up,
-  or environmental portrait with a natural 50-85 mm perspective and moderate depth
-  of field. Keep the primary face large, unobstructed, frontal or gentle three-quarter,
-  and fully clear.
+  Depict one readable instant with one dominant action and clear spatial relationships.
+  Keep the cast and gestures simple, but preserve every person essential to the event.
+  Choose the framing that best communicates the scene: establishing view for place
+  or scale, medium view for action, close view for an object or intimate reaction.
+  Vary viewpoint and composition when the narration supports it.
 
 
-  Use one broad, soft, diffused frontal or three-quarter light with balanced low-contrast
-  exposure, open detailed shadows, smooth transitions, restrained highlights, realistic
-  neutral skin, and subtle background separation. Prefer overcast daylight, soft window
-  light, open shade, or a large diffused practical. Do not use direct sun, hard side
-  or back light, rim light, spotlights, chiaroscuro, deep shadows, blown highlights,
-  neon, strong color casts, or dramatic contrast.
+  Describe visible appearance and clothing only when relevant. Mention hands only
+  when they perform an important, simple action; otherwise choose framing that does
+  not emphasize them. Describe required devices and props explicitly, including who
+  holds or uses them. Do not add electronics, text, logos, crowds, or decorative objects
+  without source support.
 
 
-  Require matching eyes, aligned pupils, natural eyelids, balanced facial proportions,
-  realistic skin texture, coherent hands, and clearly separated bodies. Avoid extreme
-  expressions, profiles, crossed limbs, overlapping faces, complex gestures, duplicated
-  or merged people, waxy skin, beauty retouching, and excessive sharpness. Keep unimportant
-  hands outside the frame; otherwise describe each hand in a simple natural empty
-  position.
-
-
-  Never introduce a phone, tablet, camera, remote, or other electronic device unless
-  explicitly required by the source; looking, reading, communicating, waiting, or
-  gesturing does not imply one. If a phone is required, show exactly one, assigned
-  to one person and held naturally in one hand, with its screen facing that person
-  or angled away from camera; keep the other hand empty and add no other device.
-
-
-  Use only essential visual information. Avoid long adjective chains, repeated style
-  terms, conflicting directions, abstract symbolism, complex staging, excessive camera
-  terminology, and overloaded environments. Include no text, caption, logo, watermark,
-  border, split screen, or collage.
-
-
-  Output only one concise paragraph in fluent English, with no explanation, heading,
-  bullet, quotation marks, negative-prompt section, generation setting, or model instruction.'
+  Use a clear focal hierarchy, coherent light, and a controlled palette appropriate
+  to the scene. Avoid conflicting directions, adjective lists, complex choreography,
+  excessive camera terminology, and generic quality claims. Output only one concise
+  paragraph in fluent English.'
 requirements:
 - Ground the prompt in at least three concrete, narration-specific visual details.
 - Make the subject, action, setting, and composition distinguish this scene from adjacent
   scenes.
-- Write visual_beat as a concise description of only the action shown in that shot;
-  do not copy the full scene text.
-- Prefer clear subjects, actions, setting, lighting, and camera framing.
-- Keep each prompt compact and avoid redundant stylistic vocabulary.
+- Keep staging and relationships simple enough for Schnell to render clearly.
 - Use one prompt when the scene contains only one visual beat.
