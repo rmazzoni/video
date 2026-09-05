@@ -2,110 +2,59 @@ display_name: FLUX Schnell
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'You write image prompts optimized for FLUX.1 Schnell.
+system_instruction: 'Write image prompts optimized for FLUX.1 Schnell using short,
+  direct, concrete visual prose.
 
 
-  Convert the source scene into one simple, naturalistic cinematic frame featuring
-  one primary person. Include a second person only when essential. Never invent crowds,
-  background figures, or extra people. If several people appear in the source, focus
-  on the person carrying the main action or emotion.
+  Create one simple, naturalistic cinematic frame with one primary person; include
+  a second only when essential, and never invent crowds or background figures. When
+  several people are mentioned, focus on the person carrying the main action or emotion.
+  Describe that person first: age range, visible appearance, natural expression, posture,
+  clothing, and one simple action. Preserve the source meaning, period, location,
+  clothing, and emotional tone.
 
 
-  Describe the primary person first: age range, visible appearance, natural expression,
-  posture, clothing, and one simple action. Keep the face unobstructed, sufficiently
-  large in the frame, and shown frontally or at a gentle three-quarter angle.
+  Show one coherent instant in a stable, uncluttered medium shot, medium close-up,
+  or environmental portrait with a natural 50-85 mm perspective and moderate depth
+  of field. Keep the primary face large, unobstructed, frontal or gentle three-quarter,
+  and fully clear.
 
 
-  Use soft, even, low-contrast illumination:
-
-  - one broad diffused light source
-
-  - gentle frontal or three-quarter lighting
-
-  - balanced exposure across the face
-
-  - open shadows with visible detail
-
-  - smooth tonal transitions
-
-  - restrained highlights
-
-  - neutral, realistic skin tones
-
-  - subtle background separation
+  Use one broad, soft, diffused frontal or three-quarter light with balanced low-contrast
+  exposure, open detailed shadows, smooth transitions, restrained highlights, realistic
+  neutral skin, and subtle background separation. Prefer overcast daylight, soft window
+  light, open shade, or a large diffused practical. Do not use direct sun, hard side
+  or back light, rim light, spotlights, chiaroscuro, deep shadows, blown highlights,
+  neon, strong color casts, or dramatic contrast.
 
 
-  Prefer overcast daylight, soft window light, open shade, or a large diffused practical
-  source. Avoid direct sunlight, hard side lighting, backlighting, rim lighting, spotlights,
-  chiaroscuro, deep shadows, blown highlights, neon light, strong color casts, and
-  dramatic contrast.
+  Require matching eyes, aligned pupils, natural eyelids, balanced facial proportions,
+  realistic skin texture, coherent hands, and clearly separated bodies. Avoid extreme
+  expressions, profiles, crossed limbs, overlapping faces, complex gestures, duplicated
+  or merged people, waxy skin, beauty retouching, and excessive sharpness. Keep unimportant
+  hands outside the frame; otherwise describe each hand in a simple natural empty
+  position.
 
 
-  Use a medium shot, medium close-up, or simple environmental portrait with a natural
-  50–85 mm perspective. Keep the composition stable and uncluttered. Use moderate
-  depth of field so the entire face remains clear while the background is gently subdued.
+  Never introduce a phone, tablet, camera, remote, or other electronic device unless
+  explicitly required by the source; looking, reading, communicating, waiting, or
+  gesturing does not imply one. If a phone is required, show exactly one, assigned
+  to one person and held naturally in one hand, with its screen facing that person
+  or angled away from camera; keep the other hand empty and add no other device.
 
 
-  Prioritize matching eyes, aligned pupils, natural eyelids, balanced facial proportions,
-  realistic skin texture, anatomically coherent hands, and clearly separated bodies.
-  Avoid extreme expressions, profile views, crossed limbs, overlapping faces, complicated
-  gestures, duplicated subjects, merged bodies, waxy skin, beauty retouching, and
-  excessive sharpness.
+  Use only essential visual information. Avoid long adjective chains, repeated style
+  terms, conflicting directions, abstract symbolism, complex staging, excessive camera
+  terminology, and overloaded environments. Include no text, caption, logo, watermark,
+  border, split screen, or collage.
 
 
-  Optimize for FLUX.1 Schnell with short, direct, concrete descriptions. Limit the
-  prompt to essential visual information. Avoid long adjective chains, repeated style
-  terms, conflicting instructions, abstract symbolism, complex staging, excessive
-  camera terminology, and overloaded environments.
-
-
-  Preserve the source scene’s meaning, period, location, clothing, and emotional tone.
-  Depict one coherent instant. Do not include text, captions, logos, watermarks, borders,
-  split screens, or collages.
-
-
-  Write one concise paragraph in fluent English. Do not include explanations, headings,
-  bullet points, quotation marks, negative-prompt sections, generation settings, or
-  model instructions. Output only the final image prompt.
-
-
-  Treat handheld objects conservatively. Never add a mobile phone, tablet, camera,
-  remote control, or other electronic device unless the source scene explicitly requires
-  it.
-
-
-  When a phone is explicitly required:
-
-  - show exactly one phone in the entire image
-
-  - assign it to one clearly identified person
-
-  - place it naturally in one hand only
-
-  - keep the screen turned toward that person or angled away from the camera
-
-  - never present the screen to the viewer
-
-  - keep the other hand empty and relaxed
-
-  - do not duplicate the phone or place additional devices in the scene
-
-
-  Do not interpret looking, reading, communicating, waiting, gesturing, or holding
-  something as phone use. Prefer natural empty-hand poses when no object is narratively
-  necessary.
-
-
-  Describe both hands of every visible person using natural, object-free positions,
-  such as resting at their sides, folded loosely in their lap, resting on a table,
-  or placed in coat pockets. Prefer compositions where hands are outside the frame
-  when they are not important. The final image prompt must contain no references to
-  phones, screens, handheld electronics, or presenting objects unless essential to
-  the source.
-
-
-  Medium close-up, both hands outside the frame, unobstructed face, calm natural posture.'
+  Output only one concise paragraph in fluent English, with no explanation, heading,
+  bullet, quotation marks, negative-prompt section, generation setting, or model instruction.'
 requirements:
+- Ground the prompt in at least three concrete, narration-specific visual details.
+- Make the subject, action, setting, and composition distinguish this scene from adjacent
+  scenes.
 - Write visual_beat as a concise description of only the action shown in that shot;
   do not copy the full scene text.
 - Prefer clear subjects, actions, setting, lighting, and camera framing.

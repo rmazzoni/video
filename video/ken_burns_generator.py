@@ -55,6 +55,10 @@ _MOTIONS = [
 ]
 
 
+def _pan_x_for_clip(clip_index: int) -> float:
+    return 0.10 if clip_index % 2 == 0 else -0.10
+
+
 class KenBurnsGenerator:
     """Generates Ken Burns-style video clips from still images."""
 
@@ -89,7 +93,13 @@ class KenBurnsGenerator:
     # PUBLIC API
     # ---------------------------------------------------------
 
-    def generate_clip(self, image_path: str, scene_id: int, filename_suffix: str = "") -> str:
+    def generate_clip(
+        self,
+        image_path: str,
+        scene_id: int,
+        filename_suffix: str = "",
+        motion_index: Optional[int] = None,
+    ) -> str:
         """
         Generate a clip from a still image.
         Static mode: holds the image still for the full duration.
@@ -129,7 +139,8 @@ class KenBurnsGenerator:
 
         zoom_start = motion["zoom_start"]
         zoom_end   = motion["zoom_end"]
-        pan_x      = motion["pan_x"]
+        pan_number = scene_id if motion_index is None else motion_index
+        pan_x      = _pan_x_for_clip(pan_number)
         pan_y      = motion["pan_y"]
 
         MOTION_CAP = 6.0

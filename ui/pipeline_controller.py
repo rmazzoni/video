@@ -502,7 +502,7 @@ class PipelineWorker(QObject):
                             gen_kb.duration = target_dur
                             self.log.emit(f"Scene {sid}: Ken Burns clip [{current_motion}], duration={target_dur:.1f}s")
                             try:
-                                gen_kb.generate_clip(img_path, sid)
+                                gen_kb.generate_clip(img_path, sid, motion_index=idx - 1)
                             except Exception as _clip_err:
                                 self.log.emit(f"WARNING: clip {sid} failed — {_clip_err}")
                                 failed_kb.append(sid)
@@ -1091,8 +1091,12 @@ class PipelineWorker(QObject):
                             gen_kb.duration = dur
                             self.log.emit(f"Scene {sid} v{v_idx}: Ken Burns clip, duration={dur:.1f}s")
                             try:
-                                gen_kb.generate_clip(img_path, sid,
-                                                     filename_suffix=clip_suffix)
+                                gen_kb.generate_clip(
+                                    img_path,
+                                    sid,
+                                    filename_suffix=clip_suffix,
+                                    motion_index=idx - 1,
+                                )
                             except Exception as _e:
                                 self.log.emit(f"WARNING: clip scene_{sid:03d}{clip_suffix} failed — {_e}")
                                 failed_fc.append(f"{sid}{clip_suffix}")

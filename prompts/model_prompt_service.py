@@ -204,6 +204,11 @@ class ModelPromptService:
                         "content": json.dumps({
                             "scene_id": int(scene["id"]),
                             "scene": scene["text"],
+                            "source_fidelity": (
+                                "Use this scene as the authoritative source. Make its specific subject, "
+                                "action, setting, time, and important objects visible. Do not reuse generic "
+                                "content from other scenes or invent a person when none is described."
+                            ),
                             "maximum_visual_beats": int(profile.get("max_prompts_per_scene", 3)),
                             "requirements": profile.get("requirements", []),
                             "response_schema": {"prompts": [{"visual_beat": "string", "prompt": "string"}]},

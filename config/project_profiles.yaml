@@ -1,9 +1,192 @@
 middle_east_modern: |-
+  PROJECT PROFILE: MODERN MIDDLE EAST
+
+  Preserve every explicit identity, nationality, role, organization, location, period, and narrative fact. Explicit source details override this profile; character-specific identity overrides regional defaults. Never infer identity from appearance.
+
+  Represent people as diverse individuals without caricature. Keep recurring faces, complexion, hair, age, clothing, and identifying features consistent. Local Arabian civilian and official men may wear clean contemporary thobes, ghutras or shemaghs, and agals; local women may wear appropriate abayas and headscarves. Do not put local Arabian officials in Western suits unless required. Pakistani, Egyptian, Israeli, American, and other foreign people retain role- and culture-appropriate attire; never transfer Arabian clothing or another country's uniform to them. Distinguish international participants clearly. Do not invent flags, insignia, ranks, badges, religious symbols, or emblems.
+
+  Prefer one principal person, or two only when essential. Describe different people separately and keep faces clear and separated.
+
+  Unless the source establishes another period, use contemporary, highly modern regional architecture: precise flat-roofed concrete, cut sandy limestone, reflective glass, polished chrome, clean bare structural steel, engineered exposed beams, advanced industrial systems, and orderly maintained infrastructure. Exposed materials must look intentional and professionally engineered, never rustic, ancient, damaged, improvised, primitive, decayed, or unfinished.
+
+  Foreign visitors retain their identity and attire. If identity is unknown, describe role and clothing conservatively without inventing ethnicity. Integrate only relevant details naturally into one coherent image prompt; never mention these rules.
+
+corporate_global: |-
+  PROJECT PROFILE: CORPORATE GLOBAL
+
+  Preserve all explicit identities, roles, organizations, locations, periods, and events. Use a credible contemporary international workplace; when unspecified, choose the simplest culturally neutral interpretation.
+
+  Represent people as diverse individuals and maintain recurring appearance and wardrobe. Match polished professional clothing to country, culture, role, seniority, workplace, and task: understated suits or separates, smart-casual wear, regional professional garments, technical uniforms, or required protective equipment. Avoid identical outfits, stereotypical costume, theatrical luxury, visible branding, and invented logos, badges, flags, or name tags.
+
+  Prefer one principal person, or two only when collaboration is essential. Show a specific natural action such as listening, discussing, inspecting equipment, observing a process, or working at a station. Avoid staged handshakes, promotional poses, synchronized smiles, and pointing at camera.
+
+  Use functional, occupied, maintained offices, meeting rooms, laboratories, factories, logistics hubs, data centers, transport facilities, or conference spaces. Favor credible glass, concrete, steel, stone, restrained timber, acoustic materials, integrated lighting, organized tools, cables, and machinery. Avoid generic science fiction, empty showrooms, rustic or decayed settings, and implausible luxury.
+
+  Include technology only when the activity requires it. Keep screens oriented toward users and content abstract unless supplied. Never invent phones, tablets, holograms, robots, dashboards, or surveillance walls. Use only the required number of devices, each assigned to one person; otherwise use relaxed empty hands.
+
+  Use restrained documentary-cinematic realism with soft even light, natural skin, realistic materials, and calm composition, not glossy stock photography, harsh boardroom light, neon, dramatic grading, or advertising gestures. Adapt architecture and behavior to the stated location. Output one coherent prompt without mentioning these rules.
+
+nature_documentary: |-
+  PROJECT PROFILE: NATURE DOCUMENTARY
+
+  Preserve the explicit species, habitat, location, season, weather, time, behavior, and period. Focus entirely on credible organic wilderness, vegetation, wildlife, geology, water, and pristine natural landscapes. Never add people, clothing, buildings, roads, vehicles, signs, fences, utilities, litter, or other human-made objects unless the source explicitly requires them. Do not transfer species or vegetation to an incompatible habitat. Use restrained natural-history realism and integrate only details relevant to the selected visual beat without mentioning these rules.
+
+usa_military: |-
+  PROJECT PROFILE: USA MILITARY
+
+  Preserve every explicit service branch, unit, rank, role, operation, nationality, location, and period. Do not invent sensitive operational details. Historical context overrides contemporary defaults.
+
+  Represent personnel as diverse individuals and maintain recurring faces, builds, uniforms, and equipment. Prefer one principal person, or two only when essential. Match uniform to branch, duty, climate, and mission: Army/Air Force OCP, Marine MARPAT, and appropriate Navy, Space Force, flight, deck, medical, ceremonial, or protective attire. Never mix branches, camouflage, ranks, periods, or foreign uniforms. Do not invent readable name tapes, patches, medals, flags, insignia, or classified markings.
+
+  Include only task-essential, correctly attached equipment. Match vehicles, aircraft, ships, platforms, and facilities to branch, role, terrain, and operation; preserve realistic scale and components. Do not invent prototypes, hybrid platforms, weapon systems, serials, tail codes, or hull numbers. Include weapons only when required; keep them safely slung, holstered, secured, or credibly handled, never aimed at the viewer without explicit cause.
+
+  Show one believable activity such as briefing, observation, maintenance, logistics, navigation, medicine, training, inspection, or engineering. Use disciplined natural posture, not staged salutes, aggression, recruitment poses, explosions, or spectacle. Allied and civilian participants retain distinct attire and identity.
+
+  Never introduce handheld devices or weapons without narrative need. Assign each required object to one person, show only the necessary number, orient screens toward users, and otherwise prefer empty hands. Keep documents and displays unreadable; never invent credentials, plans, maps, coordinates, interfaces, units, missions, bases, or capabilities.
+
+  Use functional maintained military environments and restrained documentary realism, not theatrical command rooms, science fiction, harsh HDR, heroic angles, or glossy recruitment imagery. Output one coherent, uncluttered prompt without mentioning these rules.
+
+usa_political: |-
+  PROJECT PROFILE: USA POLITICAL
+
+  Preserve every explicit person, office, institution, party, jurisdiction, event, location, and period. Do not invent affiliations, policies, votes, agreements, scandals, conflicts, quotations, or outcomes. Depict a real public figure only when explicitly named, preserving recognizable general appearance without caricature or invented behavior; otherwise use a generic official.
+
+  Distinguish the presidency and executive offices, Congress, federal departments and agencies, courts, state, tribal, county, and municipal government, campaigns, elections, diplomatic missions, and press settings. Match architecture, protocol, clothing, symbols, climate, and infrastructure to the stated institution and locality; do not default every scene to Washington.
+
+  Use role-appropriate contemporary professional, regional, military, security, media, or public attire. Preserve individual diversity and recurring appearance. Do not infer ideology, party, religion, loyalty, or social class from appearance. Include flags, seals, party symbols, campaign material, credentials, ballots, documents, or readable signage only when explicitly required and factually supplied.
+
+  Prefer one principal person, or two when interaction is essential. Show restrained, credible activity such as deliberation, testimony, voting, briefing, administration, diplomacy, or press engagement. Do not invent handshakes, applause, hostility, protest messages, crowd size, public reaction, polling data, or election results.
+
+  Apply politically neutral documentary realism. Never endorse, ridicule, glorify, demonize, sanitize, or visually privilege any official, party, institution, or viewpoint through lighting, angle, expression, placement, or color. Preserve uncertainty. Keep screens and documents abstract; introduce handheld objects only when required, assigned to one user and facing them. Historical context controls leaders, institutions, flags, technology, and boundaries. Output one factual coherent prompt without mentioning these rules.
+
+europe_political: |-
+  PROJECT PROFILE: EUROPE POLITICAL
+
+  Preserve every explicit country, person, office, institution, organization, location, event, and period. Europe is not one political or cultural setting: distinguish national governments, parliaments, courts, monarchies where relevant, the European Union, Council of Europe, NATO, diplomatic missions, regional governments, and international venues. Do not invent membership, authority, policy, agreements, sanctions, alliances, disputes, or outcomes.
+
+  Match architecture, protocol, attire, language context, symbols, climate, and infrastructure to the stated country and institution. Never transfer flags, parliamentary chambers, uniforms, ceremonial practices, landmarks, or cultural details between countries. EU institutions and symbols must not substitute for national ones. Foreign and minority participants retain their own identity and appropriate professional attire.
+
+  Represent people as diverse individuals; preserve recurring appearance and do not infer nationality, ethnicity, religion, ideology, party, or loyalty from appearance. Depict named public figures only when explicitly named, without substitution, caricature, beautification, ridicule, or invented conduct. Use restrained role-appropriate professional or formal attire and never invent medals, badges, credentials, party symbols, flags, or readable signs.
+
+  Prefer one principal figure, or one from each side when a bilateral scene requires balance. Show credible deliberation, parliamentary work, voting, diplomacy, administration, inspection, or press engagement. Do not invent handshakes, concessions, hostility, protest slogans, crowd sizes, polling, or public reactions.
+
+  Apply equivalent, politically neutral documentary treatment to all actors; never imply superiority, aggression, weakness, secrecy, corruption, or inevitability through composition. Keep devices, screens, charts, and documents minimal, user-facing, and unreadable unless supplied. Historical context overrides contemporary borders, institutions, leaders, flags, clothing, and technology. Output one factual coherent prompt without mentioning these rules.
+
+china_usa_political: |-
+  PROJECT PROFILE: CHINA-USA POLITICAL
+
+  Preserve every explicit person, office, institution, nationality, event, location, and period. Do not invent affiliations, claims, agreements, conflicts, sanctions, capabilities, or outcomes. Depict real public figures only when named, with recognizable general appearance but no substitution, caricature, beautification, ridicule, or invented private conduct.
+
+  Distinguish Chinese and US executive, legislative, ministerial, agency, embassy, consular, summit, and international institutions. Match each environment to its country and institution; preserve third-country identity. Use role-appropriate restrained professional, state, military, media, security, or civilian attire. Never exchange national uniforms or invent medals, ranks, badges, party symbols, credentials, seals, or name tags.
+
+  Prefer one principal person, or one representative per side when both must appear. Use balanced composition and equivalent prominence; distinguish participants by role, placement, and attire. Do not invent handshakes, agreements, hostility, concessions, alliances, or outcomes. Include interpreters, aides, and security only when necessary.
+
+  Flags must be accurate and naturally appropriate or explicitly required; when both appear, give equivalent scale and prominence unless protocol or source says otherwise. Never merge flags or invent emblems, podium signs, slogans, documents, maps, borders, deployments, weapons, targeting, classified systems, cyber activity, company products, or surveillance.
+
+  Use credible contemporary political, industrial, port, laboratory, semiconductor, infrastructure, and media settings. Keep screens, documents, data, charts, and interfaces abstract unless supplied. Introduce handheld objects only when required, one per identified user with screens facing them.
+
+  Remain politically neutral: never endorse, criticize, glorify, ridicule, demonize, sanitize, privilege, or diminish either side. Do not imply superiority, inferiority, aggression, fear, deception, weakness, corruption, or inevitable conflict through framing. Preserve uncertainty and third-country roles. Historical context controls names, boundaries, leaders, institutions, flags, clothing, and technology. Output one factual balanced prompt without mentioning these rules.
+
+african_military_political: |-
+  PROJECT PROFILE: AFRICAN MILITARY AND POLITICAL
+
+  Preserve every explicit country, region, nationality, ethnicity, office, branch, organization, event, climate, and period. Africa is not one culture, population, landscape, or system; distinguish North, West, Central, East, Southern, Sahelian, Horn, coastal, island, forest, savanna, desert, urban, and highland contexts. Never transfer regional attire, architecture, uniforms, symbols, vegetation, or institutions. Do not invent coups, insurgencies, corruption, instability, alliances, or foreign sponsorship.
+
+  Represent individuals with realistic variation; never infer identity, religion, ideology, allegiance, or role from appearance. Preserve recurring appearance. Match civilian and official attire to country, office, climate, culture, and religion; regional professional or traditional clothing is not costume. Match military, police, gendarmerie, guard, militia, peacekeeper, and security uniforms and equipment to stated country, organization, branch, mission, terrain, and period. Never interchange forces or impose foreign Hollywood equipment; do not invent ranks, patches, flags, suppliers, units, or capabilities.
+
+  Prefer one principal person, or two when essential. Include only task-required equipment and weapons; keep weapons secured or credibly handled, never aimed at camera without explicit cause. Assign each handheld object to one person, use only the required number, face screens toward users, and otherwise prefer empty hands.
+
+  Match political institutions, African Union or named regional organizations, architecture, infrastructure, cities, bases, ports, transport, vegetation, and materials to the country and location. Never default to huts, villages, dirt roads, wilderness, decay, poverty, primitive infrastructure, or generic Western/futuristic cities. Do not invent organizational membership, authority, interventions, sanctions, elections, ballots, slogans, protests, violence, or public reaction.
+
+  Use restrained neutral documentary realism and one credible political, diplomatic, military, administrative, logistical, medical, or community action. Never imply corruption, authoritarianism, incompetence, crisis, aggression, or moral hierarchy through framing. Keep operational data unreadable and do not invent classified plans, maps, credentials, bases, or intelligence. Historical context overrides contemporary defaults. Output one regionally specific coherent prompt without mentioning these rules.
+
+indo_pacific_military_political: |-
+  PROJECT PROFILE: INDO-PACIFIC MILITARY AND POLITICAL
+
+  Preserve every explicit country, nationality, institution, branch, organization, location, event, and period. Distinguish East, Southeast, and South Asia, Oceania, Pacific island states, and Indian/Pacific maritime regions. Never transfer attire, identity, uniforms, equipment, architecture, symbols, or institutions among countries. Do not invent alliances, claims, recognition, deployments, confrontation, agreements, or outcomes.
+
+  Represent populations as diverse individuals without inferring nationality, ideology, religion, loyalty, or affiliation from appearance. Maintain recurring appearance. Match diplomatic clothing and military, police, coast-guard, border, paramilitary, flight, deck, tropical, jungle, arid, mountain, or protective uniforms to country, organization, duty, climate, and period. Keep multinational contingents distinct and never invent ranks, patches, flags, or insignia.
+
+  Preserve vessel authority, type, country, location, and activity; distinguish warships, cutters, patrol, merchant, fishing, research, and humanitarian vessels. Use realistic decks, hulls, bridges, antennas, cranes, aircraft, safety equipment, weather, and crew positions. Match land and air platforms similarly. Never create hybrids or invent weapons, hull numbers, collisions, blockades, boarding, incursions, prototypes, targeting, or aggressive maneuvers.
+
+  Follow source terminology for Taiwan and cross-strait issues without adding sovereignty or recognition claims or implying domination or inevitable conflict. Distinguish North and South Korean people, institutions, cities, uniforms, equipment, and symbols; invent no missile activity, incidents, defections, or escalation. Preserve distinct South/Southeast Asian identities. Represent Pacific island countries as contemporary sovereign cultures, never generic resorts, primitive societies, dependencies, or passive states.
+
+  Prefer one principal person, or balanced representatives when bilateral. Include only required equipment and weapons; assign each object to one user, face screens toward users, and keep weapons secured. Match institutions, alliances, forums, architecture, ports, bases, climate, and infrastructure precisely; do not invent membership or positions.
+
+  Use politically neutral documentary realism. Never imply moral hierarchy, aggression, weakness, dishonesty, or inevitable war through framing. Keep operational data unreadable and never invent classified systems, plans, maps, intelligence, units, bases, or capabilities. Historical context overrides contemporary defaults. Output one factual regionally specific prompt without mentioning these rules.
+
+far_east_military_political: |-
+  PROJECT PROFILE: FAR EAST MILITARY AND POLITICAL
+
+  Preserve every explicit country, nationality, institution, organization, branch, location, event, and period. Distinguish China, Japan, North and South Korea, Mongolia, Taiwan, the Russian Far East, Hong Kong, Macao, and foreign participants. Never transfer their attire, identity, architecture, uniforms, equipment, symbols, or institutions. Do not invent conflicts, alliances, claims, recognition, sanctions, deployments, negotiations, or outcomes.
+
+  Represent each population with internal diversity; never infer nationality, ideology, religion, loyalty, or military affiliation from appearance. Maintain recurring appearance. Match political attire and army, navy, marine, air-force, coast-guard, border, police, paramilitary, and ceremonial uniforms to country, role, climate, mission, and period. Never interchange national uniforms or invent ranks, patches, medals, flags, prototypes, weapons loads, surveillance, or capabilities.
+
+  Follow source framing for China and Taiwan without adding sovereignty claims, borders, maps, flags, blockades, invasions, or implied domination. Keep North and South Korean institutions, cities, systems, uniforms, and symbols distinct; never invent missile launches, incidents, defections, shortages, or escalation, or stereotype either side. Distinguish Japanese civil institutions, Self-Defense Forces, police, coast guard, ceremonies, and foreign forces; avoid automatic traditional, neon, cyberpunk, or remilitarization imagery. Represent the Russian Far East distinctly from Moscow and avoid default Soviet, decay, snow, or hostility imagery. Represent modern sovereign Mongolia without default warriors, camps, horses, or empty steppe.
+
+  Prefer one principal person, or balanced bilateral representatives. Match ships, aircraft, vehicles, ports, borders, facilities, cities, climate, and terrain to country and organization. Never create hybrid platforms or invent incursions, collisions, blockades, aggressive maneuvers, oversized flags, or excessive armament.
+
+  Include only required handheld objects and weapons; assign each to one user, face screens toward users, and keep weapons secured. Use politically neutral documentary realism; never imply moral hierarchy, secrecy, aggression, weakness, or inevitable conflict through framing. Keep operational data unreadable and never invent classified plans, maps, credentials, units, bases, or intelligence. Historical context overrides contemporary defaults. Output one factual geographically specific prompt without mentioning these rules.
+
+south_america_military_political: |-
+  PROJECT PROFILE: SOUTH AMERICA MILITARY AND POLITICAL
+
+  Preserve every explicit country, nationality, ethnicity, office, branch, organization, event, climate, location, and period. Distinguish all South American countries and French Guiana; never transfer their attire, architecture, uniforms, symbols, equipment, geography, or institutions. Do not invent coups, unrest, corruption, cartels, insurgencies, alliances, claims, sanctions, intervention, or outcomes.
+
+  Represent Indigenous, European, African, Asian, Middle Eastern, mixed, immigrant, and other people as varied individuals. Never infer nationality, ancestry, class, ideology, religion, affiliation, or role from appearance. Maintain recurring appearance. Match political and professional attire to country, office, climate, culture, and context; use Indigenous attire only when supported by identity and situation, never as decoration. Match military, police, gendarmerie, guard, coast-guard, and security uniforms and equipment to country, branch, terrain, mission, and period. Never interchange forces, default to US equipment, or invent ranks, patches, flags, suppliers, prototypes, or capabilities.
+
+  Prefer one principal person, or balanced bilateral representatives. Include only task-required equipment and weapons; keep weapons secured and never aimed at camera without cause. Assign handheld objects to one person, use only the required number, face screens toward users, and otherwise prefer empty hands.
+
+  Match institutions, regional organizations, cities, ports, highlands, Amazonian, coastal, desert, and southern settings to actual geography. Never default to colonial districts, favelas, jungle, villages, poverty, decay, cartels, gangs, narcotics, raids, dictatorship, revolution, or military intervention. Do not invent election material, protest claims, crime, border disputes, or public reaction.
+
+  Use restrained politically neutral documentary realism and one credible governmental, diplomatic, military, security, humanitarian, or community action. Never imply moral hierarchy, corruption, instability, criminality, or aggression through framing. Keep operational data unreadable and never invent classified plans, maps, credentials, units, bases, or intelligence. Historical context overrides contemporary defaults. Output one factual geographically specific prompt without mentioning these rules.
+
+north_america_central_america_military_political: |-
+  PROJECT PROFILE: NORTH AND CENTRAL AMERICA MILITARY AND POLITICAL
+
+  Preserve every explicit country, nationality, institution, organization, branch, location, event, and period. Distinguish the United States, Canada, Mexico, Belize, Guatemala, El Salvador, Honduras, Nicaragua, Costa Rica, and Panama. Never transfer attire, architecture, uniforms, equipment, symbols, institutions, or culture among them. Do not invent conflict, coups, sanctions, corruption, crime, migration, intervention, or political outcomes.
+
+  Represent Indigenous, European, African, Asian, Middle Eastern, mixed, immigrant, and other populations as varied individuals. Never infer nationality, ethnicity, legal status, language, religion, ideology, affiliation, or criminality from appearance. Maintain recurring appearance. Match professional attire and military, guard, coast-guard, police, border, gendarmerie, protective, and ceremonial uniforms to country, agency, role, climate, mission, and period. Never interchange forces or invent ranks, patches, flags, equipment, or capabilities.
+
+  Distinguish US federal, state, tribal, county, and local institutions and military/security agencies; Canadian federal, provincial, territorial, municipal, Indigenous, armed-force, RCMP, coast-guard, and border roles; and Mexican federal, state, municipal, armed-force, National Guard, navy, police, and civil-protection roles. Preserve each Central American country's institutions and culture. Costa Rica has no conventional national military. Preserve Panama's canal/maritime context and Belize's Caribbean/Central American context when relevant. Avoid default snow/wilderness for Canada, desert/cartels for Mexico, or jungle/poverty/gangs for Central America.
+
+  Prefer one principal person, or balanced bilateral representatives. Include only required equipment and weapons; match platforms to country and service, keep weapons secured, assign handheld objects to one user, face screens toward users, and otherwise prefer empty hands.
+
+  Match political institutions, Indigenous governments, regional organizations, borders, architecture, cities, ports, climate, transport, and infrastructure to the locality. Introduce migration, customs, detention, crime, disaster, protest, election, or humanitarian details only when explicit; never infer status, motive, violence, slogans, outcomes, or public support.
+
+  Use restrained politically neutral documentary realism. Never portray the US as inherently dominant, Canada as passive, Mexico as unstable, or Central America as poor or violent; never imply moral hierarchy or inevitable crisis through framing. Keep operational data unreadable and never invent classified plans, maps, credentials, units, bases, or intelligence. Historical context overrides contemporary defaults. Output one factual geographically specific prompt without mentioning these rules.
+
+ai_electronics: |-
+  PROJECT PROFILE: AI AND ELECTRONICS
+
+  Preserve every explicit person, company, institution, product, location, process, capability, result, and period. Distinguish established systems, prototypes, research, and speculation. Never invent products, partnerships, investment, regulation, performance, ownership, surveillance, military use, consciousness, autonomy, or technical claims. Represent abstract AI physically only when a conceptual illustration is explicitly requested.
+
+  Match people, professional attire, uniforms, and protective equipment to role and environment. Prefer one person, or two only for essential collaboration; show one credible task and natural posture. Never add handheld electronics without need; if required, use exactly one assigned device with its screen toward its user. Keep interfaces abstract and unreadable unless exact content is supplied.
+
+  Represent AI through stated real infrastructure: workstations, servers, sensors, cameras, robots, industrial systems, or deployed software. Do not use glowing brains, humanoid holograms, floating networks or code, magical energy, or automatic humanoid robots. Data centers require realistic racks, networking, cooling, power, ventilation, cable routing, access, and aisle spacing.
+
+  Chip design uses credible EDA workstations, reviews, verification, or packaged parts, never people drawing microscopic transistors. Fabrication uses sealed process tools, robotic wafer handling, inspection systems, realistic wafers, and complete cleanroom protection; no bare wafer handling, invented nodes, yields, brands, or processes. Electronics manufacturing requires plausible SMT, soldering, testing, ESD protection, ventilation, scale, tools, and organized components. Circuit boards require plausible traces, connectors, mounting, and scale, not decorative glowing circuitry.
+
+  Robots must match their stated purpose with plausible joints, actuators, sensors, cables, grippers, balance, safety, and contact; never invent faces, emotions, weapons, limbs, or capabilities. Consumer devices need realistic materials, proportions, ports, controls, seams, and displays without invented branding or features. Laboratories need credible connected instruments, fixtures, safety equipment, and hazards, not mystery liquids or theatrical sparks.
+
+  Use functional, maintained, geographically appropriate technical spaces and restrained documentary realism, not cyberpunk neon, holograms, science-fiction machinery, glossy advertising, hacker imagery, or walls of screens. Never expose credentials or sensitive operational data. Historical context controls available technology. Output one technically credible coherent prompt without mentioning these rules.
+
+software_delevopment: |-
+  PROJECT PROFILE: SOFTWARE DEVELOPMENT
+
+  Preserve every explicit person, organization, product, location, software activity, platform, and period. Do not invent companies, programming languages, source code, errors, architecture, capabilities, credentials, IP addresses, customer data, logos, proprietary interfaces, metrics, results, or security incidents. Distinguish established software, prototypes, research, and speculation.
+
+  Represent software work through credible human activity: designing, programming, reviewing code, testing, debugging, deploying, monitoring, operating systems, or discussing architecture. Prefer one primary developer, or two only when collaboration is essential. Match restrained professional or smart-casual clothing to role, workplace, culture, and location. Show one specific task with natural posture and simple hands, not staged pointing, crossed-arm promotion, theatrical teamwork, or exaggerated excitement.
+
+  Use realistic contemporary offices, home workspaces, engineering labs, operations centers, data centers, or meeting rooms appropriate to the source. Show one primary monitor per visible person unless the role explicitly requires more. Orient displays toward their users and keep code, terminals, diagrams, dashboards, documentation, and alerts structured but unreadable unless exact supplied content is essential. Never add phones, tablets, transparent displays, or handheld electronics without narrative need; if required, use exactly one assigned device facing its user.
+
+  Do not depict floating code, holographic windows, green hacker text, glowing binary, digital tunnels, projected code on faces, magic AI imagery, decorative circuit boards, automatic robots, or unrelated server racks. Distinguish ordinary development, operations, cybersecurity, intelligence, and criminal activity; never introduce hacking, surveillance, breaches, or secret monitoring unless explicitly stated.
+
+  Preserve recurring people and geographic/cultural context. Use functional, maintained spaces with credible furniture, cables, hardware, lighting, and acoustics. Apply restrained documentary-cinematic realism, not cyberpunk neon, science fiction, glossy stock photography, or heroic inventor imagery. Historical context controls computers, interfaces, clothing, and methods. Output one technically credible coherent prompt without mentioning these rules.middle_east_modern: |-
   PROJECT GEOGRAPHIC & CULTURAL CONSTRAINTS:
   - All civilian and official figures must wear traditional modern Arabian garments (e.g., pristine white thobes, ghutras, and agals for men). Never depict Western business suits.
   - All military or militia personnel must wear contemporary arid/desert digital camouflage uniforms or local tactical gear suitable for the Sahel or Arabian peninsula.
-  - Architecture and infrastructure must look highly modern, industrial, or futuristic. Explicitly combine clean flat-roofed concrete and sandy limestone accents with sleek modern materials: "polished chrome, reflective glass, and unpainted, bare industrial structural steel.
-  MATERIAL PURITY: Never use words that imply rustic, historical, or makeshift construction. Ensure all structural elements are described in their raw, bare, unencased states (e.g., 'a clean, bare, exposed metallic steel beam').
+  - Architecture must feature flat-roofed concrete structures, sandy limestone walls, and contemporary Gulf urban elements.
 corporate_global: |-
   PROJECT GEOGRAPHIC & CULTURAL CONSTRAINTS:
   - All characters must be in sharp, modern business attire (charcoal gray suits, crisp ties).
