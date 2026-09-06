@@ -13,6 +13,7 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
             "schnell": "Cinematic photograph, natural materials, photographic lighting and depth.",
             "zimage": "Cinematic photograph, natural materials, photographic depth, motivated light.",
             "dev": "Cinematic photography, realistic materials, optical depth, motivated natural light.",
+            "hidream": "Cinematic photography, rich natural detail, dimensional depth, and motivated light.",
             "flux2": "Cinematic photograph with realistic surfaces, optical depth, and motivated lighting.",
         },
         "models": {
@@ -35,6 +36,12 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "directional light from the dramatic needs of this scene. Preserve environmental "
                 "detail and visual tension; avoid a generic commercial portrait or uniformly soft, "
                 "flat illumination."
+            ),
+            "hidream": (
+                "Use richly detailed cinematic photography with coherent spatial staging, natural "
+                "anatomy, nuanced expressions, tactile materials, atmospheric depth, and motivated "
+                "light. Let the narration determine lens perspective and composition. Preserve the "
+                "literal action and identity while avoiding generic portrait staging or decorative clutter."
             ),
             "flux2": (
                 "Use sophisticated cinematic photography with purposeful composition, spatial "
@@ -60,6 +67,10 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
             "dev": (
                 "Cinematic editorial illustration, visibly painterly layered shapes, expressive "
                 "brush texture, designed color relationships; not photorealistic."
+            ),
+            "hidream": (
+                "Cinematic editorial illustration, richly painted dimensional forms, expressive "
+                "surface texture, designed color relationships; clearly non-photographic."
             ),
             "flux2": (
                 "Cinematic editorial illustration, clearly painted surface, controlled graphic "
@@ -87,6 +98,12 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "Use editorial composition and visual hierarchy to interpret the narration rather "
                 "than imitate a photograph. Avoid glossy 3D surfaces, photoreal skin, anime styling, "
                 "and uniform comic-book outlines."
+            ),
+            "hidream": (
+                "Render as a richly authored cinematic editorial illustration with natural anatomy, "
+                "layered painted forms, nuanced expressions, tactile surface variation, atmospheric "
+                "depth, and intentional color relationships. Keep the narrated action literal and "
+                "readable while avoiding photographic skin, synthetic 3D polish, and anime styling."
             ),
             "flux2": (
                 "Render as a sophisticated cinematic editorial illustration with designed shapes, "

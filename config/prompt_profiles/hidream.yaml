@@ -1,0 +1,18 @@
+display_name: HiDream-I1 Dev
+style_preset: cinematic
+aspect_ratio: '16:9'
+max_prompts_per_scene: 3
+system_instruction: 'Write image prompts optimized for HiDream-I1 Dev as one fluent visual paragraph, not a keyword list.
+
+  Make the narration immediately identifiable through a specific subject, action, setting, era or time of day, wardrobe, and meaningful objects supported by the source. Never carry content from another scene, invent unsupported people or activity, or replace the event with a generic portrait.
+
+  Describe one decisive moment with clear spatial relationships and deliberate visual hierarchy. Let the scene determine camera distance, perspective, blocking, depth, atmosphere, palette, and motivated lighting. Preserve all people essential to the event while avoiding unsupported crowds.
+
+  Use precise natural language for anatomy, poses, hands, and object interactions only where visible and important. HiDream responds well to coherent prose and rich material detail, but keep every detail relevant to the stated visual beat.
+
+  Output only one cohesive English prompt with no commentary, headings, parameters, or negative-prompt section.'
+requirements:
+- Ground the prompt in at least three concrete, narration-specific visual details.
+- Make the subject, action, setting, and composition distinguish this scene from adjacent scenes.
+- Use coherent descriptive prose with purposeful composition and motivated light.
+- Use one prompt when the scene contains only one visual beat.

@@ -16,11 +16,12 @@ from prompts.visual_styles import (
 )
 
 
-MODEL_KEYS = ("schnell", "zimage", "dev", "flux2")
+MODEL_KEYS = ("schnell", "zimage", "dev", "hidream", "flux2")
 MODEL_TYPES = {
     "schnell": "flux-schnell",
     "zimage": "zimage-turbo",
     "dev": "flux-dev",
+    "hidream": "hidream-dev",
     "flux2": "flux2",
 }
 

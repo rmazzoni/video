@@ -419,6 +419,9 @@ class PipelineWorker(QObject):
                 elif model_type == "flux-dev":
                     steps = int(self.config.get("dev_steps", 20))
                     guidance = float(self.config.get("dev_guidance", 3.5))
+                elif model_type == "hidream-dev":
+                    steps = int(self.config.get("hidream_steps", 28))
+                    guidance = float(self.config.get("hidream_guidance", 1.0))
                 elif model_type == "flux2":
                     steps = int(self.config.get("flux2_steps", 4))
                     guidance = float(self.config.get("flux2_guidance", 1.0))
@@ -763,6 +766,7 @@ class PipelineWorker(QObject):
                     "schnell": "flux-schnell",
                     "zimage": "zimage-turbo",
                     "dev": "flux-dev",
+                    "hidream": "hidream-dev",
                     "flux2": "flux2",
                 }
                 if scene_id <= 0 or beat_index <= 0 or model_key not in model_types or not prompt:
@@ -979,7 +983,7 @@ class PipelineWorker(QObject):
             # ─────────────────────────────────────────────────────────────────
             if stage == "final_images":
                 self._check_cancel()
-                self._emit_progress(5, "Generating lightbox images (Schnell + Dev + FLUX.2)")
+                self._emit_progress(5, "Generating Lightbox images with enabled models")
 
                 if os.path.exists(scenes_path):
                     with open(scenes_path, "r", encoding="utf-8") as fh:
@@ -1009,6 +1013,7 @@ class PipelineWorker(QObject):
                     ("flux-schnell", "schnell"),
                     ("zimage-turbo", "zimage"),
                     ("flux-dev",     "dev"),
+                    ("hidream-dev",  "hidream"),
                     ("flux2",        "flux2"),
                 ]
                 enabled_models = self.config.get(
@@ -1301,7 +1306,7 @@ class PipelineController(QObject):
         ("5. Preview Images (Schnell)", "preview_images"),
         ("6. Preview Clips",           "preview_clips"),
         ("7. Preview Video",           "preview_video"),
-        ("8. Final Images (Dev + FLUX.2)", "final_images"),
+        ("8. Final Images (Enabled Models)", "final_images"),
         ("9. Final Clips",             "final_clips"),
         ("10. Final Video",            "final_video"),
     ]
@@ -1330,6 +1335,8 @@ class PipelineController(QObject):
         "enabled_image_models": ["schnell", "dev", "flux2"],
         "dev_steps": 20,
         "dev_guidance": 3.5,
+        "hidream_steps": 28,
+        "hidream_guidance": 1.0,
         "flux2_steps": 4,
         "flux2_guidance": 1.0,
         "image_width": 1344,

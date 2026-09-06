@@ -1,0 +1,69 @@
+{
+  "_meta_note": "HiDream-I1 Dev FP8 text-to-image. Expected models: diffusion_models/hidream_i1_dev_fp8.safetensors, four HiDream text encoders, vae/ae.safetensors. Params: @prompt, @seed, @width, @height, @steps, @filename_prefix.",
+  "1": {
+    "class_type": "UNETLoader",
+    "_meta": { "title": "Load HiDream-I1 Dev" },
+    "inputs": { "unet_name": "hidream_i1_dev_fp8.safetensors", "weight_dtype": "default" }
+  },
+  "2": {
+    "class_type": "QuadrupleCLIPLoader",
+    "_meta": { "title": "Load HiDream Text Encoders" },
+    "inputs": {
+      "clip_name1": "clip_l_hidream.safetensors",
+      "clip_name2": "clip_g_hidream.safetensors",
+      "clip_name3": "t5xxl_fp8_e4m3fn_scaled.safetensors",
+      "clip_name4": "llama_3.1_8b_instruct_fp8_scaled.safetensors"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "_meta": { "title": "Load VAE" },
+    "inputs": { "vae_name": "ae.safetensors" }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Positive Prompt" },
+    "inputs": { "text": "@prompt", "clip": ["2", 0] }
+  },
+  "5": {
+    "class_type": "ConditioningZeroOut",
+    "_meta": { "title": "Negative (Zeroed)" },
+    "inputs": { "conditioning": ["4", 0] }
+  },
+  "6": {
+    "class_type": "EmptySD3LatentImage",
+    "_meta": { "title": "Empty Latent" },
+    "inputs": { "width": "@width", "height": "@height", "batch_size": 1 }
+  },
+  "7": {
+    "class_type": "ModelSamplingSD3",
+    "_meta": { "title": "HiDream Sampling Shift" },
+    "inputs": { "model": ["1", 0], "shift": 6.0 }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "_meta": { "title": "KSampler" },
+    "inputs": {
+      "model": ["7", 0],
+      "seed": "@seed",
+      "steps": "@steps",
+      "cfg": 1.0,
+      "sampler_name": "lcm",
+      "scheduler": "normal",
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0],
+      "denoise": 1.0
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE Decode" },
+    "inputs": { "samples": ["8", 0], "vae": ["3", 0] }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save Image" },
+    "inputs": { "images": ["9", 0], "filename_prefix": "@filename_prefix" }
+  }
+}

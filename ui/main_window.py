@@ -208,7 +208,7 @@ def _load_thumbnail(path: str, w: int, h: int) -> "QPixmap":
 
 
 class MainWindow(QMainWindow):
-    # Lightbox variant display/generation order (Schnell → Dev → FLUX.2, each −1/●/+1)
+    # Lightbox variant display/generation order (each model uses −1/base/+1 seeds)
     _LIGHTBOX_VARIANT_ORDER = [
         ("schnell_v1", "Schnell −1"),
         ("schnell_v2", "Schnell ●"),
@@ -216,6 +216,9 @@ class MainWindow(QMainWindow):
         ("dev_v1",     "Dev −1"),
         ("dev_v2",     "Dev ●"),
         ("dev_v3",     "Dev +1"),
+        ("hidream_v1", "HiDream −1"),
+        ("hidream_v2", "HiDream ●"),
+        ("hidream_v3", "HiDream +1"),
         ("flux2_v1",   "FLUX.2 -1"),
         ("flux2_v2",   "FLUX.2 base"),
         ("flux2_v3",   "FLUX.2 +1"),
@@ -974,18 +977,18 @@ class MainWindow(QMainWindow):
 
         def _variant_parts(fname: str):
             match = re.match(
-                r"^scene_\d+_(schnell|zimage|dev|flux2)_b(\d+)_v(\d+)\.png$", fname, re.IGNORECASE)
+                r"^scene_\d+_(schnell|zimage|dev|hidream|flux2)_b(\d+)_v(\d+)\.png$", fname, re.IGNORECASE)
             if match:
                 model_key, beat, variant = match.groups()
                 return model_key.lower(), int(beat), int(variant)
             legacy = re.match(
-                r"^scene_\d+_(schnell|zimage|dev|flux2)_v(\d+)\.png$", fname, re.IGNORECASE)
+                r"^scene_\d+_(schnell|zimage|dev|hidream|flux2)_v(\d+)\.png$", fname, re.IGNORECASE)
             if legacy:
                 model_key, variant = legacy.groups()
                 return model_key.lower(), 1, int(variant)
             return "other", 999, 999
 
-        model_rank = {"schnell": 0, "zimage": 1, "dev": 2, "flux2": 3, "other": 4}
+        model_rank = {"schnell": 0, "zimage": 1, "dev": 2, "hidream": 3, "flux2": 4, "other": 5}
 
         def _variant_order(fname: str):
             model_key, beat, variant = _variant_parts(fname)
@@ -1180,12 +1183,12 @@ class MainWindow(QMainWindow):
         selections: dict = {}
         def _order_key(fname: str):
             match = re.match(
-                r"^scene_\d+_(schnell|zimage|dev|flux2)(?:_b(\d+))?_v(\d+)\.png$",
+                r"^scene_\d+_(schnell|zimage|dev|hidream|flux2)(?:_b(\d+))?_v(\d+)\.png$",
                 fname, re.IGNORECASE)
             if not match:
-                return 4, 999, 999, fname
+                return 5, 999, 999, fname
             model_key, beat, variant = match.groups()
-            return {"schnell": 0, "zimage": 1, "dev": 2, "flux2": 3}[model_key.lower()], int(beat or 1), int(variant), fname
+            return {"schnell": 0, "zimage": 1, "dev": 2, "hidream": 3, "flux2": 4}[model_key.lower()], int(beat or 1), int(variant), fname
 
         for sid, fname_dict in sorted(self._lightbox_checkboxes.items()):
             chosen = [fname for fname in sorted(fname_dict.keys(), key=_order_key)
@@ -1341,13 +1344,13 @@ class MainWindow(QMainWindow):
 
         def _image_metadata(path: str):
             match = re.match(
-                r"^scene_(\d+)_(schnell|zimage|dev|flux2)(?:_b(\d+))?_v\d+\.png$",
+                r"^scene_(\d+)_(schnell|zimage|dev|hidream|flux2)(?:_b(\d+))?_v\d+\.png$",
                 os.path.basename(path), re.IGNORECASE,
             )
             if not match:
                 return None
             scene, model_key, beat = match.groups()
-            model_name = {"schnell": "Schnell", "zimage": "Z-Image Turbo", "dev": "DEV", "flux2": "FLUX.2"}[
+            model_name = {"schnell": "Schnell", "zimage": "Z-Image Turbo", "dev": "DEV", "hidream": "HiDream-I1 Dev", "flux2": "FLUX.2"}[
                 model_key.lower()
             ]
             return int(scene), int(beat or 1), model_name
@@ -2209,6 +2212,7 @@ class MainWindow(QMainWindow):
             ("schnell", "Schnell"),
             ("zimage", "Z-Image Turbo"),
             ("dev", "Dev"),
+            ("hidream", "HiDream-I1 Dev"),
             ("flux2", "FLUX.2"),
         ):
             model_page = QWidget()
@@ -2327,7 +2331,7 @@ class MainWindow(QMainWindow):
             "enabled_image_models", ["schnell", "dev", "flux2"]
         )
         return [
-            key for key in ("schnell", "zimage", "dev", "flux2")
+            key for key in ("schnell", "zimage", "dev", "hidream", "flux2")
             if key in configured
         ]
 
@@ -2342,8 +2346,9 @@ class MainWindow(QMainWindow):
         enabled = set(self._enabled_model_keys())
         definitions = (
             ("schnell", "FLUX Schnell", "Preview Images + Lightbox"),
-            ("zimage", "Z-Image Turbo", "Preview Images"),
+            ("zimage", "Z-Image Turbo", "Preview Images + Lightbox"),
             ("dev", "FLUX Dev", "Lightbox / Final Images"),
+            ("hidream", "HiDream-I1 Dev", "Lightbox / Final Images"),
             ("flux2", "FLUX.2", "Lightbox / Final Images"),
         )
         checkboxes = {}
@@ -2353,6 +2358,11 @@ class MainWindow(QMainWindow):
             if key == "zimage":
                 checkbox.setToolTip(
                     "Requires z_image_turbo_bf16.safetensors, qwen_3_4b.safetensors, "
+                    "and ae.safetensors in ComfyUI"
+                )
+            elif key == "hidream":
+                checkbox.setToolTip(
+                    "Requires hidream_i1_dev_fp8.safetensors, four HiDream text encoders, "
                     "and ae.safetensors in ComfyUI"
                 )
             checkboxes[key] = checkbox
@@ -2384,7 +2394,7 @@ class MainWindow(QMainWindow):
             return
         enabled = set(self._enabled_model_keys())
         tab_bar = self._prompt_model_tabs.tabBar()
-        model_keys = ("schnell", "zimage", "dev", "flux2")
+        model_keys = ("schnell", "zimage", "dev", "hidream", "flux2")
         for index in range(self._prompt_model_tabs.count()):
             self._prompt_model_tabs.setTabEnabled(index, True)
             color = "#9FD6B8" if model_keys[index] in enabled else "#8E8B90"
@@ -2684,7 +2694,7 @@ class MainWindow(QMainWindow):
         if os.path.isdir(lightbox_dir):
             for filename in os.listdir(lightbox_dir):
                 match = re.match(
-                    r"^scene_(\d+)_(schnell|zimage|dev|flux2)_b(\d+)_v\d+\.(?:png|jpg|jpeg)$",
+                    r"^scene_(\d+)_(schnell|zimage|dev|hidream|flux2)_b(\d+)_v\d+\.(?:png|jpg|jpeg)$",
                     filename,
                     re.IGNORECASE,
                 )
@@ -2694,7 +2704,7 @@ class MainWindow(QMainWindow):
                     )
                     continue
                 legacy_match = re.match(
-                    r"^scene_(\d+)_(schnell|zimage|dev|flux2)_v\d+\.(?:png|jpg|jpeg)$",
+                    r"^scene_(\d+)_(schnell|zimage|dev|hidream|flux2)_v\d+\.(?:png|jpg|jpeg)$",
                     filename,
                     re.IGNORECASE,
                 )
@@ -2744,7 +2754,7 @@ class MainWindow(QMainWindow):
                         and (model_key, sid, beat_index) in saved_preview_beats
                     )
                     has_lightbox = (
-                        model_key in ("dev", "flux2")
+                        model_key in ("schnell", "zimage", "dev", "hidream", "flux2")
                         and (model_key, sid, beat_index) in saved_lightbox_beats
                     )
                     has_saved_image = has_preview or has_lightbox
@@ -2776,7 +2786,7 @@ class MainWindow(QMainWindow):
                 cards_layout.insertWidget(cards_layout.count() - 1, card)
 
         self._prompts_status_label.setText(
-            f"{len(scenes)} scene(s). Build Prompts generates all three profiles; click a card to edit beats."
+            f"{len(scenes)} scene(s). Build Prompts generates every enabled model profile; click a card to edit beats."
         )
 
     def _edit_model_prompts(self, scene_id: int, model_key: str) -> None:
@@ -5103,6 +5113,8 @@ class MainWindow(QMainWindow):
             "flux2_guidance": self.flux2_guidance_input.value(),
             "zimage_steps": int(self.controller.config.get("zimage_steps", 9)),
             "zimage_guidance": float(self.controller.config.get("zimage_guidance", 0.0)),
+            "hidream_steps": int(self.controller.config.get("hidream_steps", 28)),
+            "hidream_guidance": float(self.controller.config.get("hidream_guidance", 1.0)),
             "enabled_image_models": self._enabled_model_keys(),
             "guidance_scale": self.schnell_guidance_input.value(),  # compat
             "num_inference_steps": self.schnell_steps_input.value(),  # compat

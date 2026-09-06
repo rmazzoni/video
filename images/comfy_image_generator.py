@@ -13,12 +13,22 @@ WORKFLOWS = {
     "flux-schnell": "flux1_schnell_image.json",
     "zimage-turbo": "zimage_turbo_image.json",
     "flux-dev": "flux1_dev_image.json",
+    "hidream-dev": "hidream_i1_dev_image.json",
     "flux2": "flux2_image.json",
 }
 
 ZIMAGE_REQUIREMENTS = (
     ("UNETLoader", "unet_name", "z_image_turbo_bf16.safetensors", "models/diffusion_models"),
     ("CLIPLoader", "clip_name", "qwen_3_4b.safetensors", "models/text_encoders"),
+    ("VAELoader", "vae_name", "ae.safetensors", "models/vae"),
+)
+
+HIDREAM_REQUIREMENTS = (
+    ("UNETLoader", "unet_name", "hidream_i1_dev_fp8.safetensors", "models/diffusion_models"),
+    ("QuadrupleCLIPLoader", "clip_name1", "clip_l_hidream.safetensors", "models/text_encoders"),
+    ("QuadrupleCLIPLoader", "clip_name2", "clip_g_hidream.safetensors", "models/text_encoders"),
+    ("QuadrupleCLIPLoader", "clip_name3", "t5xxl_fp8_e4m3fn_scaled.safetensors", "models/text_encoders"),
+    ("QuadrupleCLIPLoader", "clip_name4", "llama_3.1_8b_instruct_fp8_scaled.safetensors", "models/text_encoders"),
     ("VAELoader", "vae_name", "ae.safetensors", "models/vae"),
 )
 
@@ -59,11 +69,16 @@ class ComfyImageGenerator:
         os.makedirs(output_dir, exist_ok=True)
 
     def _validate_required_models(self) -> None:
-        if self.model_type != "zimage-turbo":
+        requirements = {
+            "zimage-turbo": ("Z-Image Turbo", ZIMAGE_REQUIREMENTS),
+            "hidream-dev": ("HiDream-I1 Dev", HIDREAM_REQUIREMENTS),
+        }.get(self.model_type)
+        if requirements is None:
             return
+        display_name, model_requirements = requirements
         object_info = self.client.get_object_info()
         missing = []
-        for node_name, input_name, filename, folder in ZIMAGE_REQUIREMENTS:
+        for node_name, input_name, filename, folder in model_requirements:
             try:
                 available = object_info[node_name]["input"]["required"][input_name][0]
             except (KeyError, IndexError, TypeError):
@@ -72,7 +87,7 @@ class ComfyImageGenerator:
                 missing.append(f"{filename} -> ComfyUI/{folder}/")
         if missing:
             raise FileNotFoundError(
-                "Z-Image Turbo is enabled but required ComfyUI model files are missing:\n"
+                f"{display_name} is enabled but required ComfyUI model files are missing:\n"
                 + "\n".join(f"- {item}" for item in missing)
                 + "\nInstall the files, then restart or refresh ComfyUI before retrying."
             )
