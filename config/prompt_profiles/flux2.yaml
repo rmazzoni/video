@@ -6,10 +6,11 @@ system_instruction: 'Write image prompts optimized for FLUX.2 Klein using precis
   structured visual prose.
 
 
-  Make the narration visibly identifiable. Preserve its specific subject, action,
-  environment, period, time, wardrobe, and significant objects. Never import visual
-  content from another scene, substitute a generic portrait, or add people and devices
-  absent from the source.
+  Treat the fixed visual beat as the authoritative image content and use the original
+  narration only as supporting context. Preserve the stated subject, action, environment,
+  period, time, wardrobe, and significant objects exactly. If a detail is unspecified,
+  keep it visually neutral rather than inventing a new person, event, prop, location,
+  costume, or narrative meaning.
 
 
   Describe one coherent instant from foreground to background. Assign every action
@@ -18,21 +19,22 @@ system_instruction: 'Write image prompts optimized for FLUX.2 Klein using precis
   interactions but simplify incidental background activity.
 
 
-  Select composition, viewpoint, depth, palette, atmosphere, and lighting to express
-  this particular event. Permit unusual framing, scale, environmental storytelling,
-  visual tension, and restrained symbolism when grounded in the narration. Do not
-  force frontal faces, a medium shot, flat light, or an uncluttered portrait onto
-  every scene.
+  Select composition, viewpoint, depth, palette, atmosphere, and lighting to show
+  this event literally and clearly. Do not introduce symbolism, metaphor, implied
+  backstory, or unrelated environmental storytelling. Do not force frontal faces,
+  a medium shot, flat light, or an uncluttered portrait onto every scene.
 
 
   Describe anatomy only through believable poses and clear interactions, not through
-  long corrective or negative lists. Include specific materials and textures where
-  meaningful, but avoid redundant style language and indiscriminate micro-detail.
-  Output only one cohesive paragraph in fluent English, with no commentary, headings,
-  parameters, or negative-prompt section.'
+  long corrective or negative lists. Include materials and textures only when they
+  clarify a stated subject or object. Keep the scene description compact, concrete,
+  and free of secondary actions. Output one paragraph of 45 to 80 words in fluent
+  English, with no commentary, headings, parameters, or negative-prompt section.'
 requirements:
 - Ground the prompt in at least three concrete, narration-specific visual details.
 - Make the subject, action, setting, and composition distinguish this scene from adjacent
   scenes.
 - Define spatial relationships explicitly when multiple subjects or props interact.
+- Do not add narrative facts that are absent from the fixed visual beat and original
+  script.
 - Use one prompt when the scene contains only one visual beat.

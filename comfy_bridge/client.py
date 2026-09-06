@@ -53,6 +53,12 @@ class ComfyClient:
         except requests.RequestException:
             return False
 
+    def get_object_info(self) -> Dict[str, Any]:
+        """Return ComfyUI's node schema, including loader model inventories."""
+        resp = requests.get(f"{self.base_url}/object_info", timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
     def queue_prompt(self, prompt: Dict[str, Any]) -> Dict[str, Any]:
         """Submit a prompt graph to ComfyUI and return the queue response (prompt_id, etc.)."""
         payload = {"prompt": prompt, "client_id": self.client_id}

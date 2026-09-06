@@ -11,6 +11,7 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
         "fallback_preset": "cinematic",
         "prompt_anchors": {
             "schnell": "Cinematic photograph, natural materials, photographic lighting and depth.",
+            "zimage": "Cinematic photograph, natural materials, photographic depth, motivated light.",
             "dev": "Cinematic photography, realistic materials, optical depth, motivated natural light.",
             "flux2": "Cinematic photograph with realistic surfaces, optical depth, and motivated lighting.",
         },
@@ -21,6 +22,12 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "and lighting. Favor one readable action and a strong silhouette or focal point, "
                 "but do not reduce every scene to a centered portrait. Use dramatic light, deep "
                 "space, environmental texture, and unusual angles when supported by the narration."
+            ),
+            "zimage": (
+                "Use concise cinematic photographic language with a strong readable composition, "
+                "specific natural materials, motivated light, and clear spatial relationships. "
+                "Let the narration determine camera distance and atmosphere. Preserve literal "
+                "subject identity and action rather than substituting an attractive generic scene."
             ),
             "dev": (
                 "Use expressive cinematic photography with deliberate visual hierarchy. Choose "
@@ -46,6 +53,10 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "Cinematic editorial illustration, visibly hand-painted, flat designed shapes, "
                 "simplified forms, limited color palette; not a photograph."
             ),
+            "zimage": (
+                "Cinematic editorial illustration, visibly painted graphic shapes, controlled "
+                "edges, tactile pigment texture, limited authored palette; not a photograph."
+            ),
             "dev": (
                 "Cinematic editorial illustration, visibly painterly layered shapes, expressive "
                 "brush texture, designed color relationships; not photorealistic."
@@ -62,6 +73,12 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "a limited cohesive palette, and clear value grouping. Keep the composition direct "
                 "and uncluttered for Schnell, with one dominant action and a graphic silhouette. "
                 "Avoid plastic 3D rendering, anime conventions, heavy outlines, and tiny decorative detail."
+            ),
+            "zimage": (
+                "Render as a cinematic editorial illustration with bold designed shapes, natural "
+                "proportions, selective painterly texture, clear value grouping, and an authored "
+                "limited palette. Keep the stated action and spatial relationships literal while "
+                "making the result unmistakably illustrated rather than photographic or 3D."
             ),
             "dev": (
                 "Render as a refined cinematic editorial illustration: natural proportions, "

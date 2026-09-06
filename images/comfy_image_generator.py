@@ -11,9 +11,16 @@ from comfy_bridge.client import ComfyClient
 
 WORKFLOWS = {
     "flux-schnell": "flux1_schnell_image.json",
+    "zimage-turbo": "zimage_turbo_image.json",
     "flux-dev": "flux1_dev_image.json",
     "flux2": "flux2_image.json",
 }
+
+ZIMAGE_REQUIREMENTS = (
+    ("UNETLoader", "unet_name", "z_image_turbo_bf16.safetensors", "models/diffusion_models"),
+    ("CLIPLoader", "clip_name", "qwen_3_4b.safetensors", "models/text_encoders"),
+    ("VAELoader", "vae_name", "ae.safetensors", "models/vae"),
+)
 
 
 class ComfyImageGenerator:
@@ -51,6 +58,25 @@ class ComfyImageGenerator:
         self.workflow = self.client.load_workflow(workflow_path)
         os.makedirs(output_dir, exist_ok=True)
 
+    def _validate_required_models(self) -> None:
+        if self.model_type != "zimage-turbo":
+            return
+        object_info = self.client.get_object_info()
+        missing = []
+        for node_name, input_name, filename, folder in ZIMAGE_REQUIREMENTS:
+            try:
+                available = object_info[node_name]["input"]["required"][input_name][0]
+            except (KeyError, IndexError, TypeError):
+                available = []
+            if filename not in available:
+                missing.append(f"{filename} -> ComfyUI/{folder}/")
+        if missing:
+            raise FileNotFoundError(
+                "Z-Image Turbo is enabled but required ComfyUI model files are missing:\n"
+                + "\n".join(f"- {item}" for item in missing)
+                + "\nInstall the files, then restart or refresh ComfyUI before retrying."
+            )
+
     def generate_image(
         self,
         prompt: str,
@@ -61,6 +87,7 @@ class ComfyImageGenerator:
     ) -> str:
         if not self.client.is_alive():
             raise ConnectionError("ComfyUI is not running or is not reachable.")
+        self._validate_required_models()
         # Clear any stuck/leftover job from a previous (cancelled or timed-out) generation
         # so it can't block this one from ever showing up in /history.
         self.client.reset_stale_state()

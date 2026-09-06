@@ -795,13 +795,11 @@ class MainWindow(QMainWindow):
             }
             QTabBar::tab {
                 background-color: #1D1B20;
-                color: #8E8B90;
                 border: 1px solid #211F26;
                 padding: 6px 14px;
             }
             QTabBar::tab:selected {
                 background-color: #0F0D13;
-                color: #E6E1E5;
                 border-bottom: 2px solid #96BDE2;
             }
             QTabBar::tab:hover { background-color: #2A282F; }
@@ -976,18 +974,18 @@ class MainWindow(QMainWindow):
 
         def _variant_parts(fname: str):
             match = re.match(
-                r"^scene_\d+_(schnell|dev|flux2)_b(\d+)_v(\d+)\.png$", fname, re.IGNORECASE)
+                r"^scene_\d+_(schnell|zimage|dev|flux2)_b(\d+)_v(\d+)\.png$", fname, re.IGNORECASE)
             if match:
                 model_key, beat, variant = match.groups()
                 return model_key.lower(), int(beat), int(variant)
             legacy = re.match(
-                r"^scene_\d+_(schnell|dev|flux2)_v(\d+)\.png$", fname, re.IGNORECASE)
+                r"^scene_\d+_(schnell|zimage|dev|flux2)_v(\d+)\.png$", fname, re.IGNORECASE)
             if legacy:
                 model_key, variant = legacy.groups()
                 return model_key.lower(), 1, int(variant)
             return "other", 999, 999
 
-        model_rank = {"schnell": 0, "dev": 1, "flux2": 2, "other": 3}
+        model_rank = {"schnell": 0, "zimage": 1, "dev": 2, "flux2": 3, "other": 4}
 
         def _variant_order(fname: str):
             model_key, beat, variant = _variant_parts(fname)
@@ -1182,12 +1180,12 @@ class MainWindow(QMainWindow):
         selections: dict = {}
         def _order_key(fname: str):
             match = re.match(
-                r"^scene_\d+_(schnell|dev|flux2)(?:_b(\d+))?_v(\d+)\.png$",
+                r"^scene_\d+_(schnell|zimage|dev|flux2)(?:_b(\d+))?_v(\d+)\.png$",
                 fname, re.IGNORECASE)
             if not match:
-                return 3, 999, 999, fname
+                return 4, 999, 999, fname
             model_key, beat, variant = match.groups()
-            return {"schnell": 0, "dev": 1, "flux2": 2}[model_key.lower()], int(beat or 1), int(variant), fname
+            return {"schnell": 0, "zimage": 1, "dev": 2, "flux2": 3}[model_key.lower()], int(beat or 1), int(variant), fname
 
         for sid, fname_dict in sorted(self._lightbox_checkboxes.items()):
             chosen = [fname for fname in sorted(fname_dict.keys(), key=_order_key)
@@ -1343,13 +1341,13 @@ class MainWindow(QMainWindow):
 
         def _image_metadata(path: str):
             match = re.match(
-                r"^scene_(\d+)_(schnell|dev|flux2)(?:_b(\d+))?_v\d+\.png$",
+                r"^scene_(\d+)_(schnell|zimage|dev|flux2)(?:_b(\d+))?_v\d+\.png$",
                 os.path.basename(path), re.IGNORECASE,
             )
             if not match:
                 return None
             scene, model_key, beat = match.groups()
-            model_name = {"schnell": "Schnell", "dev": "DEV", "flux2": "FLUX.2"}[
+            model_name = {"schnell": "Schnell", "zimage": "Z-Image Turbo", "dev": "DEV", "flux2": "FLUX.2"}[
                 model_key.lower()
             ]
             return int(scene), int(beat or 1), model_name
@@ -1439,8 +1437,11 @@ class MainWindow(QMainWindow):
             scene_id = int(fname.split("_")[1].split(".")[0])
         except Exception:
             scene_id = None
-        beat_match = re.search(r"_schnell_b(\d+)_v\d+\.png$", fname, re.IGNORECASE)
-        beat_index = int(beat_match.group(1)) if beat_match else 1
+        beat_match = re.search(
+            r"_(schnell|zimage)_b(\d+)_v\d+\.png$", fname, re.IGNORECASE
+        )
+        preview_model_key = beat_match.group(1).lower() if beat_match else "schnell"
+        beat_index = int(beat_match.group(2)) if beat_match else 1
 
         project = self.project_path_input.text().strip()
         scenes_yaml  = os.path.join(project, "output", "scenes.yaml")
@@ -1464,7 +1465,7 @@ class MainWindow(QMainWindow):
         prompts: dict = {}
         overrides: dict = {}
         model_prompts: dict = {}
-        schnell_row = None
+        model_row = None
         current_prompt = ""
         if scene_id is not None and os.path.exists(prompts_yaml):
             try:
@@ -1478,20 +1479,20 @@ class MainWindow(QMainWindow):
                     Path(model_prompts_yaml).read_text(encoding="utf-8")
                 ) or {}
                 scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
-                schnell_rows = scene_entry.get("models", {}).get("schnell", {}).get("prompts", [])
-                schnell_row = next(
-                    (row for row in schnell_rows
+                model_rows = scene_entry.get("models", {}).get(preview_model_key, {}).get("prompts", [])
+                model_row = next(
+                    (row for row in model_rows
                      if isinstance(row, dict) and int(row.get("beat", 0)) == beat_index),
                     None,
                 )
-                if schnell_row is not None:
-                    current_prompt = str(schnell_row.get("text", "")).strip() or current_prompt
+                if model_row is not None:
+                    current_prompt = str(model_row.get("text", "")).strip() or current_prompt
             except Exception:
-                schnell_row = None
+                model_row = None
         if scene_id is not None and os.path.exists(overrides_yaml):
             try:
                 overrides = yaml.safe_load(Path(overrides_yaml).read_text(encoding="utf-8")) or {}
-                if schnell_row is None:
+                if model_row is None:
                     current_prompt = (overrides.get(scene_id) or overrides.get(str(scene_id))
                                       or current_prompt)
             except Exception:
@@ -1657,9 +1658,9 @@ class MainWindow(QMainWindow):
             if scene_id is None:
                 return False
             try:
-                if schnell_row is not None:
-                    schnell_row["text"] = new_prompt
-                    schnell_row["source"] = "manually_edited"
+                if model_row is not None:
+                    model_row["text"] = new_prompt
+                    model_row["source"] = "manually_edited"
                     model_prompts[scene_id] = model_prompts.get(scene_id) or model_prompts.pop(
                         str(scene_id), {}
                     )
@@ -1806,7 +1807,7 @@ class MainWindow(QMainWindow):
             self.controller.run_pipeline("final_images", {
                 "lightbox_scene_id": scene_id,
                 "lightbox_beat_index": beat_index,
-                "lightbox_model_key": "schnell",
+                "lightbox_model_key": preview_model_key,
                 "force_lightbox_update": True,
             })
 
@@ -1931,9 +1932,11 @@ class MainWindow(QMainWindow):
             card_layout.addWidget(img_label)
 
             text_block = QVBoxLayout()
-            beat_match = re.search(r"_schnell_b(\d+)_v(\d+)\.", fname, re.IGNORECASE)
+            beat_match = re.search(
+                r"_(schnell|zimage)_b(\d+)_v(\d+)\.", fname, re.IGNORECASE
+            )
             image_detail = (
-                f" | Beat {int(beat_match.group(1))} | Seed {int(beat_match.group(2))}"
+                f" | {beat_match.group(1).title()} | Beat {int(beat_match.group(2))}"
                 if beat_match else ""
             )
             id_lbl = QLabel(f"Scene {scene_id}{image_detail}")
@@ -2173,10 +2176,16 @@ class MainWindow(QMainWindow):
         for key, label in visual_style_choices().items():
             self._visual_style_combo.addItem(label, key)
         self._visual_style_combo.setToolTip(
-            "Applies one coordinated visual style, tuned separately for Schnell, Dev, and FLUX.2."
+            "Applies one coordinated visual style, tuned separately for every enabled model."
         )
         self._visual_style_combo.currentIndexChanged.connect(self._on_visual_style_selected)
         style_bar.addWidget(self._visual_style_combo, 1)
+        btn_configure_models = QPushButton("Configure Models...")
+        btn_configure_models.setToolTip(
+            "Choose which models generate prompts and images in Preview and Lightbox stages"
+        )
+        btn_configure_models.clicked.connect(self._open_model_configuration)
+        style_bar.addWidget(btn_configure_models)
         root.addLayout(style_bar)
 
         profile_bar = QHBoxLayout()
@@ -2184,7 +2193,7 @@ class MainWindow(QMainWindow):
         self._project_profile_combo = QComboBox()
         self._project_profile_combo.setToolTip(
             "Geographic, historical, or stylistic constraints appended to every model's "
-            "Qwen instructions (applies uniformly to Schnell, Dev, and FLUX.2)."
+            "Qwen instructions."
         )
         self._project_profile_combo.currentIndexChanged.connect(self._on_project_profile_selected)
         profile_bar.addWidget(self._project_profile_combo, 1)
@@ -2196,7 +2205,12 @@ class MainWindow(QMainWindow):
         self._prompt_model_tabs = QTabWidget()
         self._prompt_model_layouts = {}
         self._prompt_profile_editors = {}
-        for model_key, title in (("schnell", "Schnell"), ("dev", "Dev"), ("flux2", "FLUX.2")):
+        for model_key, title in (
+            ("schnell", "Schnell"),
+            ("zimage", "Z-Image Turbo"),
+            ("dev", "Dev"),
+            ("flux2", "FLUX.2"),
+        ):
             model_page = QWidget()
             model_layout = QVBoxLayout(model_page)
             profile_label = QLabel("Qwen instructions")
@@ -2307,6 +2321,74 @@ class MainWindow(QMainWindow):
     def _on_visual_style_selected(self, _index: int) -> None:
         key = str(self._visual_style_combo.currentData() or "cinematic")
         self.controller.update_setting("visual_style", key)
+
+    def _enabled_model_keys(self) -> list:
+        configured = self.controller.config.get(
+            "enabled_image_models", ["schnell", "dev", "flux2"]
+        )
+        return [
+            key for key in ("schnell", "zimage", "dev", "flux2")
+            if key in configured
+        ]
+
+    def _open_model_configuration(self) -> None:
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Configure Image Models")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Enabled models participate in Qwen prompt generation and their image stage."))
+
+        enabled = set(self._enabled_model_keys())
+        definitions = (
+            ("schnell", "FLUX Schnell", "Preview Images + Lightbox"),
+            ("zimage", "Z-Image Turbo", "Preview Images"),
+            ("dev", "FLUX Dev", "Lightbox / Final Images"),
+            ("flux2", "FLUX.2", "Lightbox / Final Images"),
+        )
+        checkboxes = {}
+        for key, label, stage in definitions:
+            checkbox = QCheckBox(f"{label}  -  {stage}")
+            checkbox.setChecked(key in enabled)
+            if key == "zimage":
+                checkbox.setToolTip(
+                    "Requires z_image_turbo_bf16.safetensors, qwen_3_4b.safetensors, "
+                    "and ae.safetensors in ComfyUI"
+                )
+            checkboxes[key] = checkbox
+            layout.addWidget(checkbox)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        layout.addWidget(buttons)
+
+        def _save() -> None:
+            selected = [key for key, checkbox in checkboxes.items() if checkbox.isChecked()]
+            if not any(key in selected for key in ("schnell", "zimage")):
+                QMessageBox.warning(
+                    dialog, "Preview model required",
+                    "Enable Schnell or Z-Image Turbo for Preview Images.",
+                )
+                return
+            self.controller.update_setting("enabled_image_models", selected)
+            self._apply_enabled_model_tabs()
+            dialog.accept()
+
+        buttons.accepted.connect(_save)
+        buttons.rejected.connect(dialog.reject)
+        dialog.exec()
+
+    def _apply_enabled_model_tabs(self) -> None:
+        if not hasattr(self, "_prompt_model_tabs"):
+            return
+        enabled = set(self._enabled_model_keys())
+        tab_bar = self._prompt_model_tabs.tabBar()
+        model_keys = ("schnell", "zimage", "dev", "flux2")
+        for index in range(self._prompt_model_tabs.count()):
+            self._prompt_model_tabs.setTabEnabled(index, True)
+            color = "#9FD6B8" if model_keys[index] in enabled else "#8E8B90"
+            tab_bar.setTabTextColor(index, QColor(color))
 
     def _open_project_profiles_dialog(self) -> None:
         from PyQt6.QtWidgets import QDialog, QListWidget, QListWidgetItem, QCheckBox
@@ -2583,12 +2665,14 @@ class MainWindow(QMainWindow):
         if os.path.isdir(draft_dir):
             for filename in os.listdir(draft_dir):
                 match = re.match(
-                    r"^scene_(\d+)_schnell_b(\d+)_v\d+\.(?:png|jpg|jpeg)$",
+                    r"^scene_(\d+)_(schnell|zimage)_b(\d+)_v\d+\.(?:png|jpg|jpeg)$",
                     filename,
                     re.IGNORECASE,
                 )
                 if match:
-                    saved_preview_beats.add((int(match.group(1)), int(match.group(2))))
+                    saved_preview_beats.add(
+                        (match.group(2).lower(), int(match.group(1)), int(match.group(3)))
+                    )
                     continue
                 legacy_match = re.match(
                     r"^scene_(\d+)\.(?:png|jpg|jpeg)$", filename, re.IGNORECASE)
@@ -2600,7 +2684,7 @@ class MainWindow(QMainWindow):
         if os.path.isdir(lightbox_dir):
             for filename in os.listdir(lightbox_dir):
                 match = re.match(
-                    r"^scene_(\d+)_(dev|flux2)_b(\d+)_v\d+\.(?:png|jpg|jpeg)$",
+                    r"^scene_(\d+)_(schnell|zimage|dev|flux2)_b(\d+)_v\d+\.(?:png|jpg|jpeg)$",
                     filename,
                     re.IGNORECASE,
                 )
@@ -2610,7 +2694,7 @@ class MainWindow(QMainWindow):
                     )
                     continue
                 legacy_match = re.match(
-                    r"^scene_(\d+)_(dev|flux2)_v\d+\.(?:png|jpg|jpeg)$",
+                    r"^scene_(\d+)_(schnell|zimage|dev|flux2)_v\d+\.(?:png|jpg|jpeg)$",
                     filename,
                     re.IGNORECASE,
                 )
@@ -2655,7 +2739,10 @@ class MainWindow(QMainWindow):
                 for index, row in enumerate(rows, 1):
                     text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
                     beat_index = int(row.get("beat", index)) if isinstance(row, dict) else index
-                    has_preview = model_key == "schnell" and (sid, beat_index) in saved_preview_beats
+                    has_preview = (
+                        model_key in ("schnell", "zimage")
+                        and (model_key, sid, beat_index) in saved_preview_beats
+                    )
                     has_lightbox = (
                         model_key in ("dev", "flux2")
                         and (model_key, sid, beat_index) in saved_lightbox_beats
@@ -2787,9 +2874,10 @@ class MainWindow(QMainWindow):
         visual_beat = str(row.get("visual_beat") or scene.get("text", ""))
         generated_prompt = str(row.get("generated_prompt") or row.get("text", ""))
         lightbox_dir = os.path.join(project, "output", "lightbox")
+        is_preview_model = model_key in ("schnell", "zimage")
         preview_dir = (
             os.path.join(project, "output", "draft")
-            if model_key == "schnell" else lightbox_dir
+            if is_preview_model else lightbox_dir
         )
         preview_candidates = [
             os.path.join(preview_dir, f"scene_{scene_id:03d}_{model_key}_b{beat_index:02d}_v{variant}.png")
@@ -2926,10 +3014,10 @@ class MainWindow(QMainWindow):
         generate_image = QPushButton("Generate Image")
         update_lightbox = QPushButton("Update Lightbox")
         update_lightbox.setToolTip(
-            "Save this prompt and regenerate its three Lightbox variants"
+            "Save this prompt and regenerate its image output"
         )
         save_image = QPushButton(
-            "Save in Preview" if model_key == "schnell" else "Save in Lightbox")
+            "Save in Preview" if is_preview_model else "Save in Lightbox")
         save_image.setEnabled(False)
         actions.addWidget(cancel)
         actions.addWidget(regenerate)
@@ -3018,7 +3106,7 @@ class MainWindow(QMainWindow):
                     for variant in (1, 2, 3)
                 }
                 for filename in invalidated:
-                    path = os.path.join(lightbox_dir, filename)
+                    path = os.path.join(preview_dir, filename)
                     if os.path.exists(path):
                         os.remove(path)
                 selections_path = os.path.join(project, "output", "lightbox_selections.yaml")
@@ -3072,6 +3160,12 @@ class MainWindow(QMainWindow):
                 return
             _set_image_running(False)
             if not success:
+                missing_models_prefix = "[missing-models]\n"
+                if payload.startswith(missing_models_prefix):
+                    message = payload[len(missing_models_prefix):]
+                    status.setText("Model setup required before image generation.")
+                    QMessageBox.warning(dialog, "Model files missing", message)
+                    return
                 status.setText(f"Image generation failed: {payload}")
                 return
             candidate_state["path"] = payload
@@ -3130,7 +3224,7 @@ class MainWindow(QMainWindow):
                 return
             if not _save(close_dialog=False):
                 return
-            if model_key == "schnell":
+            if is_preview_model:
                 destination_dir = os.path.join(project, "output", "draft")
             else:
                 destination_dir = lightbox_dir
@@ -4915,6 +5009,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Pipeline canceled", payload)
             return
 
+        missing_models_prefix = "[missing-models]\n"
+        if payload.startswith(missing_models_prefix):
+            message = payload[len(missing_models_prefix):]
+            self.pipeline_status_label.setText("Model setup required")
+            self._append_log(f"Model setup required: {message}")
+            QMessageBox.warning(self, "Model files missing", message)
+            return
+
         self.pipeline_status_label.setText("Pipeline failed")
         self._append_log(f"Error: {payload}")
         QMessageBox.critical(self, "Pipeline failed", payload)
@@ -4931,6 +5033,7 @@ class MainWindow(QMainWindow):
             self._visual_style_combo.blockSignals(True)
             self._visual_style_combo.setCurrentIndex(index if index >= 0 else 0)
             self._visual_style_combo.blockSignals(False)
+        self._apply_enabled_model_tabs()
         self.style_preset_input.setCurrentText(str(settings.get("style_preset", "cinematic")))
         self.aspect_ratio_input.setCurrentText(str(settings.get("aspect_ratio", "16:9")))
         self.seed_input.setValue(int(settings.get("seed", 42)))
@@ -4998,6 +5101,9 @@ class MainWindow(QMainWindow):
             "dev_guidance": self.dev_guidance_input.value(),
             "flux2_steps": self.flux2_steps_input.value(),
             "flux2_guidance": self.flux2_guidance_input.value(),
+            "zimage_steps": int(self.controller.config.get("zimage_steps", 9)),
+            "zimage_guidance": float(self.controller.config.get("zimage_guidance", 0.0)),
+            "enabled_image_models": self._enabled_model_keys(),
             "guidance_scale": self.schnell_guidance_input.value(),  # compat
             "num_inference_steps": self.schnell_steps_input.value(),  # compat
             "image_model": "flux-schnell",  # always schnell for preview now

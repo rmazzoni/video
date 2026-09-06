@@ -13,6 +13,7 @@ MODEL_TYPES = {
     "sdxl":          "Stable Diffusion XL",
     "flux-dev":      "FLUX.1-dev  (best quality, ~24 GB)",
     "flux-schnell":  "FLUX.1-schnell  (fast, 4 steps)",
+    "zimage-turbo":  "Z-Image Turbo  (fast preview)",
     "flux2":         "FLUX.2 Klein 4B  (final image variants)",
 }
 

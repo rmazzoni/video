@@ -1,4 +1,3 @@
-import json
 from typing import Dict, List, Optional
 
 from prompts.style_presets import STYLE_PRESETS
@@ -6,25 +5,13 @@ from prompts.style_presets import STYLE_PRESETS
 
 def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: str = "cinematic") -> str:
     """
-    Reformat a plain descriptive prompt for a specific image model.
+    Return prompt prose in the form expected by the image model.
 
-    FLUX.2 (Klein) follows structured prompts more reliably than long free-text
-    sentences (per BFL's official prompting guide), so scene/style/composition
-    are broken out into separate JSON fields. Other models receive the prompt
-    text unchanged.
+    ComfyUI's FLUX.2 CLIPTextEncode node accepts text, not a structured request.
+    Keep the authored prose unchanged so JSON field names and escaped content do
+    not compete with the scene description in the Qwen text encoder.
     """
-    if model_type != "flux2":
-        return prompt_text
-    style_desc = STYLE_PRESETS.get(style_preset, STYLE_PRESETS["cinematic"])
-    payload = {
-        "scene": prompt_text,
-        "style": style_desc,
-        "composition": (
-            "composition and camera distance follow the described scene; preserve its subjects, "
-            "actions, spatial relationships, and focal hierarchy"
-        ),
-    }
-    return json.dumps(payload, ensure_ascii=False)
+    return prompt_text
 
 
 class PromptBuilder:

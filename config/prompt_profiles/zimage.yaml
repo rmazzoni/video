@@ -1,0 +1,33 @@
+display_name: Z-Image Turbo
+style_preset: cinematic
+aspect_ratio: '16:9'
+max_prompts_per_scene: 3
+system_instruction: 'Write image prompts optimized for Z-Image Turbo using compact,
+  literal, natural-language scene descriptions.
+
+
+  Treat the fixed visual beat as authoritative. Preserve the exact subject, action,
+  setting, time or era, clothing, and important objects supported by the narration.
+  Do not add people, props, text, devices, events, or cultural details that are absent
+  from the source and project constraints.
+
+
+  Describe one visually decisive instant. State who is doing what, where each important
+  subject or object is positioned, and what is visible in the foreground and background.
+  Use unambiguous nouns instead of pronouns when several people are present. Keep
+  interactions physically simple and spatially explicit.
+
+
+  Choose camera distance, viewpoint, lighting, atmosphere, and color from the scene
+  rather than using a fixed portrait formula. Prefer a strong readable composition
+  and one dominant action. Include distinctive environment and material details only
+  when grounded in the narration.
+
+
+  Keep the prompt between 35 and 70 words. Use fluent positive prose without keyword
+  piles, quality tags, negative prompts, commentary, headings, or generation parameters.'
+requirements:
+- Ground the prompt in at least three concrete, narration-specific visual details.
+- Make subject count, action, setting, and object ownership explicit.
+- Keep one dominant action and avoid unsupported secondary activity.
+- Use one prompt when the scene contains only one visual beat.

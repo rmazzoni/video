@@ -200,7 +200,20 @@ class PipelineWorker(QObject):
                     visual_style_key=str(self.config.get("visual_style", "cinematic")),
                 )
                 requested_model = str(self.config.get("prompt_model_key", "")).strip().lower()
-                active_models = (requested_model,) if requested_model in MODEL_KEYS else MODEL_KEYS
+                configured_models = self.config.get(
+                    "enabled_image_models", ["schnell", "dev", "flux2"]
+                )
+                enabled_models = tuple(
+                    key for key in MODEL_KEYS
+                    if key in configured_models
+                )
+                active_models = (
+                    (requested_model,)
+                    if requested_model in enabled_models
+                    else enabled_models
+                )
+                if not active_models:
+                    raise ValueError("Enable at least one image model in Prompts > Configure Models.")
                 force_regenerate = bool(self.config.get("force_regenerate_prompts", False))
                 total_scenes = len(scenes)
                 new_count = 0
@@ -293,10 +306,21 @@ class PipelineWorker(QObject):
                         [f"scene_*_{requested_model}_b*_v*.png",
                          f"scene_*_{requested_model}_v*.png"],
                     )
-                    if requested_model == "schnell":
+                    if requested_model in ("schnell", "zimage"):
+                        draft_patterns = [
+                            f"scene_*_{requested_model}_b*_v*.png",
+                            f"scene_*_{requested_model}_b*_v*.jpg",
+                            f"scene_*_{requested_model}_b*_v*.jpeg",
+                        ]
+                        if requested_model == "schnell":
+                            draft_patterns.extend([
+                                "scene_[0-9][0-9][0-9].png",
+                                "scene_[0-9][0-9][0-9].jpg",
+                                "scene_[0-9][0-9][0-9].jpeg",
+                            ])
                         _remove_matching(
                             os.path.join(self.project_path, "output", "draft"),
-                            ["scene_*.png", "scene_*.jpg", "scene_*.jpeg"],
+                            draft_patterns,
                         )
                         _remove_matching(
                             os.path.join(self.project_path, "output", "draft_clips"),
@@ -389,6 +413,9 @@ class PipelineWorker(QObject):
                 if model_type == "flux-schnell":
                     steps = int(self.config.get("schnell_steps", 4))
                     guidance = float(self.config.get("schnell_guidance", 0.0))
+                elif model_type == "zimage-turbo":
+                    steps = int(self.config.get("zimage_steps", 9))
+                    guidance = float(self.config.get("zimage_guidance", 0.0))
                 elif model_type == "flux-dev":
                     steps = int(self.config.get("dev_steps", 20))
                     guidance = float(self.config.get("dev_guidance", 3.5))
@@ -732,7 +759,12 @@ class PipelineWorker(QObject):
                 beat_index = int(self.config.get("preview_beat_index", 1))
                 model_key = str(self.config.get("preview_model_key", "schnell")).strip().lower()
                 prompt = str(self.config.get("preview_prompt", "")).strip()
-                model_types = {"schnell": "flux-schnell", "dev": "flux-dev", "flux2": "flux2"}
+                model_types = {
+                    "schnell": "flux-schnell",
+                    "zimage": "zimage-turbo",
+                    "dev": "flux-dev",
+                    "flux2": "flux2",
+                }
                 if scene_id <= 0 or beat_index <= 0 or model_key not in model_types or not prompt:
                     raise ValueError("Invalid prompt image candidate parameters.")
 
@@ -767,7 +799,7 @@ class PipelineWorker(QObject):
 
             if stage == "preview_images":
                 self._check_cancel()
-                self._emit_progress(10, "Generating preview images (FLUX schnell)")
+                self._emit_progress(10, "Generating preview images")
 
                 # Load scenes from scenes.yaml
                 if os.path.exists(scenes_path):
@@ -792,10 +824,10 @@ class PipelineWorker(QObject):
                     with open(model_prompts_path, "r", encoding="utf-8") as fh:
                         model_prompts = yaml.safe_load(fh) or {}
 
-                def _schnell_rows(scene):
+                def _preview_rows(scene, model_key):
                     sid = int(scene["id"])
                     scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
-                    model_entry = scene_entry.get("models", {}).get("schnell", {})
+                    model_entry = scene_entry.get("models", {}).get(model_key, {})
                     rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
                     usable = [
                         row for row in rows
@@ -808,19 +840,52 @@ class PipelineWorker(QObject):
                                 or scene.get("text", ""))
                     return [{"beat": 1, "text": fallback}]
 
+                enabled_models = self.config.get(
+                    "enabled_image_models", ["schnell", "dev", "flux2"]
+                )
+                preview_models = [
+                    ("flux-schnell", "schnell"),
+                    ("zimage-turbo", "zimage"),
+                ]
+                preview_models = [item for item in preview_models if item[1] in enabled_models]
+                target_scene = int(self.config.get("preview_scene_id", 0))
+                target_beat = int(self.config.get("preview_beat_index", 0))
+                target_model = str(self.config.get("preview_model_key", "")).strip().lower()
+                force_target_update = bool(self.config.get("force_preview_update", False))
+                if target_model:
+                    preview_models = [item for item in preview_models if item[1] == target_model]
+                if not preview_models:
+                    raise ValueError(
+                        "Enable Schnell or Z-Image Turbo in Prompts > Configure Models."
+                    )
+
                 preview_work = []
-                for scene in scenes:
-                    sid = int(scene["id"])
-                    for row_index, row in enumerate(_schnell_rows(scene), 1):
-                        beat_idx = int(row.get("beat", row_index))
-                        output_path = os.path.join(
-                            draft_dir, f"scene_{sid:03d}_schnell_b{beat_idx:02d}_v2.png")
-                        legacy_path = os.path.join(draft_dir, f"scene_{sid:03d}.png")
-                        if beat_idx == 1 and not os.path.exists(output_path) and os.path.exists(legacy_path):
-                            shutil.copy2(legacy_path, output_path)
-                            self.log.emit(f"Scene {sid} beat 1: migrated legacy preview image.")
-                        if not os.path.exists(output_path):
-                            preview_work.append((sid, beat_idx, str(row["text"]).strip()))
+                for model_type, model_key in preview_models:
+                    for scene in scenes:
+                        sid = int(scene["id"])
+                        if target_scene and sid != target_scene:
+                            continue
+                        for row_index, row in enumerate(_preview_rows(scene, model_key), 1):
+                            beat_idx = int(row.get("beat", row_index))
+                            if target_beat and beat_idx != target_beat:
+                                continue
+                            output_path = os.path.join(
+                                draft_dir,
+                                f"scene_{sid:03d}_{model_key}_b{beat_idx:02d}_v2.png",
+                            )
+                            if force_target_update and os.path.exists(output_path):
+                                os.remove(output_path)
+                            legacy_path = os.path.join(draft_dir, f"scene_{sid:03d}.png")
+                            if (model_key == "schnell" and beat_idx == 1
+                                    and not os.path.exists(output_path)
+                                    and os.path.exists(legacy_path)):
+                                shutil.copy2(legacy_path, output_path)
+                                self.log.emit(f"Scene {sid} beat 1: migrated legacy preview image.")
+                            if not os.path.exists(output_path):
+                                preview_work.append((
+                                    model_type, model_key, sid, beat_idx,
+                                    str(row["text"]).strip(),
+                                ))
 
                 if not preview_work:
                     self.log.emit("All preview images already exist â€” skipping.")
@@ -854,23 +919,34 @@ class PipelineWorker(QObject):
                     except Exception as _e:
                         self.log.emit(f"Ollama unload skipped ({_e})")
 
-                image_gen = _make_image_gen("flux-schnell", draft_dir)
                 total = len(preview_work)
-                for idx, (sid, beat_idx, prompt) in enumerate(preview_work, 1):
-                    self._check_cancel()
-                    self.log.emit(f"Scene {sid} beat {beat_idx}: generating preview imageâ€¦")
-                    image_gen.generate_image(
-                        prompt,
-                        sid,
-                        seed_override=int(self.config.get("seed", 42)),
-                        filename_suffix=f"_schnell_b{beat_idx:02d}_v2",
-                        cancel_check=lambda: self._cancel_requested,
-                    )
-                    self._emit_progress(10 + int((idx / total) * 85), f"Preview image {idx}/{total}")
-
-                _log_vram("before preview_images unload")
-                image_gen.unload()
-                _log_vram("after preview_images unload")
+                done = 0
+                for model_type, model_key in preview_models:
+                    model_work = [item for item in preview_work if item[1] == model_key]
+                    if not model_work:
+                        continue
+                    image_gen = _make_image_gen(model_type, draft_dir)
+                    try:
+                        for _type, _key, sid, beat_idx, prompt in model_work:
+                            self._check_cancel()
+                            self.log.emit(
+                                f"Scene {sid} [{model_key} beat {beat_idx}]: generating preview image..."
+                            )
+                            image_gen.generate_image(
+                                prompt,
+                                sid,
+                                seed_override=int(self.config.get("seed", 42)),
+                                filename_suffix=f"_{model_key}_b{beat_idx:02d}_v2",
+                                cancel_check=lambda: self._cancel_requested,
+                            )
+                            done += 1
+                            self._emit_progress(
+                                10 + int((done / total) * 85), f"Preview image {done}/{total}"
+                            )
+                    finally:
+                        _log_vram(f"before {model_key} preview unload")
+                        image_gen.unload()
+                        _log_vram(f"after {model_key} preview unload")
                 self._emit_progress(100, "Preview images complete")
                 self.finished.emit(True, draft_dir)
                 return
@@ -931,9 +1007,20 @@ class PipelineWorker(QObject):
                 seed_offsets = [-1, 0, 1]
                 model_variants = [
                     ("flux-schnell", "schnell"),
+                    ("zimage-turbo", "zimage"),
                     ("flux-dev",     "dev"),
                     ("flux2",        "flux2"),
                 ]
+                enabled_models = self.config.get(
+                    "enabled_image_models", ["schnell", "dev", "flux2"]
+                )
+                model_variants = [
+                    item for item in model_variants if item[1] in enabled_models
+                ]
+                if not model_variants:
+                    raise ValueError(
+                        "Enable an image model in Prompts > Configure Models for Final Images."
+                    )
                 target_scene = int(self.config.get("lightbox_scene_id", 0))
                 target_beat = int(self.config.get("lightbox_beat_index", 0))
                 target_model = str(self.config.get("lightbox_model_key", "")).strip().lower()
@@ -1186,6 +1273,11 @@ class PipelineWorker(QObject):
 
             self._emit_progress(100, "Stage complete")
             self.finished.emit(True, "")
+        except FileNotFoundError as exc:
+            if "required ComfyUI model files are missing" in str(exc):
+                self.finished.emit(False, f"[missing-models]\n{exc}")
+            else:
+                self.finished.emit(False, str(exc))
         except Exception as exc:
             self.finished.emit(False, str(exc))
 
@@ -1233,6 +1325,9 @@ class PipelineController(QObject):
         "num_inference_steps": 30,
         "schnell_steps": 4,
         "schnell_guidance": 0.0,
+        "zimage_steps": 9,
+        "zimage_guidance": 0.0,
+        "enabled_image_models": ["schnell", "dev", "flux2"],
         "dev_steps": 20,
         "dev_guidance": 3.5,
         "flux2_steps": 4,

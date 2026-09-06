@@ -16,8 +16,13 @@ from prompts.visual_styles import (
 )
 
 
-MODEL_KEYS = ("schnell", "dev", "flux2")
-MODEL_TYPES = {"schnell": "flux-schnell", "dev": "flux-dev", "flux2": "flux2"}
+MODEL_KEYS = ("schnell", "zimage", "dev", "flux2")
+MODEL_TYPES = {
+    "schnell": "flux-schnell",
+    "zimage": "zimage-turbo",
+    "dev": "flux-dev",
+    "flux2": "flux2",
+}
 
 DEV_RESPONSE_SCHEMA = {
     "type": "object",
