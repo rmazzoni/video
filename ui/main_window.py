@@ -5207,17 +5207,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No project", "Load a project first.")
             return
         lightbox_dir = os.path.join(project, "output", "lightbox")
-        if not os.path.isdir(lightbox_dir):
-            QMessageBox.information(self, "No lightbox", "No lightbox folder found.")
-            return
-        files = [f for f in os.listdir(lightbox_dir)
-                 if f.lower().endswith((".png", ".jpg", ".jpeg"))]
-        if not files:
-            QMessageBox.information(self, "No images", "Lightbox folder is already empty.")
+        selections_path = os.path.join(project, "output", "lightbox_selections.yaml")
+        files = ([f for f in os.listdir(lightbox_dir)
+                  if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+                 if os.path.isdir(lightbox_dir) else [])
+        if not files and not os.path.exists(selections_path):
+            QMessageBox.information(self, "No images", "Lightbox is already empty.")
             return
         reply = QMessageBox.question(
             self, "Clear Lightbox",
-            f"Delete {len(files)} lightbox image(s)?\nThey will need to be regenerated with step 8.",
+            f"Delete {len(files)} lightbox image(s) and reset all Final Clips selections?\n"
+            "The images will need to be regenerated with step 8.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -5228,11 +5228,19 @@ class MainWindow(QMainWindow):
                 os.remove(os.path.join(lightbox_dir, f))
             except Exception as exc:
                 errors.append(str(exc))
+        if not errors and os.path.exists(selections_path):
+            try:
+                os.remove(selections_path)
+            except Exception as exc:
+                errors.append(str(exc))
         if errors:
             QMessageBox.warning(self, "Some files not deleted", "\n".join(errors))
         else:
-            self._append_log(f"Cleared {len(files)} lightbox image(s) from output/lightbox/.")
+            self._append_log(
+                f"Cleared {len(files)} lightbox image(s) and reset Final Clips selections."
+            )
             self._refresh_lightbox()
+            self._dub_update_image_badges()
 
     def _clear_draft(self) -> None:
         project = self.project_path_input.text().strip()
