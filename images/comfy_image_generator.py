@@ -107,4 +107,8 @@ class ComfyImageGenerator:
         return destination
 
     def unload(self) -> None:
-        """ComfyUI owns model lifetime; retained for the pipeline generator contract."""
+        """Unload models and cached tensors owned by the external ComfyUI process."""
+        try:
+            self.client.free_memory(unload_models=True)
+        except Exception:
+            pass

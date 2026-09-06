@@ -739,8 +739,12 @@ class PipelineWorker(QObject):
                 candidate_dir = os.path.join(self.project_path, "output", "prompt_candidates")
                 os.makedirs(candidate_dir, exist_ok=True)
                 model_type = model_types[model_key]
+                from prompts.visual_styles import visual_style_fallback_preset
+                style_preset = visual_style_fallback_preset(
+                    str(self.config.get("visual_style", "cinematic"))
+                )
                 effective_prompt = structure_prompt_for_model(
-                    prompt, model_type, str(self.config.get("style_preset", "cinematic")))
+                    prompt, model_type, style_preset)
                 self._emit_progress(10, f"Loading {model_key} for scene {scene_id}, beat {beat_index}")
                 image_gen = _make_image_gen(model_type, candidate_dir)
                 suffix = f"_{model_key}_b{beat_index:02d}_candidate"
@@ -1004,8 +1008,12 @@ class PipelineWorker(QObject):
                     for sid, beat_idx, v_idx, seed_val, row in work:
                         self._check_cancel()
                         prompt = str(row["text"]).strip()
+                        from prompts.visual_styles import visual_style_fallback_preset
+                        style_preset = visual_style_fallback_preset(
+                            str(self.config.get("visual_style", "cinematic"))
+                        )
                         prompt = structure_prompt_for_model(
-                            prompt, model_type, str(self.config.get("style_preset", "cinematic")))
+                            prompt, model_type, style_preset)
                         suffix = f"_{model_key}_b{beat_idx:02d}_v{v_idx}"
                         self.log.emit(
                             f"Scene {sid} [{model_key} beat {beat_idx} v{v_idx} seed={seed_val}]: generating...")

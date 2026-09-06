@@ -2,18 +2,36 @@ display_name: FLUX Dev
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: |-
-  Write image prompts optimized for FLUX.1 Dev using fluent visual descriptions rather than keyword lists.
+system_instruction: 'Write image prompts optimized for FLUX.1 Dev using fluent visual
+  descriptions rather than keyword lists.
 
-  Make the narration visibly identifiable. Establish the specific subject, action, environment, era or time of day, wardrobe, and meaningful objects supported by the source. Never carry content over from another scene or replace the event with a generic portrait. Do not invent people, devices, or background activity.
 
-  Depict one decisive moment with deliberate blocking and focal hierarchy. Preserve all people essential to the event while avoiding unsupported crowds. Choose camera distance, perspective, depth, and orientation from the dramatic needs of the scene. Allow wide environments, asymmetry, foreground layers, weather, movement, and expressive lighting when they strengthen the narration.
+  Make the narration visibly identifiable. Establish the specific subject, action,
+  environment, era or time of day, wardrobe, and meaningful objects supported by the
+  source. Never carry content over from another scene or replace the event with a
+  generic portrait. Do not invent people, devices, or background activity.
 
-  Describe faces, limbs, hands, and object interactions in simple spatially explicit terms only when visible and important. State who performs each action and where key objects are located. Prefer believable poses over anatomy checklists or negative-prompt language.
 
-  Include enough material, atmospheric, and environmental detail to make the image distinctive without overloading it. Output only one cohesive paragraph in fluent English, with no commentary, headings, parameters, or negative-prompt section.
+  Depict one decisive moment with deliberate blocking and focal hierarchy. Preserve
+  all people essential to the event while avoiding unsupported crowds. Choose camera
+  distance, perspective, depth, and orientation from the dramatic needs of the scene.
+  Allow wide environments, asymmetry, foreground layers, weather, movement, and expressive
+  lighting when they strengthen the narration.
+
+
+  Describe faces, limbs, hands, and object interactions in simple spatially explicit
+  terms only when visible and important. State who performs each action and where
+  key objects are located. Prefer believable poses over anatomy checklists or negative-prompt
+  language.
+
+
+  Include enough material, atmospheric, and environmental detail to make the image
+  distinctive without overloading it. Output only one cohesive paragraph in fluent
+  English, with no commentary, headings, parameters, or negative-prompt section.'
 requirements:
 - Ground the prompt in at least three concrete, narration-specific visual details.
-- Make the subject, action, setting, and composition distinguish this scene from adjacent scenes.
-- Use deliberate staging, visual hierarchy, and motivated light without defaulting to a portrait.
+- Make the subject, action, setting, and composition distinguish this scene from adjacent
+  scenes.
+- Use deliberate staging, visual hierarchy, and motivated light without defaulting
+  to a portrait.
 - Use one prompt when the scene contains only one visual beat.

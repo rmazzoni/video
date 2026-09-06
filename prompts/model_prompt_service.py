@@ -12,6 +12,7 @@ from prompts.visual_styles import (
     DEFAULT_VISUAL_STYLE,
     visual_style_fallback_preset,
     visual_style_instruction,
+    visual_style_prompt_anchor,
 )
 
 
@@ -240,6 +241,9 @@ class ModelPromptService:
                     continue
                 clean_prompt = sanitize_generated_prompt(item.get("prompt", ""))
                 if clean_prompt:
+                    anchor = visual_style_prompt_anchor(self.visual_style_key, model_key)
+                    if anchor:
+                        clean_prompt = f"{anchor} {clean_prompt}"
                     prompts.append({
                         "visual_beat": str(item.get("visual_beat", "")).strip() or str(scene["text"]),
                         "prompt": clean_prompt,
@@ -254,6 +258,11 @@ class ModelPromptService:
             default_aspect_ratio=str(profile.get("aspect_ratio", "16:9")),
         )
         prompt = builder.build_prompt(scene)
+        anchor = visual_style_prompt_anchor(
+            self.visual_style_key, str(profile.get("model_key", ""))
+        )
+        if anchor:
+            prompt = f"{anchor} {prompt}"
         prompt = structure_prompt_for_model(prompt, MODEL_TYPES[profile["model_key"]],
                                             str(profile.get("style_preset", "cinematic")))
         return [{"visual_beat": str(scene["text"]), "prompt": prompt}]

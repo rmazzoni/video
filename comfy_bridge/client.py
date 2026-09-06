@@ -84,6 +84,15 @@ class ComfyClient:
         """Drops any pending (not yet started) queue entries left over from a previous run."""
         requests.post(f"{self.base_url}/queue", json={"clear": True}, timeout=10)
 
+    def free_memory(self, unload_models: bool = True) -> None:
+        """Ask ComfyUI to unload models and release its cached GPU memory."""
+        resp = requests.post(
+            f"{self.base_url}/free",
+            json={"unload_models": unload_models, "free_memory": True},
+            timeout=60,
+        )
+        resp.raise_for_status()
+
     def reset_stale_state(self) -> None:
         """
         Best-effort cleanup before starting a new generation: interrupts whatever ComfyUI

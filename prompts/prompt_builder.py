@@ -20,8 +20,8 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
         "scene": prompt_text,
         "style": style_desc,
         "composition": (
-            "characters facing the camera, front or three-quarter view, "
-            "faces clearly visible, medium shot"
+            "composition and camera distance follow the described scene; preserve its subjects, "
+            "actions, spatial relationships, and focal hierarchy"
         ),
     }
     return json.dumps(payload, ensure_ascii=False)

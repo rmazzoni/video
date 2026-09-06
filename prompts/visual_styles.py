@@ -9,6 +9,11 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
     "cinematic": {
         "display_name": "Cinematic",
         "fallback_preset": "cinematic",
+        "prompt_anchors": {
+            "schnell": "Cinematic photograph, natural materials, photographic lighting and depth.",
+            "dev": "Cinematic photography, realistic materials, optical depth, motivated natural light.",
+            "flux2": "Cinematic photograph with realistic surfaces, optical depth, and motivated lighting.",
+        },
         "models": {
             "schnell": (
                 "Use a cinematic photographic language with concrete, economical detail. "
@@ -36,6 +41,20 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
     "cinematic_editorial_illustrator": {
         "display_name": "Cinematic Editorial Illustrator",
         "fallback_preset": "illustration",
+        "prompt_anchors": {
+            "schnell": (
+                "Cinematic editorial illustration, visibly hand-painted, flat designed shapes, "
+                "simplified forms, limited color palette; not a photograph."
+            ),
+            "dev": (
+                "Cinematic editorial illustration, visibly painterly layered shapes, expressive "
+                "brush texture, designed color relationships; not photorealistic."
+            ),
+            "flux2": (
+                "Cinematic editorial illustration, clearly painted surface, controlled graphic "
+                "shapes and edges, authored color palette; unmistakably non-photographic."
+            ),
+        },
         "models": {
             "schnell": (
                 "Render as a cinematic editorial illustration, not a photograph: bold readable "
@@ -80,3 +99,11 @@ def visual_style_instruction(style_key: str, model_key: str) -> str:
 def visual_style_fallback_preset(style_key: str) -> str:
     style = VISUAL_STYLES.get(style_key, VISUAL_STYLES[DEFAULT_VISUAL_STYLE])
     return str(style.get("fallback_preset", "cinematic"))
+
+
+def visual_style_prompt_anchor(style_key: str, model_key: str) -> str:
+    style = VISUAL_STYLES.get(style_key, VISUAL_STYLES[DEFAULT_VISUAL_STYLE])
+    anchors = style.get("prompt_anchors", {})
+    if not isinstance(anchors, dict):
+        return ""
+    return str(anchors.get(model_key, ""))
