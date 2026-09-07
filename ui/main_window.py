@@ -385,6 +385,7 @@ class MainWindow(QMainWindow):
         )
         comfy_host = comfy_config.get("host", "127.0.0.1")
         comfy_port = int(comfy_config.get("port", 8188))
+        self._comfy_base_url = f"http://{comfy_host}:{comfy_port}"
         self._comfy_install_dir = str(comfy_config.get("install_dir", ""))
         self._comfy_python_executable = str(comfy_config.get("python_executable", ""))
         self._comfy_snapshots_dir = os.path.join(config_dir, "comfy_snapshots")
@@ -448,10 +449,15 @@ class MainWindow(QMainWindow):
         run_row = QHBoxLayout()
         self.comfy_run_button = QPushButton("Run Workflow")
         self.comfy_apply_button = QPushButton("Apply to Canvas")
+        self.comfy_apply_api_button = QPushButton("Apply to API")
+        self.comfy_apply_api_button.setToolTip(
+            "Replace the selected Qt API workflow with the current canvas graph"
+        )
         self.comfy_cancel_button = QPushButton("Cancel")
         self.comfy_check_button = QPushButton("Check Connection")
         run_row.addWidget(self.comfy_run_button)
         run_row.addWidget(self.comfy_apply_button)
+        run_row.addWidget(self.comfy_apply_api_button)
         run_row.addWidget(self.comfy_cancel_button)
         run_row.addWidget(self.comfy_check_button)
 
@@ -475,7 +481,7 @@ class MainWindow(QMainWindow):
 
         # Embedded ComfyUI web interface, so the node graph lives inside the app
         self.comfy_web_view = QWebEngineView()
-        self.comfy_web_view.setUrl(QUrl(f"http://{comfy_host}:{comfy_port}"))
+        self.comfy_web_view.setUrl(QUrl(self._comfy_base_url))
         self.comfy_web_view.loadFinished.connect(
             lambda loaded: self._load_comfy_workflow_canvas(
                 self.comfy_workflow_selector.selected_workflow()
@@ -483,7 +489,7 @@ class MainWindow(QMainWindow):
         )
         btn_reload_comfy_ui = QPushButton("Reload ComfyUI Page")
         btn_reload_comfy_ui.clicked.connect(
-            lambda: self.comfy_web_view.setUrl(QUrl(f"http://{comfy_host}:{comfy_port}"))
+            lambda: self.comfy_web_view.setUrl(QUrl(self._comfy_base_url))
         )
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -507,10 +513,9 @@ class MainWindow(QMainWindow):
             self._run_comfy_workflow
         )
         self.comfy_apply_button.clicked.connect(
-            lambda: self._load_comfy_workflow_canvas(
-                self.comfy_workflow_selector.selected_workflow()
-            )
+            self._apply_comfy_params_to_canvas
         )
+        self.comfy_apply_api_button.clicked.connect(self._apply_comfy_canvas_to_api)
         self.comfy_cancel_button.clicked.connect(self.comfy_controller.cancel)
         self.comfy_controller.connection_changed.connect(self.comfy_status.set_connected)
         self.comfy_controller.progress.connect(self.comfy_status.set_progress)
@@ -615,6 +620,222 @@ class MainWindow(QMainWindow):
             self.comfy_workflow_selector.selected_workflow(),
             self._comfy_workflow_params(),
         )
+
+    def _apply_comfy_params_to_canvas(self) -> None:
+        workflow_name = self.comfy_workflow_selector.selected_workflow()
+        try:
+            graph = self.comfy_controller.prepare_workflow(
+                workflow_name, self._comfy_workflow_params()
+            )
+        except Exception as exc:
+            self.comfy_status.append_log(f"Cannot apply parameters: {exc}")
+            return
+
+        graph_json = json.dumps(graph, ensure_ascii=True)
+        app_module_json = json.dumps(f"{self._comfy_base_url}/scripts/app.js")
+        script = f"""
+            (() => {{
+                window.__vidParameterApplyResult = {{ pending: true }};
+                (async () => {{
+                    try {{
+                        const module = await import({app_module_json});
+                        const app = module.app;
+                        if (!app?.graph) throw new Error('ComfyUI graph is not initialized');
+                        const apiGraph = {graph_json};
+                        let updated = 0;
+                        const missingNodes = [];
+                        for (const [nodeId, apiNode] of Object.entries(apiGraph)) {{
+                            const canvasNode = app.graph.getNodeById(Number(nodeId))
+                                || app.graph.getNodeById(nodeId);
+                            if (!canvasNode) {{
+                                missingNodes.push(nodeId);
+                                continue;
+                            }}
+                            for (const [inputName, value] of Object.entries(apiNode.inputs || {{}})) {{
+                                if (value !== null && typeof value === 'object') continue;
+                                const widget = (canvasNode.widgets || []).find(
+                                    item => item.name === inputName
+                                );
+                                if (!widget) continue;
+                                widget.value = value;
+                                if (typeof widget.callback === 'function') {{
+                                    widget.callback(value, app.canvas, canvasNode, widget);
+                                }}
+                                if (inputName === 'seed' || inputName === 'noise_seed') {{
+                                    const control = (widget.linkedWidgets || []).find(
+                                        item => item.name === 'control_after_generate'
+                                    ) || (canvasNode.widgets || []).find(
+                                        item => item.name === 'control_after_generate'
+                                    );
+                                    if (control) control.value = 'fixed';
+                                }}
+                                updated += 1;
+                            }}
+                        }}
+                        app.graph.setDirtyCanvas(true, true);
+                        window.__vidParameterApplyResult = {{ ok: true, updated, missingNodes }};
+                    }} catch (error) {{
+                        window.__vidParameterApplyResult = {{
+                            ok: false,
+                            error: error?.stack || error?.message || String(error)
+                        }};
+                    }}
+                }})();
+                return true;
+            }})()
+        """
+
+        def _started(started) -> None:
+            if not started:
+                self.comfy_status.append_log(
+                    f"Canvas parameter update failed for {workflow_name}: JavaScript did not start"
+                )
+                return
+            attempts = 0
+
+            def _poll() -> None:
+                nonlocal attempts
+                attempts += 1
+                self.comfy_web_view.page().runJavaScript(
+                    "window.__vidParameterApplyResult || null", _applied
+                )
+
+            def _applied(result) -> None:
+                if isinstance(result, dict) and result.get("pending"):
+                    if attempts < 100:
+                        QTimer.singleShot(100, _poll)
+                    else:
+                        self.comfy_status.append_log(
+                            f"Canvas parameter update failed for {workflow_name}: frontend timed out"
+                        )
+                    return
+                self._finish_comfy_parameter_apply(workflow_name, result)
+
+            _poll()
+
+        self.comfy_web_view.page().runJavaScript(script, _started)
+
+    def _finish_comfy_parameter_apply(self, workflow_name: str, result) -> None:
+            if not isinstance(result, dict) or not result.get("ok"):
+                error = result.get("error") if isinstance(result, dict) else result
+                self.comfy_status.append_log(
+                    f"Canvas parameter update failed for {workflow_name}: "
+                    f"{error or 'frontend returned no result'}"
+                )
+                return
+            missing_nodes = result.get("missingNodes") or []
+            if missing_nodes:
+                self.comfy_status.append_log(
+                    f"Canvas layout does not match {workflow_name}; select the workflow "
+                    "again to reload its graph."
+                )
+                return
+            self._save_comfy_parameter_controls()
+            self.comfy_status.append_log(
+                f"Applied {result.get('updated', 0)} parameters without changing canvas layout"
+            )
+
+    def _apply_comfy_canvas_to_api(self) -> None:
+        workflow_name = self.comfy_workflow_selector.selected_workflow()
+        answer = QMessageBox.question(
+            self,
+            "Replace API workflow",
+            f"Replace {workflow_name} with the current ComfyUI canvas?\n\n"
+            "The existing file will be backed up with a .bak suffix.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        app_module_json = json.dumps(f"{self._comfy_base_url}/scripts/app.js")
+        script = f"""
+            (() => {{
+                window.__vidWorkflowExportResult = {{ pending: true }};
+                (async () => {{
+                    try {{
+                        const module = await import({app_module_json});
+                        const result = await module.app.graphToPrompt();
+                        if (!result || !result.output) {{
+                            throw new Error('ComfyUI graphToPrompt returned no API output');
+                        }}
+                        window.__vidWorkflowExportResult = {{
+                            ok: true,
+                            graph: result.output
+                        }};
+                    }} catch (error) {{
+                        window.__vidWorkflowExportResult = {{
+                            ok: false,
+                            error: error?.stack || error?.message || String(error)
+                        }};
+                    }}
+                }})();
+                return true;
+            }})()
+        """
+
+        def _started(started) -> None:
+            if not started:
+                self.comfy_status.append_log(
+                    f"API save failed for {workflow_name}: JavaScript did not start"
+                )
+                return
+            attempts = 0
+
+            def _poll() -> None:
+                nonlocal attempts
+                attempts += 1
+                self.comfy_web_view.page().runJavaScript(
+                    "window.__vidWorkflowExportResult || null", _ready
+                )
+
+            def _ready(result) -> None:
+                if isinstance(result, dict) and result.get("pending"):
+                    if attempts < 100:
+                        QTimer.singleShot(100, _poll)
+                    else:
+                        self.comfy_status.append_log(
+                            f"API save failed for {workflow_name}: frontend timed out"
+                        )
+                    return
+                if not isinstance(result, dict) or not result.get("ok"):
+                    error = result.get("error") if isinstance(result, dict) else result
+                    self.comfy_status.append_log(
+                        f"API save failed for {workflow_name}: "
+                        f"{error or 'frontend returned no result'}"
+                    )
+                    return
+                try:
+                    backup_path, parameter_values = self.comfy_controller.save_canvas_workflow(
+                        workflow_name, result["graph"]
+                    )
+                except Exception as exc:
+                    self.comfy_status.append_log(
+                        f"API save failed for {workflow_name}: {exc}"
+                    )
+                    return
+                controls = {
+                    "prompt": self.comfy_prompt_input.setPlainText,
+                    "seed": self.comfy_seed_input.setValue,
+                    "width": self.comfy_width_input.setValue,
+                    "height": self.comfy_height_input.setValue,
+                    "steps": self.comfy_steps_input.setValue,
+                    "guidance": self.comfy_guidance_input.setValue,
+                    "sampler": self.comfy_sampler_input.setCurrentText,
+                    "scheduler": self.comfy_scheduler_input.setCurrentText,
+                    "shift": self.comfy_shift_input.setValue,
+                }
+                for key, value in parameter_values.items():
+                    setter = controls.get(key)
+                    if setter is not None:
+                        setter(value)
+                self._save_comfy_parameter_controls()
+                self.comfy_status.append_log(
+                    f"Applied canvas to API: {workflow_name} "
+                    f"(backup: {os.path.basename(backup_path)})"
+                )
+
+            _poll()
+
+        self.comfy_web_view.page().runJavaScript(script, _started)
 
     def _comfy_manager_cli(self) -> str:
         return os.path.join(
@@ -832,6 +1053,8 @@ class MainWindow(QMainWindow):
     def _load_comfy_workflow_canvas(self, workflow_name: str) -> None:
         if not workflow_name or not hasattr(self, "comfy_web_view"):
             return
+        if self.comfy_web_view.url().scheme() not in ("http", "https"):
+            return
         try:
             graph = self.comfy_controller.prepare_workflow(
                 workflow_name, self._comfy_workflow_params()
@@ -849,17 +1072,28 @@ class MainWindow(QMainWindow):
             }
         graph_json = json.dumps(canvas_graph, ensure_ascii=True)
         name_json = json.dumps(workflow_name, ensure_ascii=True)
+        app_module_json = json.dumps(f"{self._comfy_base_url}/scripts/app.js")
         script = f"""
-            (async () => {{
+            (() => {{
+                window.__vidWorkflowLoadResult = {{ pending: true }};
+                (async () => {{
                 try {{
                     const graph = {graph_json};
                     const workflowName = {name_json};
                     let comfyApp = window.app;
                     if (!comfyApp) {{
-                        const module = await import('/scripts/app.js');
+                        const module = await import({app_module_json});
                         comfyApp = module.app;
                     }}
                     if (!comfyApp) throw new Error('ComfyUI app is not available');
+
+                    const deadline = Date.now() + 30000;
+                    while (!comfyApp.graph || !comfyApp.canvas) {{
+                        if (Date.now() >= deadline) {{
+                            throw new Error('ComfyUI canvas did not initialize within 30 seconds');
+                        }}
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }}
 
                     if (Array.isArray(graph.nodes)) {{
                         await comfyApp.loadGraphData(graph);
@@ -874,21 +1108,53 @@ class MainWindow(QMainWindow):
                     }} else {{
                         throw new Error('This ComfyUI frontend cannot import API workflow JSON');
                     }}
-                    return {{ ok: true }};
+                    window.__vidWorkflowLoadResult = {{ ok: true }};
                 }} catch (error) {{
-                    return {{ ok: false, error: String(error) }};
+                    window.__vidWorkflowLoadResult = {{
+                        ok: false,
+                        error: error?.stack || error?.message || String(error)
+                    }};
                 }}
+                }})();
+                return true;
             }})()
         """
 
-        def _loaded(result) -> None:
-            if isinstance(result, dict) and result.get("ok"):
-                self.comfy_status.append_log(f"Loaded on canvas: {workflow_name}")
+        def _loaded(started) -> None:
+            if not started:
+                self.comfy_status.append_log(
+                    f"Canvas load failed for {workflow_name}: JavaScript did not start"
+                )
                 return
-            error = result.get("error") if isinstance(result, dict) else result
-            self.comfy_status.append_log(
-                f"Canvas load failed for {workflow_name}: {error or 'unknown frontend error'}"
-            )
+            attempts = 0
+
+            def _poll_result() -> None:
+                nonlocal attempts
+                attempts += 1
+                self.comfy_web_view.page().runJavaScript(
+                    "window.__vidWorkflowLoadResult || null",
+                    _result_ready,
+                )
+
+            def _result_ready(result) -> None:
+                if isinstance(result, dict) and result.get("pending"):
+                    if attempts < 350:
+                        QTimer.singleShot(100, _poll_result)
+                    else:
+                        self.comfy_status.append_log(
+                            f"Canvas load failed for {workflow_name}: frontend timed out"
+                        )
+                    return
+                if isinstance(result, dict) and result.get("ok"):
+                    self.comfy_status.append_log(f"Loaded on canvas: {workflow_name}")
+                    return
+                error = result.get("error") if isinstance(result, dict) else result
+                self.comfy_status.append_log(
+                    f"Canvas load failed for {workflow_name}: "
+                    f"{error or 'frontend returned no result'}"
+                )
+
+            _poll_result()
 
         self.comfy_web_view.page().runJavaScript(script, _loaded)
 

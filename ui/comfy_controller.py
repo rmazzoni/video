@@ -1,6 +1,8 @@
 """Connects the Qt6 UI to the comfy_bridge backend (client/loader)."""
 
 import copy
+import os
+import shutil
 import time
 from typing import Any, Dict, Optional
 
@@ -92,6 +94,61 @@ class ComfyController(QObject):
         graph = self.loader.load(name)
         graph = {key: value for key, value in graph.items() if isinstance(value, dict)}
         return self.client._substitute_params(copy.deepcopy(graph), params)
+
+    def save_canvas_workflow(self, name: str, exported_graph: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+        template = self.loader.load(name)
+        graph = copy.deepcopy(exported_graph)
+        missing = []
+        parameter_values: Dict[str, Any] = {}
+
+        def restore_placeholders(source: Any, target: Any, path: str = "") -> None:
+            if isinstance(source, str) and source.startswith("@"):
+                missing.append((path, source))
+                return
+            if isinstance(source, dict) and isinstance(target, dict):
+                for key, value in source.items():
+                    child_path = f"{path}.{key}" if path else str(key)
+                    if isinstance(value, str) and value.startswith("@"):
+                        if key in target:
+                            parameter_values[value[1:]] = target[key]
+                            target[key] = value
+                        else:
+                            missing.append((child_path, value))
+                    elif key in target:
+                        restore_placeholders(value, target[key], child_path)
+            elif isinstance(source, list) and isinstance(target, list):
+                for index, value in enumerate(source):
+                    if index < len(target):
+                        if isinstance(value, str) and value.startswith("@"):
+                            parameter_values[value[1:]] = target[index]
+                            target[index] = value
+                        else:
+                            restore_placeholders(value, target[index], f"{path}[{index}]")
+
+        for node_id, node in template.items():
+            if not isinstance(node, dict) or not node.get("class_type"):
+                continue
+            exported_node = graph.get(node_id)
+            if not isinstance(exported_node, dict):
+                missing.append((node_id, "parameterized node"))
+                continue
+            restore_placeholders(node, exported_node, node_id)
+
+        if missing:
+            details = ", ".join(f"{path} ({value})" for path, value in missing)
+            raise ValueError(
+                "The canvas no longer contains required Qt parameter locations: " + details
+            )
+
+        for key, value in template.items():
+            if not isinstance(value, dict):
+                graph[key] = value
+
+        workflow_path = os.path.join(self.loader.workflows_dir, name)
+        backup_path = workflow_path + ".bak"
+        shutil.copy2(workflow_path, backup_path)
+        self.loader.save(name, graph)
+        return backup_path, parameter_values
 
     def run_workflow(self, workflow_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         """
