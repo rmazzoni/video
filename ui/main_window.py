@@ -1767,14 +1767,24 @@ class MainWindow(QMainWindow):
                 run_status.setText(f"Lightbox update failed: {payload}")
 
         def _save_and_redo():
+            if getattr(self.controller, "_thread", None) is not None:
+                QMessageBox.warning(dlg, "Pipeline busy", "Wait for the current pipeline operation to finish.")
+                return
             if not _persist_prompt_and_delete_image():
                 return
             _set_running(True)
             run_progress.setValue(0)
-            run_status.setText(f"Regenerating scene {scene_id} image...")
+            run_status.setText(
+                f"Regenerating scene {scene_id}, beat {beat_index} with {preview_model_key}..."
+            )
             self.controller.pipeline_progress.connect(_on_progress)
             self.controller.pipeline_finished.connect(_on_images_done)
-            self.run_stage("preview_images")
+            self.controller.run_pipeline("preview_images", {
+                "preview_scene_id": scene_id,
+                "preview_beat_index": beat_index,
+                "preview_model_key": preview_model_key,
+                "force_preview_update": True,
+            })
 
         def _redo_clip():
             # Regenerate the preview clip from the already-updated draft image.
