@@ -1,8 +1,11 @@
 import os
+import json
+import hashlib
 import math
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6 import sip
@@ -34,7 +37,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QPixmap, QCursor, QKeySequence, QShortcut, QTextCharFormat, QColor, QSyntaxHighlighter, QPainter, QPen, QTextCursor, QFont
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QRect, QUrl, QCoreApplication, QTimer, QEvent
+from PyQt6.QtCore import (Qt, pyqtSignal, QThread, QObject, QRect, QUrl,
+                          QCoreApplication, QTimer, QEvent, QProcess,
+                          QProcessEnvironment)
 from ui.pipeline_controller import PipelineController
 from ui.comfy_controller import ComfyController
 from ui.widgets.workflow_selector import WorkflowSelector
@@ -372,6 +377,10 @@ class MainWindow(QMainWindow):
         )
         comfy_host = comfy_config.get("host", "127.0.0.1")
         comfy_port = int(comfy_config.get("port", 8188))
+        self._comfy_install_dir = str(comfy_config.get("install_dir", ""))
+        self._comfy_python_executable = str(comfy_config.get("python_executable", ""))
+        self._comfy_snapshots_dir = os.path.join(config_dir, "comfy_snapshots")
+        self._comfy_maintenance_process = None
         self.comfy_controller = ComfyController(workflows_dir, host=comfy_host, port=comfy_port)
 
         tab = QWidget()
@@ -393,13 +402,31 @@ class MainWindow(QMainWindow):
         run_row.addWidget(self.comfy_cancel_button)
         run_row.addWidget(self.comfy_check_button)
 
+        snapshot_row = QHBoxLayout()
+        self.comfy_save_snapshot_button = QPushButton("Save Snapshot")
+        self.comfy_save_snapshot_button.setToolTip(
+            "Record ComfyUI, custom-node, VID-node, and Python package versions"
+        )
+        self.comfy_load_snapshot_button = QPushButton("Load Snapshot")
+        self.comfy_load_snapshot_button.setToolTip(
+            "Restore ComfyUI, custom nodes, and recorded Python package versions"
+        )
+        snapshot_row.addWidget(self.comfy_save_snapshot_button)
+        snapshot_row.addWidget(self.comfy_load_snapshot_button)
+
         layout.addWidget(self.comfy_workflow_selector)
         layout.addLayout(run_row)
+        layout.addLayout(snapshot_row)
         layout.addWidget(self.comfy_status, 1)
 
         # Embedded ComfyUI web interface, so the node graph lives inside the app
         self.comfy_web_view = QWebEngineView()
         self.comfy_web_view.setUrl(QUrl(f"http://{comfy_host}:{comfy_port}"))
+        self.comfy_web_view.loadFinished.connect(
+            lambda loaded: self._load_comfy_workflow_canvas(
+                self.comfy_workflow_selector.selected_workflow()
+            ) if loaded else None
+        )
         btn_reload_comfy_ui = QPushButton("Reload ComfyUI Page")
         btn_reload_comfy_ui.clicked.connect(
             lambda: self.comfy_web_view.setUrl(QUrl(f"http://{comfy_host}:{comfy_port}"))
@@ -417,6 +444,11 @@ class MainWindow(QMainWindow):
         outer_layout.addWidget(splitter)
 
         self.comfy_check_button.clicked.connect(self.comfy_controller.check_connection)
+        self.comfy_save_snapshot_button.clicked.connect(self._save_comfy_snapshot)
+        self.comfy_load_snapshot_button.clicked.connect(self._load_comfy_snapshot)
+        self.comfy_workflow_selector.workflow_selected.connect(
+            self._load_comfy_workflow_canvas
+        )
         self.comfy_run_button.clicked.connect(
             lambda: self.comfy_controller.run_workflow(self.comfy_workflow_selector.selected_workflow())
         )
@@ -429,6 +461,280 @@ class MainWindow(QMainWindow):
         self.comfy_controller.failed.connect(lambda err: self.comfy_status.append_log(f"Error: {err}"))
 
         return tab
+
+    def _comfy_manager_cli(self) -> str:
+        return os.path.join(
+            self._comfy_install_dir, "custom_nodes", "ComfyUI-Manager", "cm-cli.py"
+        )
+
+    def _set_comfy_maintenance_enabled(self, enabled: bool) -> None:
+        self.comfy_save_snapshot_button.setEnabled(enabled)
+        self.comfy_load_snapshot_button.setEnabled(enabled)
+
+    def _dirty_comfy_repositories(self) -> list:
+        repositories = [("ComfyUI", self._comfy_install_dir)]
+        custom_nodes_root = os.path.join(self._comfy_install_dir, "custom_nodes")
+        if os.path.isdir(custom_nodes_root):
+            for entry in os.scandir(custom_nodes_root):
+                if entry.is_dir(follow_symlinks=False) and os.path.isdir(
+                        os.path.join(entry.path, ".git")):
+                    repositories.append((entry.name, entry.path))
+        dirty = []
+        for name, path in repositories:
+            result = subprocess.run(
+                ["git", "-C", path, "status", "--porcelain=v1"],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode != 0 or result.stdout.strip():
+                dirty.append(name)
+        return dirty
+
+    def _run_comfy_manager(self, arguments: list, on_success) -> None:
+        if self._comfy_maintenance_process is not None:
+            QMessageBox.information(
+                self, "ComfyUI maintenance", "A snapshot operation is already running."
+            )
+            return
+        cli_path = self._comfy_manager_cli()
+        if not os.path.isfile(cli_path) or not os.path.isfile(self._comfy_python_executable):
+            QMessageBox.warning(
+                self, "ComfyUI Manager unavailable",
+                "Check install_dir and python_executable in config/comfy.yaml."
+            )
+            return
+
+        process = QProcess(self)
+        process.setProgram(self._comfy_python_executable)
+        process.setArguments([cli_path, *arguments])
+        process.setWorkingDirectory(self._comfy_install_dir)
+        environment = QProcessEnvironment.systemEnvironment()
+        environment.insert("COMFYUI_PATH", self._comfy_install_dir)
+        process.setProcessEnvironment(environment)
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._comfy_maintenance_process = process
+        self._set_comfy_maintenance_enabled(False)
+
+        def _read_output() -> None:
+            output = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            for line in output.splitlines():
+                if line.strip():
+                    self.comfy_status.append_log(line.strip())
+
+        def _finished(exit_code: int, _exit_status) -> None:
+            _read_output()
+            self._comfy_maintenance_process = None
+            self._set_comfy_maintenance_enabled(True)
+            if exit_code == 0:
+                on_success()
+            else:
+                QMessageBox.warning(
+                    self, "ComfyUI maintenance failed",
+                    f"ComfyUI Manager exited with code {exit_code}. See the ComfyUI log."
+                )
+            process.deleteLater()
+
+        process.readyReadStandardOutput.connect(_read_output)
+        process.finished.connect(_finished)
+        process.errorOccurred.connect(
+            lambda error: self.comfy_status.append_log(f"Snapshot process error: {error}")
+        )
+        process.start()
+
+    def _vid_snapshot_metadata(self) -> dict:
+        source_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        node_root = os.path.join(source_root, "comfy_nodes", "vid_pipeline")
+        custom_nodes_root = os.path.join(self._comfy_install_dir, "custom_nodes")
+
+        def _git(*arguments: str) -> str:
+            result = subprocess.run(
+                ["git", "-C", source_root, *arguments],
+                capture_output=True, text=True, check=False,
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+
+        hashes = {}
+        for path in sorted(Path(node_root).rglob("*.py")):
+            relative = path.relative_to(node_root).as_posix()
+            hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+        standalone_hashes = {}
+        if os.path.isdir(custom_nodes_root):
+            for path in sorted(Path(custom_nodes_root).glob("*.py")):
+                standalone_hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return {
+            "source_root": source_root,
+            "git_commit": _git("rev-parse", "HEAD"),
+            "git_dirty": bool(_git("status", "--porcelain=v1")),
+            "junction_target": node_root,
+            "python_file_sha256": hashes,
+            "standalone_custom_node_sha256": standalone_hashes,
+        }
+
+    def _save_comfy_snapshot(self) -> None:
+        dirty = self._dirty_comfy_repositories()
+        if dirty:
+            QMessageBox.warning(
+                self, "Snapshot blocked",
+                "Commit or discard local changes before saving an exact snapshot:\n"
+                + "\n".join(f"- {name}" for name in dirty),
+            )
+            return
+        os.makedirs(self._comfy_snapshots_dir, exist_ok=True)
+        default_name = f"comfy-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        snapshot_path, _filter = QFileDialog.getSaveFileName(
+            self, "Save ComfyUI Snapshot",
+            os.path.join(self._comfy_snapshots_dir, default_name),
+            "JSON snapshot (*.json)",
+        )
+        if not snapshot_path:
+            return
+        if not snapshot_path.lower().endswith(".json"):
+            snapshot_path += ".json"
+        self.comfy_status.append_log(f"Saving full snapshot: {snapshot_path}")
+
+        def _saved() -> None:
+            try:
+                snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+                snapshot["vid_application"] = self._vid_snapshot_metadata()
+                Path(snapshot_path).write_text(
+                    json.dumps(snapshot, indent=4, ensure_ascii=True) + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self, "Snapshot metadata failed",
+                    f"Manager saved its snapshot, but VID metadata could not be added:\n{exc}"
+                )
+                return
+            self.comfy_status.append_log(f"Snapshot saved: {snapshot_path}")
+            QMessageBox.information(self, "Snapshot saved", snapshot_path)
+
+        self._run_comfy_manager(
+            ["save-snapshot", "--output", snapshot_path, "--full-snapshot"], _saved
+        )
+
+    def _load_comfy_snapshot(self) -> None:
+        dirty = self._dirty_comfy_repositories()
+        if dirty:
+            QMessageBox.warning(
+                self, "Restore blocked",
+                "Restore could overwrite local changes. Clean these repositories first:\n"
+                + "\n".join(f"- {name}" for name in dirty),
+            )
+            return
+        snapshot_path, _filter = QFileDialog.getOpenFileName(
+            self, "Load ComfyUI Snapshot", self._comfy_snapshots_dir,
+            "Snapshot files (*.json *.yaml *.yml)",
+        )
+        if not snapshot_path:
+            return
+        reply = QMessageBox.warning(
+            self, "Restore ComfyUI snapshot",
+            "This will check out recorded ComfyUI/custom-node revisions and reinstall "
+            "recorded Python package versions. Close active jobs first. A full application "
+            "restart is required afterward.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.comfy_status.append_log(f"Restoring snapshot: {snapshot_path}")
+
+        def _restored() -> None:
+            warnings = []
+            try:
+                snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+                recorded = snapshot.get("vid_application", {})
+                current = self._vid_snapshot_metadata()
+                if recorded and recorded.get("git_commit") != current.get("git_commit"):
+                    warnings.append(
+                        "The snapshot belongs to a different VID application commit. "
+                        "Application source was not changed automatically."
+                    )
+                if recorded and recorded.get("python_file_sha256") != current.get("python_file_sha256"):
+                    warnings.append(
+                        "The application-owned vid_pipeline node files differ from the snapshot."
+                    )
+                if (recorded and recorded.get("standalone_custom_node_sha256")
+                        != current.get("standalone_custom_node_sha256")):
+                    warnings.append(
+                        "One or more standalone custom-node files differ from the snapshot."
+                    )
+            except Exception as exc:
+                warnings.append(f"Could not verify VID snapshot metadata: {exc}")
+            message = "Snapshot restored. Fully exit and restart launch_with_comfy.py."
+            if warnings:
+                message += "\n\n" + "\n".join(warnings)
+            self.comfy_status.append_log(message)
+            QMessageBox.information(self, "Snapshot restored", message)
+
+        self._run_comfy_manager(
+            [
+                "restore-snapshot", snapshot_path,
+                "--pip-non-url", "--pip-non-local-url",
+            ],
+            _restored,
+        )
+
+    def _load_comfy_workflow_canvas(self, workflow_name: str) -> None:
+        if not workflow_name or not hasattr(self, "comfy_web_view"):
+            return
+        try:
+            graph = self.comfy_controller.load_workflow(workflow_name)
+        except Exception as exc:
+            self.comfy_status.append_log(f"Cannot load {workflow_name}: {exc}")
+            return
+
+        canvas_graph = graph
+        if not isinstance(graph.get("nodes"), list):
+            canvas_graph = {
+                node_id: node
+                for node_id, node in graph.items()
+                if isinstance(node, dict) and node.get("class_type")
+            }
+        graph_json = json.dumps(canvas_graph, ensure_ascii=True)
+        name_json = json.dumps(workflow_name, ensure_ascii=True)
+        script = f"""
+            (async () => {{
+                try {{
+                    const graph = {graph_json};
+                    const workflowName = {name_json};
+                    let comfyApp = window.app;
+                    if (!comfyApp) {{
+                        const module = await import('/scripts/app.js');
+                        comfyApp = module.app;
+                    }}
+                    if (!comfyApp) throw new Error('ComfyUI app is not available');
+
+                    if (Array.isArray(graph.nodes)) {{
+                        await comfyApp.loadGraphData(graph);
+                    }} else if (typeof comfyApp.handleFile === 'function') {{
+                        const file = new File(
+                            [JSON.stringify(graph)], workflowName,
+                            {{ type: 'application/json' }}
+                        );
+                        await comfyApp.handleFile(file);
+                    }} else if (typeof comfyApp.loadApiJson === 'function') {{
+                        await comfyApp.loadApiJson(graph);
+                    }} else {{
+                        throw new Error('This ComfyUI frontend cannot import API workflow JSON');
+                    }}
+                    return {{ ok: true }};
+                }} catch (error) {{
+                    return {{ ok: false, error: String(error) }};
+                }}
+            }})()
+        """
+
+        def _loaded(result) -> None:
+            if isinstance(result, dict) and result.get("ok"):
+                self.comfy_status.append_log(f"Loaded on canvas: {workflow_name}")
+                return
+            error = result.get("error") if isinstance(result, dict) else result
+            self.comfy_status.append_log(
+                f"Canvas load failed for {workflow_name}: {error or 'unknown frontend error'}"
+            )
+
+        self.comfy_web_view.page().runJavaScript(script, _loaded)
 
     def _build_settings_tab(self) -> QWidget:
         outer = QWidget()
