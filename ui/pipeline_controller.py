@@ -863,6 +863,80 @@ class PipelineWorker(QObject):
                         "Enable Schnell or Z-Image Turbo in Prompts > Configure Models."
                     )
 
+                missing_prompt_models = []
+                for scene in scenes:
+                    sid = int(scene["id"])
+                    scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
+                    models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
+                    for _model_type, model_key in preview_models:
+                        model_entry = models.get(model_key, {})
+                        rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
+                        if not any(
+                            isinstance(row, dict) and str(row.get("text", "")).strip()
+                            for row in rows
+                        ):
+                            missing_prompt_models.append((scene, model_key))
+
+                if missing_prompt_models:
+                    from prompts.model_prompt_service import ModelPromptService
+                    from prompts.project_profiles import get_profile_text, load_project_profiles
+
+                    profiles_dir = self._resolve_path(str(self.config.get(
+                        "prompt_profiles_dir", "src/config/prompt_profiles")))
+                    project_profile_key = str(
+                        self.config.get("project_profile_key", "")
+                    ).strip()
+                    service = ModelPromptService(
+                        profiles_dir=profiles_dir,
+                        ollama_model=str(self.config.get("ollama_model", "qwen3:8b")),
+                        ollama_host=str(self.config.get(
+                            "ollama_host", "http://localhost:11434")),
+                        max_visual_beats=(int(self.config["max_visual_beats"])
+                                          if self.config.get("max_visual_beats") is not None
+                                          else None),
+                        project_profile_text=get_profile_text(
+                            load_project_profiles(os.path.dirname(profiles_dir)),
+                            project_profile_key,
+                        ),
+                        visual_style_key=str(self.config.get(
+                            "visual_style", "cinematic")),
+                    )
+                    for scene, model_key in missing_prompt_models:
+                        self._check_cancel()
+                        sid = int(scene["id"])
+                        scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
+                        visual_beats = [
+                            str(beat).strip()
+                            for beat in scene_entry.get("visual_beats", [])
+                            if str(beat).strip()
+                        ] if isinstance(scene_entry, dict) else []
+                        if not visual_beats:
+                            visual_beats = service.extract_visual_beats(scene)
+                        models = dict(scene_entry.get("models", {})) if isinstance(scene_entry, dict) else {}
+                        profile = service.load_profile(model_key)
+                        models[model_key] = {
+                            "profile": f"{model_key}.yaml",
+                            "prompts": service.generate_for_beats(
+                                scene, model_key, visual_beats),
+                            "max_prompts_per_scene": int(
+                                profile.get("max_prompts_per_scene", 3)),
+                        }
+                        model_prompts[sid] = {
+                            "scene_id": sid,
+                            "visual_beats": visual_beats,
+                            "visual_beats_source": str(scene.get("text", "")),
+                            "models": models,
+                        }
+                        model_prompts.pop(str(sid), None)
+                        for stale_path in glob.glob(os.path.join(
+                                draft_dir, f"scene_{sid:03d}_{model_key}_b*_v*.png")):
+                            os.remove(stale_path)
+                        self.log.emit(
+                            f"Scene {sid} [{model_key}]: generated missing preview prompts."
+                        )
+                    with open(model_prompts_path, "w", encoding="utf-8") as fh:
+                        yaml.safe_dump(model_prompts, fh, allow_unicode=True, sort_keys=False)
+
                 preview_work = []
                 for model_type, model_key in preview_models:
                     for scene in scenes:
