@@ -16,12 +16,13 @@ NONE_LABEL = "None"
 DEFAULT_PROJECT_PROFILES: Dict[str, str] = {
     "middle_east_modern": (
         "PROJECT GEOGRAPHIC & CULTURAL CONSTRAINTS:\n"
-        "- All civilian and official figures must wear traditional modern Arabian garments "
-        "(e.g., pristine white thobes, ghutras, and agals for men). Never depict Western business suits.\n"
-        "- All military or militia personnel must wear contemporary arid/desert digital camouflage uniforms "
-        "or local tactical gear suitable for the Sahel or Arabian peninsula.\n"
-        "- Architecture must feature flat-roofed concrete structures, sandy limestone walls, and contemporary "
-        "Gulf urban elements."
+        "- Preserve explicit identity, nationality, role, location, period, and attire; source details override "
+        "regional defaults.\n"
+        "- Choose contemporary clothing from the specific person, role, activity, and occasion. Do not add "
+        "traditional or religious garments merely because a scene is set in the Middle East.\n"
+        "- Use Arabian garments only when explicitly stated or clearly appropriate; business suits, smart-casual "
+        "clothing, workwear, and uniforms remain valid where context supports them.\n"
+        "- Keep foreign participants' identity and attire distinct, and match architecture to the stated location."
     ),
     "corporate_global": (
         "PROJECT GEOGRAPHIC & CULTURAL CONSTRAINTS:\n"

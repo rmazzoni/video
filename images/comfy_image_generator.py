@@ -80,7 +80,11 @@ class ComfyImageGenerator:
         missing = []
         for node_name, input_name, filename, folder in model_requirements:
             try:
-                available = object_info[node_name]["input"]["required"][input_name][0]
+                input_spec = object_info[node_name]["input"]["required"][input_name]
+                if input_spec[0] == "COMBO":
+                    available = input_spec[1].get("options", [])
+                else:
+                    available = input_spec[0]
             except (KeyError, IndexError, TypeError):
                 available = []
             if filename not in available:

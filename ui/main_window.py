@@ -1116,6 +1116,7 @@ class MainWindow(QMainWindow):
         self._lightbox_apply_unselected_filter()
 
     def _lightbox_selection_changed(self, sid: int) -> None:
+        self._lightbox_update_image_badges(sid)
         self._save_lightbox_selections(silent=True)
         if self._lightbox_unselected_btn.isChecked():
             self._lightbox_apply_unselected_filter(sid)
