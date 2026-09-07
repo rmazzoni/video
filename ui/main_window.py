@@ -5573,12 +5573,17 @@ class MainWindow(QMainWindow):
         self._tts_preview_thread.start()
 
     def _relaunch(self) -> None:
+        self.controller.cancel_pipeline()
         if os.environ.get("VID_COMFY_LAUNCHER") == "1":
             QCoreApplication.exit(75)
             return
 
         subprocess.Popen([sys.executable] + sys.argv, cwd=os.getcwd())
         QCoreApplication.quit()
+
+    def closeEvent(self, event) -> None:
+        self.controller.cancel_pipeline()
+        super().closeEvent(event)
 
     def _clear_prompt_cache(self) -> None:
         project = self.project_path_input.text().strip()

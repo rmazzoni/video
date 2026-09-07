@@ -175,6 +175,7 @@ class ComfyClient:
         timeout: float = 300.0,
         poll_interval: float = 1.0,
         cancel_check: Optional[Callable[[], bool]] = None,
+        wait_callback: Optional[Callable[[float], None]] = None,
     ) -> Dict[str, Any]:
         """
         Blocking convenience wrapper that polls `get_result` until completion or timeout.
@@ -182,6 +183,7 @@ class ComfyClient:
         keep occupying the queue for the next generation, and a RuntimeError is raised.
         """
         deadline = time.monotonic() + timeout
+        started_at = time.monotonic()
 
         while time.monotonic() < deadline:
             if cancel_check is not None and cancel_check():
@@ -190,6 +192,8 @@ class ComfyClient:
             status = self.get_result(prompt_id)
             if status.get("completed"):
                 return status
+            if wait_callback is not None:
+                wait_callback(time.monotonic() - started_at)
             time.sleep(poll_interval)
 
         self.interrupt()

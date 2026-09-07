@@ -48,7 +48,7 @@
       "seed": "@seed",
       "steps": "@steps",
       "cfg": 1.0,
-      "sampler_name": "lcm",
+      "sampler_name": "euler",
       "scheduler": "normal",
       "positive": ["4", 0],
       "negative": ["5", 0],

@@ -25,6 +25,7 @@ class PipelineWorker(QObject):
         self.root_dir = root_dir
         self.stage = stage
         self._cancel_requested = False
+        self._active_image_gen = None
 
     def _emit_progress(self, value: int, message: str) -> None:
         self.progress.emit(max(0, min(100, value)), message)
@@ -32,7 +33,12 @@ class PipelineWorker(QObject):
     @pyqtSlot()
     def cancel(self) -> None:
         self._cancel_requested = True
-        self.log.emit("Cancellation requested. Waiting for current step to finish...")
+        if self._active_image_gen is not None:
+            try:
+                self._active_image_gen.client.interrupt()
+            except Exception:
+                pass
+        self.log.emit("Cancellation requested. Interrupting the active operation...")
 
     def _check_cancel(self) -> None:
         if self._cancel_requested:
@@ -783,6 +789,7 @@ class PipelineWorker(QObject):
                     prompt, model_type, style_preset)
                 self._emit_progress(10, f"Loading {model_key} for scene {scene_id}, beat {beat_index}")
                 image_gen = _make_image_gen(model_type, candidate_dir)
+                self._active_image_gen = image_gen
                 suffix = f"_{model_key}_b{beat_index:02d}_candidate"
                 try:
                     self._emit_progress(35, "Generating neutral-seed candidate")
@@ -792,9 +799,13 @@ class PipelineWorker(QObject):
                         seed_override=int(self.config.get("seed", 42)),
                         filename_suffix=suffix,
                         cancel_check=lambda: self._cancel_requested,
+                        wait_callback=lambda elapsed: self._emit_progress(
+                            35,
+                            f"ComfyUI is loading or sampling ({int(elapsed)}s elapsed)",
+                        ),
                     )
                 finally:
-                    image_gen.unload()
+                    self._active_image_gen = None
                 image_path = os.path.join(
                     candidate_dir, f"scene_{scene_id:03d}{suffix}.png")
                 self._emit_progress(100, "Candidate image ready")

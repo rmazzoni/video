@@ -103,6 +103,7 @@ class ComfyImageGenerator:
         seed_override: Optional[int] = None,
         filename_suffix: str = "",
         cancel_check: Optional[Callable[[], bool]] = None,
+        wait_callback: Optional[Callable[[float], None]] = None,
     ) -> str:
         if not self.client.is_alive():
             raise ConnectionError("ComfyUI is not running or is not reachable.")
@@ -122,7 +123,12 @@ class ComfyImageGenerator:
             "filename_prefix": prefix,
         }
         prompt_id = self.client.execute_workflow(self.workflow, params)
-        result = self.client.wait_for_result(prompt_id, timeout=self.timeout, cancel_check=cancel_check)
+        result = self.client.wait_for_result(
+            prompt_id,
+            timeout=self.timeout,
+            cancel_check=cancel_check,
+            wait_callback=wait_callback,
+        )
         status = result.get("status", {})
         if status.get("status_str") == "error" or not status.get("completed", True):
             messages = status.get("messages", [])
