@@ -44,6 +44,9 @@ class ComfyImageGenerator:
         steps: int,
         guidance: float,
         seed: int,
+        sampler: str = "euler",
+        scheduler: str = "normal",
+        shift: float = 3.0,
         timeout: float = 900.0,
     ):
         if model_type not in WORKFLOWS:
@@ -56,6 +59,9 @@ class ComfyImageGenerator:
         self.steps = steps
         self.guidance = guidance
         self.seed = seed
+        self.sampler = sampler
+        self.scheduler = scheduler
+        self.shift = shift
         self.timeout = timeout
 
         with open(os.path.join(source_dir, "config", "comfy.yaml"), "r", encoding="utf-8") as handle:
@@ -120,6 +126,9 @@ class ComfyImageGenerator:
             "height": self.height,
             "steps": self.steps,
             "guidance": self.guidance,
+            "sampler": self.sampler,
+            "scheduler": self.scheduler,
+            "shift": self.shift,
             "filename_prefix": prefix,
         }
         prompt_id = self.client.execute_workflow(self.workflow, params)

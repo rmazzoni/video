@@ -213,6 +213,14 @@ def _load_thumbnail(path: str, w: int, h: int) -> "QPixmap":
 
 
 class MainWindow(QMainWindow):
+    _COMFY_WORKFLOW_MODELS = {
+        "flux1_schnell_image.json": "schnell",
+        "zimage_turbo_image.json": "zimage",
+        "flux1_dev_image.json": "dev",
+        "hidream_i1_dev_image.json": "hidream",
+        "flux2_image.json": "flux2",
+    }
+
     # Lightbox variant display/generation order (each model uses −1/base/+1 seeds)
     _LIGHTBOX_VARIANT_ORDER = [
         ("schnell_v1", "Schnell −1"),
@@ -391,14 +399,59 @@ class MainWindow(QMainWindow):
         left_panel = QWidget()
         layout = QVBoxLayout(left_panel)
 
-        self.comfy_workflow_selector = WorkflowSelector(workflows_dir)
+        default_workflow = str(comfy_config.get("default_workflow", "zimage_turbo_image.json"))
+        self.comfy_workflow_selector = WorkflowSelector(
+            workflows_dir, default_workflow=default_workflow
+        )
         self.comfy_status = PipelineStatus()
+
+        parameter_form = QFormLayout()
+        self.comfy_prompt_input = QPlainTextEdit()
+        self.comfy_prompt_input.setPlaceholderText("Prompt used by Run Workflow and the canvas")
+        self.comfy_prompt_input.setMaximumHeight(90)
+        self.comfy_seed_input = QSpinBox()
+        self.comfy_seed_input.setRange(0, 2147483647)
+        self.comfy_width_input = QSpinBox()
+        self.comfy_width_input.setRange(64, 4096)
+        self.comfy_width_input.setSingleStep(64)
+        self.comfy_height_input = QSpinBox()
+        self.comfy_height_input.setRange(64, 4096)
+        self.comfy_height_input.setSingleStep(64)
+        self.comfy_steps_input = QSpinBox()
+        self.comfy_steps_input.setRange(1, 200)
+        self.comfy_guidance_input = QDoubleSpinBox()
+        self.comfy_guidance_input.setRange(0.0, 30.0)
+        self.comfy_guidance_input.setDecimals(2)
+        self.comfy_guidance_input.setSingleStep(0.25)
+        self.comfy_sampler_input = QComboBox()
+        self.comfy_sampler_input.addItems([
+            "euler", "lcm", "dpmpp_2m", "dpmpp_2m_sde", "heun", "uni_pc"
+        ])
+        self.comfy_scheduler_input = QComboBox()
+        self.comfy_scheduler_input.addItems([
+            "normal", "simple", "beta", "karras", "exponential", "sgm_uniform"
+        ])
+        self.comfy_shift_input = QDoubleSpinBox()
+        self.comfy_shift_input.setRange(0.0, 100.0)
+        self.comfy_shift_input.setDecimals(2)
+        self.comfy_shift_input.setSingleStep(0.25)
+        parameter_form.addRow("Prompt", self.comfy_prompt_input)
+        parameter_form.addRow("Seed", self.comfy_seed_input)
+        parameter_form.addRow("Width", self.comfy_width_input)
+        parameter_form.addRow("Height", self.comfy_height_input)
+        parameter_form.addRow("Steps", self.comfy_steps_input)
+        parameter_form.addRow("Guidance", self.comfy_guidance_input)
+        parameter_form.addRow("Sampler", self.comfy_sampler_input)
+        parameter_form.addRow("Scheduler", self.comfy_scheduler_input)
+        parameter_form.addRow("Shift", self.comfy_shift_input)
 
         run_row = QHBoxLayout()
         self.comfy_run_button = QPushButton("Run Workflow")
+        self.comfy_apply_button = QPushButton("Apply to Canvas")
         self.comfy_cancel_button = QPushButton("Cancel")
         self.comfy_check_button = QPushButton("Check Connection")
         run_row.addWidget(self.comfy_run_button)
+        run_row.addWidget(self.comfy_apply_button)
         run_row.addWidget(self.comfy_cancel_button)
         run_row.addWidget(self.comfy_check_button)
 
@@ -415,6 +468,7 @@ class MainWindow(QMainWindow):
         snapshot_row.addWidget(self.comfy_load_snapshot_button)
 
         layout.addWidget(self.comfy_workflow_selector)
+        layout.addLayout(parameter_form)
         layout.addLayout(run_row)
         layout.addLayout(snapshot_row)
         layout.addWidget(self.comfy_status, 1)
@@ -447,10 +501,15 @@ class MainWindow(QMainWindow):
         self.comfy_save_snapshot_button.clicked.connect(self._save_comfy_snapshot)
         self.comfy_load_snapshot_button.clicked.connect(self._load_comfy_snapshot)
         self.comfy_workflow_selector.workflow_selected.connect(
-            self._load_comfy_workflow_canvas
+            self._on_comfy_workflow_selected
         )
         self.comfy_run_button.clicked.connect(
-            lambda: self.comfy_controller.run_workflow(self.comfy_workflow_selector.selected_workflow())
+            self._run_comfy_workflow
+        )
+        self.comfy_apply_button.clicked.connect(
+            lambda: self._load_comfy_workflow_canvas(
+                self.comfy_workflow_selector.selected_workflow()
+            )
         )
         self.comfy_cancel_button.clicked.connect(self.comfy_controller.cancel)
         self.comfy_controller.connection_changed.connect(self.comfy_status.set_connected)
@@ -460,7 +519,102 @@ class MainWindow(QMainWindow):
         )
         self.comfy_controller.failed.connect(lambda err: self.comfy_status.append_log(f"Error: {err}"))
 
+        self._load_comfy_parameter_controls(
+            self.comfy_workflow_selector.selected_workflow()
+        )
+
         return tab
+
+    def _comfy_workflow_params(self) -> dict:
+        return {
+            "prompt": self.comfy_prompt_input.toPlainText().strip(),
+            "seed": self.comfy_seed_input.value(),
+            "width": self.comfy_width_input.value(),
+            "height": self.comfy_height_input.value(),
+            "steps": self.comfy_steps_input.value(),
+            "guidance": self.comfy_guidance_input.value(),
+            "sampler": self.comfy_sampler_input.currentText(),
+            "scheduler": self.comfy_scheduler_input.currentText(),
+            "shift": self.comfy_shift_input.value(),
+            "filename_prefix": "vid/manual",
+        }
+
+    def _load_comfy_parameter_controls(self, workflow_name: str) -> None:
+        model_key = self._COMFY_WORKFLOW_MODELS.get(workflow_name)
+        config = self.controller.config
+        self.comfy_seed_input.setValue(int(config.get("seed", 42)))
+        self.comfy_width_input.setValue(int(config.get("image_width", 1024)))
+        self.comfy_height_input.setValue(int(config.get("image_height", 576)))
+        if model_key:
+            defaults = {
+                "schnell": (4, 0.0),
+                "zimage": (9, 0.0),
+                "dev": (20, 3.5),
+                "hidream": (28, 1.5),
+                "flux2": (4, 1.0),
+            }
+            default_steps, default_guidance = defaults[model_key]
+            self.comfy_steps_input.setValue(
+                int(config.get(f"{model_key}_steps", default_steps))
+            )
+            self.comfy_guidance_input.setValue(
+                float(config.get(f"{model_key}_guidance", default_guidance))
+            )
+            sampler_default = "euler"
+            scheduler_default = "simple" if model_key == "zimage" else "normal"
+            shift_default = 6.0 if model_key == "hidream" else 3.0
+            self.comfy_sampler_input.setCurrentText(
+                str(config.get(f"{model_key}_sampler", sampler_default))
+            )
+            self.comfy_scheduler_input.setCurrentText(
+                str(config.get(f"{model_key}_scheduler", scheduler_default))
+            )
+            self.comfy_shift_input.setValue(
+                float(config.get(f"{model_key}_shift", shift_default))
+            )
+        self.comfy_guidance_input.setEnabled(
+            self._workflow_uses_param(workflow_name, "guidance")
+        )
+        self.comfy_sampler_input.setEnabled(self._workflow_uses_param(workflow_name, "sampler"))
+        self.comfy_scheduler_input.setEnabled(
+            self._workflow_uses_param(workflow_name, "scheduler")
+        )
+        self.comfy_shift_input.setEnabled(self._workflow_uses_param(workflow_name, "shift"))
+
+    def _workflow_uses_param(self, workflow_name: str, param_name: str) -> bool:
+        try:
+            graph = self.comfy_controller.load_workflow(workflow_name)
+        except Exception:
+            return False
+        return f"@{param_name}" in json.dumps(graph)
+
+    def _save_comfy_parameter_controls(self) -> None:
+        workflow_name = self.comfy_workflow_selector.selected_workflow()
+        model_key = self._COMFY_WORKFLOW_MODELS.get(workflow_name)
+        params = self._comfy_workflow_params()
+        self.controller.config.update({
+            "seed": params["seed"],
+            "image_width": params["width"],
+            "image_height": params["height"],
+        })
+        if model_key:
+            self.controller.config[f"{model_key}_steps"] = params["steps"]
+            self.controller.config[f"{model_key}_guidance"] = params["guidance"]
+            self.controller.config[f"{model_key}_sampler"] = params["sampler"]
+            self.controller.config[f"{model_key}_scheduler"] = params["scheduler"]
+            self.controller.config[f"{model_key}_shift"] = params["shift"]
+        self.controller.config_loader.save_settings(self.controller.config)
+
+    def _on_comfy_workflow_selected(self, workflow_name: str) -> None:
+        self._load_comfy_parameter_controls(workflow_name)
+        self._load_comfy_workflow_canvas(workflow_name)
+
+    def _run_comfy_workflow(self) -> None:
+        self._save_comfy_parameter_controls()
+        self.comfy_controller.run_workflow(
+            self.comfy_workflow_selector.selected_workflow(),
+            self._comfy_workflow_params(),
+        )
 
     def _comfy_manager_cli(self) -> str:
         return os.path.join(
@@ -679,7 +833,9 @@ class MainWindow(QMainWindow):
         if not workflow_name or not hasattr(self, "comfy_web_view"):
             return
         try:
-            graph = self.comfy_controller.load_workflow(workflow_name)
+            graph = self.comfy_controller.prepare_workflow(
+                workflow_name, self._comfy_workflow_params()
+            )
         except Exception as exc:
             self.comfy_status.append_log(f"Cannot load {workflow_name}: {exc}")
             return
@@ -5430,12 +5586,18 @@ class MainWindow(QMainWindow):
             "flux2_guidance": self.flux2_guidance_input.value(),
             "zimage_steps": int(self.controller.config.get("zimage_steps", 9)),
             "zimage_guidance": float(self.controller.config.get("zimage_guidance", 0.0)),
+            "zimage_sampler": str(self.controller.config.get("zimage_sampler", "euler")),
+            "zimage_scheduler": str(self.controller.config.get("zimage_scheduler", "simple")),
+            "zimage_shift": float(self.controller.config.get("zimage_shift", 3.0)),
             "hidream_steps": int(self.controller.config.get("hidream_steps", 28)),
             "hidream_guidance": (
                 1.5
                 if float(self.controller.config.get("hidream_guidance", 1.5)) in (1.0, 5.0)
                 else float(self.controller.config.get("hidream_guidance", 1.5))
             ),
+            "hidream_sampler": str(self.controller.config.get("hidream_sampler", "euler")),
+            "hidream_scheduler": str(self.controller.config.get("hidream_scheduler", "normal")),
+            "hidream_shift": float(self.controller.config.get("hidream_shift", 6.0)),
             "enabled_image_models": self._enabled_model_keys(),
             "guidance_scale": self.schnell_guidance_input.value(),  # compat
             "num_inference_steps": self.schnell_steps_input.value(),  # compat

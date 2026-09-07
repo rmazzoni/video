@@ -13,9 +13,15 @@ class WorkflowSelector(QWidget):
 
     workflow_selected = pyqtSignal(str)
 
-    def __init__(self, workflows_dir: str, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        workflows_dir: str,
+        default_workflow: str = "",
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self.loader = WorkflowLoader(workflows_dir)
+        self.default_workflow = default_workflow
 
         self.combo = QComboBox(self)
         self.refresh_button = QPushButton("Refresh", self)
@@ -35,8 +41,9 @@ class WorkflowSelector(QWidget):
         self.combo.blockSignals(True)
         self.combo.clear()
         self.combo.addItems(self.loader.list_workflows())
-        if current:
-            index = self.combo.findText(current)
+        selected = current or self.default_workflow
+        if selected:
+            index = self.combo.findText(selected)
             if index >= 0:
                 self.combo.setCurrentIndex(index)
         self.combo.blockSignals(False)

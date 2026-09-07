@@ -1,5 +1,5 @@
 {
-  "_meta_note": "Z-Image Turbo text-to-image. Expected models: diffusion_models/z_image_turbo_bf16.safetensors, text_encoders/qwen_3_4b.safetensors, vae/ae.safetensors. Params: @prompt, @seed.",
+  "_meta_note": "Z-Image Turbo text-to-image. Expected models: diffusion_models/z_image_turbo_bf16.safetensors, text_encoders/qwen_3_4b.safetensors, vae/ae.safetensors. Params: @prompt, @seed, @width, @height, @steps, @sampler, @scheduler, @shift, @filename_prefix.",
   "1": {
     "class_type": "UNETLoader",
     "_meta": { "title": "Load Z-Image Turbo" },
@@ -33,7 +33,7 @@
   "7": {
     "class_type": "ModelSamplingAuraFlow",
     "_meta": { "title": "Z-Image Sampling Shift" },
-    "inputs": { "model": ["1", 0], "shift": 3.0 }
+    "inputs": { "model": ["1", 0], "shift": "@shift" }
   },
   "8": {
     "class_type": "KSampler",
@@ -43,8 +43,8 @@
       "seed": "@seed",
       "steps": "@steps",
       "cfg": 1.0,
-      "sampler_name": "euler",
-      "scheduler": "simple",
+      "sampler_name": "@sampler",
+      "scheduler": "@scheduler",
       "positive": ["4", 0],
       "negative": ["5", 0],
       "latent_image": ["6", 0],

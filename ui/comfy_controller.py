@@ -1,5 +1,6 @@
 """Connects the Qt6 UI to the comfy_bridge backend (client/loader)."""
 
+import copy
 import time
 from typing import Any, Dict, Optional
 
@@ -86,6 +87,11 @@ class ComfyController(QObject):
 
     def load_workflow(self, name: str) -> Dict[str, Any]:
         return self.loader.load(name)
+
+    def prepare_workflow(self, name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        graph = self.loader.load(name)
+        graph = {key: value for key, value in graph.items() if isinstance(value, dict)}
+        return self.client._substitute_params(copy.deepcopy(graph), params)
 
     def run_workflow(self, workflow_name: str, params: Optional[Dict[str, Any]] = None) -> None:
         """

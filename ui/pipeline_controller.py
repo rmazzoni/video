@@ -435,8 +435,21 @@ class PipelineWorker(QObject):
                     guidance = float(self.config.get("flux2_guidance", 1.0))
                 else:
                     raise ValueError(f"No native ComfyUI image workflow for: {model_type}")
+                model_key = {
+                    "flux-schnell": "schnell",
+                    "zimage-turbo": "zimage",
+                    "flux-dev": "dev",
+                    "hidream-dev": "hidream",
+                    "flux2": "flux2",
+                }[model_type]
+                sampler = str(self.config.get(f"{model_key}_sampler", "euler"))
+                scheduler_default = "simple" if model_key == "zimage" else "normal"
+                scheduler = str(self.config.get(f"{model_key}_scheduler", scheduler_default))
+                shift_default = 6.0 if model_key == "hidream" else 3.0
+                shift = float(self.config.get(f"{model_key}_shift", shift_default))
                 self.log.emit(
-                    f"ComfyUI image workflow: {model_type}  steps={steps}  guidance={guidance}")
+                    f"ComfyUI image workflow: {model_type}  steps={steps}  guidance={guidance}  "
+                    f"sampler={sampler}  scheduler={scheduler}  shift={shift}")
                 from images.comfy_image_generator import ComfyImageGenerator
                 return ComfyImageGenerator(
                     source_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
@@ -445,6 +458,9 @@ class PipelineWorker(QObject):
                     guidance=guidance,
                     steps=steps,
                     seed=int(self.config.get("seed", 42)),
+                    sampler=sampler,
+                    scheduler=scheduler,
+                    shift=shift,
                     width=int(self.config.get("image_width", 1024)),
                     height=int(self.config.get("image_height", 576)),
                     timeout=float(self.config.get("comfy_image_timeout", 900.0)),
@@ -1419,11 +1435,17 @@ class PipelineController(QObject):
         "schnell_guidance": 0.0,
         "zimage_steps": 9,
         "zimage_guidance": 0.0,
+        "zimage_sampler": "euler",
+        "zimage_scheduler": "simple",
+        "zimage_shift": 3.0,
         "enabled_image_models": ["schnell", "dev", "flux2"],
         "dev_steps": 20,
         "dev_guidance": 3.5,
         "hidream_steps": 28,
         "hidream_guidance": 1.5,
+        "hidream_sampler": "euler",
+        "hidream_scheduler": "normal",
+        "hidream_shift": 6.0,
         "flux2_steps": 4,
         "flux2_guidance": 1.0,
         "image_width": 1344,
