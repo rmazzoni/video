@@ -427,7 +427,9 @@ class PipelineWorker(QObject):
                     guidance = float(self.config.get("dev_guidance", 3.5))
                 elif model_type == "hidream-dev":
                     steps = int(self.config.get("hidream_steps", 28))
-                    guidance = float(self.config.get("hidream_guidance", 1.0))
+                    guidance = float(self.config.get("hidream_guidance", 1.5))
+                    if guidance in (1.0, 5.0):
+                        guidance = 1.5
                 elif model_type == "flux2":
                     steps = int(self.config.get("flux2_steps", 4))
                     guidance = float(self.config.get("flux2_guidance", 1.0))
@@ -1421,7 +1423,7 @@ class PipelineController(QObject):
         "dev_steps": 20,
         "dev_guidance": 3.5,
         "hidream_steps": 28,
-        "hidream_guidance": 1.0,
+        "hidream_guidance": 1.5,
         "flux2_steps": 4,
         "flux2_guidance": 1.0,
         "image_width": 1344,

@@ -39,9 +39,11 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
             ),
             "hidream": (
                 "Use richly detailed cinematic photography with coherent spatial staging, natural "
-                "anatomy, nuanced expressions, tactile materials, atmospheric depth, and motivated "
-                "light. Let the narration determine lens perspective and composition. Preserve the "
-                "literal action and identity while avoiding generic portrait staging or decorative clutter."
+                "anatomy, nuanced expressions, tactile materials, distinct depth planes, and motivated "
+                "light. Favor clear air and crisp local contrast unless the narration explicitly calls "
+                "for fog, mist, smoke, or haze. Let the narration determine lens perspective and "
+                "composition. Preserve the literal action and identity while avoiding generic portrait "
+                "staging or decorative clutter."
             ),
             "flux2": (
                 "Use sophisticated cinematic photography with purposeful composition, spatial "

@@ -12,8 +12,15 @@ system_instruction: 'Write image prompts optimized for HiDream-I1 Dev as one flu
 
   Describe one decisive moment with clear spatial relationships and deliberate visual
   hierarchy. Let the scene determine camera distance, perspective, blocking, depth,
-  atmosphere, palette, and motivated lighting. Preserve all people essential to the
-  event while avoiding unsupported crowds.
+  palette, and motivated lighting. Preserve all people essential to the event while
+  avoiding unsupported crowds.
+
+  State the dominant lighting and palette only once. Do not repeat or amplify color
+  words such as golden, amber, orange, red, or blue unless the source makes that color
+  essential. Preserve neutral material colors and tonal separation instead of covering
+  the whole image with a monochromatic haze. Use clear air, crisp local contrast, and
+  distinct foreground, middle-ground, and background planes by default. Include fog,
+  mist, smoke, bloom, or atmospheric haze only when the source explicitly requires it.
 
   Use precise natural language for anatomy, poses, hands, and object interactions
   only where visible and important. HiDream responds well to coherent prose and rich
@@ -26,4 +33,5 @@ requirements:
 - Make the subject, action, setting, and composition distinguish this scene from adjacent
   scenes.
 - Use coherent descriptive prose with purposeful composition and motivated light.
+- Avoid repeated palette or lighting adjectives that create a global color cast.
 - Use one prompt when the scene contains only one visual beat.

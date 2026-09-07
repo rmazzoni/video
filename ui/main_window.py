@@ -5431,7 +5431,11 @@ class MainWindow(QMainWindow):
             "zimage_steps": int(self.controller.config.get("zimage_steps", 9)),
             "zimage_guidance": float(self.controller.config.get("zimage_guidance", 0.0)),
             "hidream_steps": int(self.controller.config.get("hidream_steps", 28)),
-            "hidream_guidance": float(self.controller.config.get("hidream_guidance", 1.0)),
+            "hidream_guidance": (
+                1.5
+                if float(self.controller.config.get("hidream_guidance", 1.5)) in (1.0, 5.0)
+                else float(self.controller.config.get("hidream_guidance", 1.5))
+            ),
             "enabled_image_models": self._enabled_model_keys(),
             "guidance_scale": self.schnell_guidance_input.value(),  # compat
             "num_inference_steps": self.schnell_steps_input.value(),  # compat
