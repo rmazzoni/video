@@ -1119,16 +1119,6 @@ class PipelineWorker(QObject):
                     ("hidream-dev",  "hidream"),
                     ("flux2",        "flux2"),
                 ]
-                enabled_models = self.config.get(
-                    "enabled_image_models", ["schnell", "dev", "flux2"]
-                )
-                model_variants = [
-                    item for item in model_variants if item[1] in enabled_models
-                ]
-                if not model_variants:
-                    raise ValueError(
-                        "Enable an image model in Prompts > Configure Models for Final Images."
-                    )
                 target_scene = int(self.config.get("lightbox_scene_id", 0))
                 target_beat = int(self.config.get("lightbox_beat_index", 0))
                 target_model = str(self.config.get("lightbox_model_key", "")).strip().lower()
@@ -1139,6 +1129,17 @@ class PipelineWorker(QObject):
                     ]
                     if not model_variants:
                         raise ValueError(f"Unknown Lightbox model: {target_model}")
+                else:
+                    enabled_models = self.config.get(
+                        "enabled_image_models", ["schnell", "dev", "flux2"]
+                    )
+                    model_variants = [
+                        item for item in model_variants if item[1] in enabled_models
+                    ]
+                    if not model_variants:
+                        raise ValueError(
+                            "Enable an image model in Prompts > Configure Models for Final Images."
+                        )
 
                 def _model_prompt_rows(scene, model_key):
                     sid = int(scene["id"])

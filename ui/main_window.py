@@ -1642,20 +1642,27 @@ class MainWindow(QMainWindow):
         self._lightbox_image_labels: dict = {}
         return page
 
-    def _refresh_lightbox(self) -> None:
+    def _refresh_lightbox(self, only_scene_id: int | None = None) -> None:
         import yaml as _yaml
 
         project = self.project_path_input.text().strip()
         lightbox_dir = os.path.join(project, "output", "lightbox") if project else ""
 
-        while self._lightbox_grid_layout.count() > 1:
-            item = self._lightbox_grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._lightbox_checkboxes.clear()
-        self._lightbox_cells.clear()
-        self._lightbox_scene_cards.clear()
-        self._lightbox_image_labels.clear()
+        # A targeted single-scene rebuild avoids tearing down and recreating
+        # every scene card (and re-decoding every thumbnail) in the whole
+        # project — that full rebuild is what caused the long delay after
+        # "Update Lightbox" touched only one scene.
+        partial = only_scene_id is not None and bool(self._lightbox_scene_cards)
+
+        if not partial:
+            while self._lightbox_grid_layout.count() > 1:
+                item = self._lightbox_grid_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self._lightbox_checkboxes.clear()
+            self._lightbox_cells.clear()
+            self._lightbox_scene_cards.clear()
+            self._lightbox_image_labels.clear()
 
         if not lightbox_dir or not os.path.isdir(lightbox_dir):
             self._lightbox_status_label.setText(
@@ -1722,7 +1729,7 @@ class MainWindow(QMainWindow):
             model_key, beat, variant = _variant_parts(fname)
             return model_rank[model_key], beat, variant, fname
 
-        for sid in sorted(scene_files.keys()):
+        def _build_scene_card(sid: int) -> QWidget:
             selected_set = saved_selections.get(sid, set())
 
             scene_card = QWidget()
@@ -1790,12 +1797,11 @@ class MainWindow(QMainWindow):
                 img_lbl.setFixedSize(THUMB_W, THUMB_H)
                 img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 if os.path.exists(img_path):
-                    px = QPixmap(img_path)
+                    # Scaled decode via QImageReader — reading full-res pixels for
+                    # every variant of every scene on each refresh is what froze the UI.
+                    px = _load_thumbnail(img_path, THUMB_W, THUMB_H)
                     if not px.isNull():
-                        img_lbl.setPixmap(px.scaled(
-                            THUMB_W, THUMB_H,
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation))
+                        img_lbl.setPixmap(px)
                     else:
                         img_lbl.setText("(error)")
                         img_lbl.setStyleSheet("color:#E73A4B; font-size:10px;")
@@ -1825,8 +1831,28 @@ class MainWindow(QMainWindow):
                 thumb_grid.addWidget(cell, variant_index // 3, variant_index % 3)
 
             scene_vlay.addLayout(thumb_grid)
-            self._lightbox_grid_layout.insertWidget(
-                self._lightbox_grid_layout.count() - 1, scene_card)
+            return scene_card
+
+        if partial:
+            old_card = self._lightbox_scene_cards.pop(only_scene_id, None)
+            self._lightbox_checkboxes.pop(only_scene_id, None)
+            self._lightbox_cells.pop(only_scene_id, None)
+            self._lightbox_image_labels.pop(only_scene_id, None)
+            if old_card is not None:
+                self._lightbox_grid_layout.removeWidget(old_card)
+                old_card.deleteLater()
+            if only_scene_id in scene_files:
+                insert_index = sum(
+                    1 for sid in scene_files
+                    if sid < only_scene_id and sid in self._lightbox_scene_cards
+                )
+                new_card = _build_scene_card(only_scene_id)
+                self._lightbox_grid_layout.insertWidget(insert_index, new_card)
+        else:
+            for sid in sorted(scene_files.keys()):
+                scene_card = _build_scene_card(sid)
+                self._lightbox_grid_layout.insertWidget(
+                    self._lightbox_grid_layout.count() - 1, scene_card)
 
         # Build ordered flat list used by the navigable viewer.
         self._lightbox_image_list = [
@@ -1834,8 +1860,13 @@ class MainWindow(QMainWindow):
             for sid in sorted(scene_files.keys())
             for fname in sorted(scene_files[sid], key=_variant_order)
         ]
-        self._lightbox_update_image_badges()
-        self._lightbox_apply_unselected_filter()
+        if partial:
+            self._lightbox_update_image_badges(only_scene_id)
+            self._lightbox_apply_unselected_filter(only_scene_id)
+        else:
+            self._lightbox_update_image_badges()
+            self._lightbox_apply_unselected_filter()
+
 
     def _lightbox_toggle_unselected(self, hide_unselected: bool) -> None:
         self._lightbox_unselected_btn.setText(
@@ -2499,7 +2530,7 @@ class MainWindow(QMainWindow):
             _set_running(False)
             run_progress.setValue(100)
             if success:
-                self._refresh_lightbox()
+                self._refresh_lightbox(only_scene_id=scene_id)
                 run_status.setText(f"Scene {scene_id} beat {beat_index} Lightbox variants updated.")
             else:
                 run_status.setText(f"Lightbox update failed: {payload}")
@@ -2955,6 +2986,7 @@ class MainWindow(QMainWindow):
 
         self._prompt_model_tabs = QTabWidget()
         self._prompt_model_layouts = {}
+        self._prompt_scene_cards = {}
         self._prompt_profile_editors = {}
         for model_key, title in (
             ("schnell", "Schnell"),
@@ -3395,15 +3427,26 @@ class MainWindow(QMainWindow):
         scenes = _load("scenes.yaml").get("scenes", [])
         return scenes, _load("dubbing.yaml"), _load("prompts.yaml"), _load("prompt_overrides.yaml")
 
-    def _prompts_refresh(self) -> None:
+    def _prompts_refresh(self, only_scene_id: int | None = None, only_model_key: str | None = None) -> None:
         if not hasattr(self, "_prompt_model_layouts"):
             return
-        self._populate_project_profile_combo()
-        for cards_layout in self._prompt_model_layouts.values():
-            while cards_layout.count() > 1:
-                item = cards_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
+        if not hasattr(self, "_prompt_scene_cards"):
+            self._prompt_scene_cards = {}
+
+        # A targeted (scene, model) rebuild only replaces the one changed card
+        # instead of tearing down and recreating every card for every scene in
+        # every model tab — that full rebuild is what caused the long delay
+        # after a single image save.
+        partial = only_scene_id is not None and bool(self._prompt_scene_cards)
+
+        if not partial:
+            self._populate_project_profile_combo()
+            for cards_layout in self._prompt_model_layouts.values():
+                while cards_layout.count() > 1:
+                    item = cards_layout.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
+            self._prompt_scene_cards.clear()
 
         scenes, dubbing, prompts, overrides = self._prompts_project_data()
         if not scenes:
@@ -3461,77 +3504,104 @@ class MainWindow(QMainWindow):
                         (legacy_match.group(2).lower(), int(legacy_match.group(1)), 1)
                     )
 
-        for model_key, editor in self._prompt_profile_editors.items():
-            try:
-                profile_path = os.path.join(self._prompt_profiles_dir(), f"{model_key}.yaml")
-                profile = _yaml.safe_load(Path(profile_path).read_text(encoding="utf-8")) or {}
-                editor.setPlainText(str(profile.get("system_instruction", "")))
-            except Exception:
-                editor.clear()
+        if not partial:
+            for model_key, editor in self._prompt_profile_editors.items():
+                try:
+                    profile_path = os.path.join(self._prompt_profiles_dir(), f"{model_key}.yaml")
+                    profile = _yaml.safe_load(Path(profile_path).read_text(encoding="utf-8")) or {}
+                    editor.setPlainText(str(profile.get("system_instruction", "")))
+                except Exception:
+                    editor.clear()
 
-        for model_key, cards_layout in self._prompt_model_layouts.items():
-            for scene in scenes:
-                sid = int(scene["id"])
-                scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
-                models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
-                model_entry = models.get(model_key, {})
-                rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
+        def _build_card(model_key: str, scene: dict) -> QWidget:
+            sid = int(scene["id"])
+            scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
+            models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
+            model_entry = models.get(model_key, {})
+            rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
 
-                card = QWidget()
-                card.setObjectName("promptCard")
-                card.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                card.setToolTip("Click to edit this model's visual beats")
-                card.setStyleSheet(
-                    "QWidget#promptCard { background:#1D1B20; border:1px solid #36343B; border-radius:4px; }"
-                    "QWidget#promptCard:hover { border:1px solid #96BDE2; }"
+            card = QWidget()
+            card.setObjectName("promptCard")
+            card.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            card.setToolTip("Click to edit this model's visual beats")
+            card.setStyleSheet(
+                "QWidget#promptCard { background:#1D1B20; border:1px solid #36343B; border-radius:4px; }"
+                "QWidget#promptCard:hover { border:1px solid #96BDE2; }"
+            )
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(10, 8, 10, 8)
+            layout.setSpacing(4)
+
+            manual = any(row.get("source") == "manually_edited" for row in rows if isinstance(row, dict))
+            title = QLabel(f"Scene {sid} | {len(rows)} visual beat(s)" + (" | manual" if manual else ""))
+            title.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; border:none;")
+            title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            layout.addWidget(title)
+            for index, row in enumerate(rows, 1):
+                text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
+                beat_index = int(row.get("beat", index)) if isinstance(row, dict) else index
+                has_preview = (
+                    model_key in ("schnell", "zimage")
+                    and (model_key, sid, beat_index) in saved_preview_beats
                 )
-                layout = QVBoxLayout(card)
-                layout.setContentsMargins(10, 8, 10, 8)
-                layout.setSpacing(4)
+                has_lightbox = (
+                    model_key in ("schnell", "zimage", "dev", "hidream", "flux2")
+                    and (model_key, sid, beat_index) in saved_lightbox_beats
+                )
+                has_saved_image = has_preview or has_lightbox
+                value_label = QLabel(f"{index}. {text}")
+                value_label.setWordWrap(True)
+                value_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                if has_saved_image:
+                    saved_location = "Preview" if has_preview else "Lightbox"
+                    value_label.setToolTip(
+                        f"{saved_location} image saved. Click to open this visual beat")
+                    value_label.setStyleSheet(
+                        "color:#C9A6E6; font-size:12px; background:#173326; "
+                        "border:2px solid #9FD6B8; border-radius:2px; padding:5px;"
+                    )
+                else:
+                    value_label.setToolTip("Open this visual beat")
+                    value_label.setStyleSheet(
+                        "color:#C9A6E6; font-size:12px; background:#131118; "
+                        "border:1px solid #2a2830; border-radius:2px; padding:5px;"
+                    )
+                value_label.mousePressEvent = (
+                    lambda event, s=sid, key=model_key, beat=beat_index:
+                    self._open_prompt_beat_dialog(s, key, beat)
+                )
+                layout.addWidget(value_label)
+            if not rows:
+                layout.addWidget(QLabel("Not generated"))
+            return card
 
-                manual = any(row.get("source") == "manually_edited" for row in rows if isinstance(row, dict))
-                title = QLabel(f"Scene {sid} | {len(rows)} visual beat(s)" + (" | manual" if manual else ""))
-                title.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; border:none;")
-                title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                layout.addWidget(title)
-                for index, row in enumerate(rows, 1):
-                    text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
-                    beat_index = int(row.get("beat", index)) if isinstance(row, dict) else index
-                    has_preview = (
-                        model_key in ("schnell", "zimage")
-                        and (model_key, sid, beat_index) in saved_preview_beats
-                    )
-                    has_lightbox = (
-                        model_key in ("schnell", "zimage", "dev", "hidream", "flux2")
-                        and (model_key, sid, beat_index) in saved_lightbox_beats
-                    )
-                    has_saved_image = has_preview or has_lightbox
-                    value_label = QLabel(f"{index}. {text}")
-                    value_label.setWordWrap(True)
-                    value_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                    if has_saved_image:
-                        saved_location = "Preview" if has_preview else "Lightbox"
-                        value_label.setToolTip(
-                            f"{saved_location} image saved. Click to open this visual beat")
-                        value_label.setStyleSheet(
-                            "color:#C9A6E6; font-size:12px; background:#173326; "
-                            "border:2px solid #9FD6B8; border-radius:2px; padding:5px;"
-                        )
-                    else:
-                        value_label.setToolTip("Open this visual beat")
-                        value_label.setStyleSheet(
-                            "color:#C9A6E6; font-size:12px; background:#131118; "
-                            "border:1px solid #2a2830; border-radius:2px; padding:5px;"
-                        )
-                    value_label.mousePressEvent = (
-                        lambda event, s=sid, key=model_key, beat=beat_index:
-                        self._open_prompt_beat_dialog(s, key, beat)
-                    )
-                    layout.addWidget(value_label)
-                if not rows:
-                    layout.addWidget(QLabel("Not generated"))
-
-                cards_layout.insertWidget(cards_layout.count() - 1, card)
+        if partial:
+            model_keys = [only_model_key] if only_model_key else list(self._prompt_model_layouts.keys())
+            scene = next((s for s in scenes if int(s["id"]) == only_scene_id), None)
+            for model_key in model_keys:
+                cards_layout = self._prompt_model_layouts.get(model_key)
+                if cards_layout is None:
+                    continue
+                old_card = self._prompt_scene_cards.pop((model_key, only_scene_id), None)
+                if old_card is not None:
+                    cards_layout.removeWidget(old_card)
+                    old_card.deleteLater()
+                if scene is None:
+                    continue
+                insert_index = sum(
+                    1 for s in scenes
+                    if int(s["id"]) < only_scene_id and (model_key, int(s["id"])) in self._prompt_scene_cards
+                )
+                new_card = _build_card(model_key, scene)
+                cards_layout.insertWidget(insert_index, new_card)
+                self._prompt_scene_cards[(model_key, only_scene_id)] = new_card
+        else:
+            for model_key, cards_layout in self._prompt_model_layouts.items():
+                for scene in scenes:
+                    sid = int(scene["id"])
+                    card = _build_card(model_key, scene)
+                    cards_layout.insertWidget(cards_layout.count() - 1, card)
+                    self._prompt_scene_cards[(model_key, sid)] = card
 
         self._prompts_status_label.setText(
             f"{len(scenes)} scene(s). Build Prompts generates every enabled model profile; click a card to edit beats."
@@ -3597,7 +3667,7 @@ class MainWindow(QMainWindow):
                     _yaml.safe_dump(legacy, allow_unicode=True, sort_keys=False), encoding="utf-8"
                 )
             dialog.accept()
-            self._prompts_refresh()
+            self._prompts_refresh(only_scene_id=scene_id, only_model_key=model_key)
 
         cancel.clicked.connect(dialog.reject)
         save.clicked.connect(_save)
@@ -3882,8 +3952,8 @@ class MainWindow(QMainWindow):
                         )
             if close_dialog:
                 dialog.accept()
-                self._prompts_refresh()
-                self._refresh_lightbox()
+                self._prompts_refresh(only_scene_id=scene_id, only_model_key=model_key)
+                self._refresh_lightbox(only_scene_id=scene_id)
             else:
                 status.setText("Prompt saved.")
             return True
@@ -3948,8 +4018,8 @@ class MainWindow(QMainWindow):
             _set_image_running(False)
             progress.setValue(100)
             if success:
-                self._prompts_refresh()
-                self._refresh_lightbox()
+                self._prompts_refresh(only_scene_id=scene_id, only_model_key=model_key)
+                self._refresh_lightbox(only_scene_id=scene_id)
                 status.setText(
                     f"Scene {scene_id} beat {beat_index} {model_key} Lightbox variants updated."
                 )
@@ -4019,9 +4089,14 @@ class MainWindow(QMainWindow):
             _update_save_states()
             preview.mousePressEvent = lambda event: self._open_image_viewer(destination)
             status.setText(f"Saved neutral image to {destination_dir}.")
-            self._prompts_refresh()
-            self._refresh_draft_grid()
-            self._refresh_lightbox()
+            self._prompts_refresh(only_scene_id=scene_id, only_model_key=model_key)
+            # Only rebuild the grid whose folder actually changed — rebuilding both
+            # forces every thumbnail in the *other*, untouched grid to be re-decoded
+            # from disk, which is what made this action feel like a freeze.
+            if is_preview_model:
+                self._refresh_draft_grid()
+            else:
+                self._refresh_lightbox(only_scene_id=scene_id)
 
         def _update_lightbox():
             if getattr(self.controller, "_thread", None) is not None:
