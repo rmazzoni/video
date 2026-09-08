@@ -8,6 +8,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import yaml
+
 from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -296,11 +298,14 @@ class MainWindow(QMainWindow):
         self.project_path_input.setPlaceholderText("Select or create a project folder")
         btn_select_project = QPushButton("Browse")
         btn_select_project.clicked.connect(self.select_project)
+        btn_open_project = QPushButton("Open Project File")
+        btn_open_project.clicked.connect(self.open_project_file)
         btn_create_project = QPushButton("Create New Project")
         btn_create_project.clicked.connect(self.create_project)
         project_row.addWidget(QLabel("Project:"))
         project_row.addWidget(self.project_path_input, 1)
         project_row.addWidget(btn_select_project)
+        project_row.addWidget(btn_open_project)
         project_row.addWidget(btn_create_project)
 
         recent_row = QHBoxLayout()
@@ -2586,6 +2591,8 @@ class MainWindow(QMainWindow):
             run_status.setText(f"Updating Lightbox for scene {scene_id} beat {beat_index}...")
             self.controller.pipeline_progress.connect(_on_progress)
             self.controller.pipeline_finished.connect(_on_lightbox_done)
+            self._pending_lightbox_scene_id = scene_id
+            self._pending_lightbox_model_key = preview_model_key
             self.controller.run_pipeline("final_images", {
                 "lightbox_scene_id": scene_id,
                 "lightbox_beat_index": beat_index,
@@ -4114,6 +4121,8 @@ class MainWindow(QMainWindow):
             )
             self.controller.pipeline_progress.connect(_show_progress)
             self.controller.pipeline_finished.connect(_show_lightbox_done)
+            self._pending_lightbox_scene_id = scene_id
+            self._pending_lightbox_model_key = model_key
             self.controller.run_pipeline("final_images", {
                 "lightbox_scene_id": scene_id,
                 "lightbox_beat_index": beat_index,
@@ -5840,9 +5849,16 @@ class MainWindow(QMainWindow):
             # (e.g. while a zoom dialog is still open).
             QTimer.singleShot(0, self._refresh_draft_grid)
 
-        # Auto-refresh the Lightbox tab when final_images completes.
+        # Auto-refresh the Lightbox tab when final_images completes. Use the
+        # single scene targeted by a Tweak Prompt / draft-zoom "Update Lightbox"
+        # click (if any) so this doesn't force a full project rebuild — a full
+        # rebuild here is what froze whichever dialog was still open on top of it.
+        target_scene_id = getattr(self, "_pending_lightbox_scene_id", None)
+        target_model_key = getattr(self, "_pending_lightbox_model_key", None)
+        self._pending_lightbox_scene_id = None
+        self._pending_lightbox_model_key = None
         if success and payload and os.path.isdir(payload) and "lightbox" in payload:
-            QTimer.singleShot(0, self._refresh_lightbox)
+            QTimer.singleShot(0, lambda sid=target_scene_id: self._refresh_lightbox(only_scene_id=sid))
 
         # After a sync-triggered prompts run, refresh the Dubbing tab
         if success and hasattr(self, "_sync_pending") and self._sync_pending:
@@ -5850,7 +5866,16 @@ class MainWindow(QMainWindow):
             self._dub_refresh()
 
         if success:
-            QTimer.singleShot(0, self._prompts_refresh)
+            # Reuse the same single-scene target as the Lightbox refresh above so
+            # this doesn't redundantly rebuild every prompt card in every model
+            # tab right after the dialog-driven refresh already updated the one
+            # card that changed — that redundant full rebuild was the remaining
+            # freeze after "Update Lightbox" finished.
+            QTimer.singleShot(
+                0,
+                lambda sid=target_scene_id, key=target_model_key:
+                    self._prompts_refresh(only_scene_id=sid, only_model_key=key),
+            )
             if payload and os.path.basename(payload) == "model_prompts.yaml":
                 QTimer.singleShot(0, self._refresh_draft_grid)
                 QTimer.singleShot(0, self._refresh_lightbox)
@@ -5999,7 +6024,29 @@ class MainWindow(QMainWindow):
     def select_project(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Project Folder")
         if folder:
-            self.controller.set_project_path(folder)
+            try:
+                self.controller.set_project_path(folder)
+            except OSError as exc:
+                QMessageBox.critical(self, "Open project failed", str(exc))
+
+    def open_project_file(self):
+        manifest_path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Open VID Project",
+            "",
+            "VID Project (vid_project.yaml);;YAML Files (*.yaml *.yml)",
+        )
+        if not manifest_path:
+            return
+
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as handle:
+                manifest = yaml.safe_load(handle) or {}
+            if manifest.get("format") != "vid_project":
+                raise ValueError("The selected file is not a VID project file.")
+            self.controller.set_project_path(os.path.dirname(manifest_path))
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            QMessageBox.critical(self, "Open project failed", str(exc))
 
     def use_recent_project(self):
         selected = self.recent_projects_combo.currentText().strip()

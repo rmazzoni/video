@@ -1490,6 +1490,9 @@ class PipelineController(QObject):
 
     def set_project_path(self, path: str) -> None:
         normalized = os.path.abspath(path)
+        if not os.path.isdir(normalized):
+            raise NotADirectoryError(f"Project folder does not exist: {normalized}")
+        self._ensure_project_manifest(normalized)
         self.project_path = normalized
         self._add_recent_project(normalized)
         self.log.info(f"Project path set to: {normalized}")
@@ -1515,8 +1518,25 @@ class PipelineController(QObject):
         with open(narration_path, "w", encoding="utf-8") as handle:
             handle.write("Paste narration text here.\n")
 
+        self._ensure_project_manifest(project_path, project_name)
         self.set_project_path(project_path)
         return project_path
+
+    def _ensure_project_manifest(self, project_path: str, project_name: Optional[str] = None) -> str:
+        manifest_path = os.path.join(project_path, "vid_project.yaml")
+        if os.path.exists(manifest_path):
+            return manifest_path
+
+        manifest = {
+            "format": "vid_project",
+            "version": 1,
+            "name": project_name or os.path.basename(project_path),
+            "input_dir": "input",
+            "output_dir": "output",
+        }
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(manifest, handle, sort_keys=False)
+        return manifest_path
 
     def load_settings(self) -> Dict:
         loaded = self.config_loader.load_settings(default=self.DEFAULT_SETTINGS, create_if_missing=True)
