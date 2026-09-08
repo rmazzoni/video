@@ -2040,11 +2040,12 @@ class MainWindow(QMainWindow):
         # ── Navigation row ────────────────────────────────────────────────────
         nav_row = QHBoxLayout()
         btn_prev = QPushButton("◀  Prev")
+        btn_tweak_prompt = QPushButton("Tweak Prompt")
         btn_next = QPushButton("Next  ▶")
         info_lbl = QLabel()
         info_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
         info_lbl.setStyleSheet("color:#8E8B90; font-size:11px;")
-        for btn in (btn_prev, btn_next):
+        for btn in (btn_prev, btn_tweak_prompt, btn_next):
             btn.setStyleSheet(
                 "QPushButton { background:#36343B; color:#E6E1E5; border:none;"
                 " border-radius:4px; padding:5px 18px; }"
@@ -2053,6 +2054,7 @@ class MainWindow(QMainWindow):
             )
             btn.setFocusPolicy(_Qt.FocusPolicy.NoFocus)
         nav_row.addWidget(btn_prev)
+        nav_row.addWidget(btn_tweak_prompt)
         nav_row.addStretch(1)
         nav_row.addWidget(info_lbl, 2)
         nav_row.addStretch(1)
@@ -2082,7 +2084,12 @@ class MainWindow(QMainWindow):
             model_name = {"schnell": "Schnell", "zimage": "Z-Image Turbo", "dev": "DEV", "hidream": "HiDream-I1 Dev", "flux2": "FLUX.2"}[
                 model_key.lower()
             ]
-            return int(scene), int(beat or 1), model_name
+            return int(scene), int(beat or 1), model_key.lower(), model_name
+
+        def _tweak_prompt():
+            metadata = _image_metadata(image_list[state["idx"]])
+            if metadata:
+                self._open_prompt_beat_dialog(metadata[0], metadata[2], metadata[1])
 
         # Sync the viewer checkbox → grid checkbox (one direction)
         def _on_viewer_chk(checked: int):
@@ -2110,7 +2117,7 @@ class MainWindow(QMainWindow):
             dlg.setWindowTitle(name)
             metadata = _image_metadata(path)
             metadata_lbl.setText(
-                f"Scene {metadata[0]}  |  Beat {metadata[1]}  |  {metadata[2]}"
+                f"Scene {metadata[0]}  |  Beat {metadata[1]}  |  {metadata[3]}"
                 if metadata else name
             )
             info_lbl.setText(
@@ -2118,6 +2125,7 @@ class MainWindow(QMainWindow):
                 "   ◀ ▶  or  ← →  to navigate   ·  Esc to close"
             )
             btn_prev.setEnabled(idx > 0)
+            btn_tweak_prompt.setEnabled(metadata is not None)
             btn_next.setEnabled(idx < len(image_list) - 1)
 
             # Mirror grid checkbox state into viewer checkbox (block signal to avoid loop)
@@ -2132,6 +2140,7 @@ class MainWindow(QMainWindow):
             sel_chk.blockSignals(False)
 
         btn_prev.clicked.connect(lambda: _load(state["idx"] - 1))
+        btn_tweak_prompt.clicked.connect(_tweak_prompt)
         btn_next.clicked.connect(lambda: _load(state["idx"] + 1))
 
         def _key(event: QKeyEvent):
@@ -3881,6 +3890,7 @@ class MainWindow(QMainWindow):
 
         def _set_image_running(running: bool):
             generate_image.setEnabled(not running)
+            update_lightbox.setEnabled(not running)
             regenerate.setEnabled(not running)
             save.setEnabled(not running)
             cancel.setEnabled(not running)
@@ -3931,9 +3941,28 @@ class MainWindow(QMainWindow):
             progress.setValue(100)
             status.setText("Candidate ready. Save it or adjust the prompt and generate again.")
 
+        def _show_lightbox_done(success: bool, payload: str):
+            _disconnect_generation_signals()
+            if sip.isdeleted(dialog):
+                return
+            _set_image_running(False)
+            progress.setValue(100)
+            if success:
+                self._prompts_refresh()
+                self._refresh_lightbox()
+                status.setText(
+                    f"Scene {scene_id} beat {beat_index} {model_key} Lightbox variants updated."
+                )
+            else:
+                status.setText(f"Lightbox update failed: {payload}")
+
         def _disconnect_generation_signals():
             try:
                 self.controller.pipeline_finished.disconnect(_show_candidate)
+            except Exception:
+                pass
+            try:
+                self.controller.pipeline_finished.disconnect(_show_lightbox_done)
             except Exception:
                 pass
             try:
@@ -4002,9 +4031,14 @@ class MainWindow(QMainWindow):
                 return
             if not _save(close_dialog=False):
                 return
-            dialog.accept()
-            self._prompts_refresh()
-            self._refresh_lightbox()
+            _disconnect_generation_signals()
+            _set_image_running(True)
+            progress.setValue(0)
+            status.setText(
+                f"Updating Lightbox for scene {scene_id} beat {beat_index} {model_key}..."
+            )
+            self.controller.pipeline_progress.connect(_show_progress)
+            self.controller.pipeline_finished.connect(_show_lightbox_done)
             self.controller.run_pipeline("final_images", {
                 "lightbox_scene_id": scene_id,
                 "lightbox_beat_index": beat_index,
