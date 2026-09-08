@@ -1,64 +1,141 @@
 {
-  "_meta_note": "Z-Image Turbo text-to-image. Expected models: diffusion_models/z_image_turbo_bf16.safetensors, text_encoders/qwen_3_4b.safetensors, vae/ae.safetensors. Params: @prompt, @seed, @width, @height, @steps, @sampler, @scheduler, @shift, @filename_prefix.",
   "1": {
+    "_meta": {
+      "title": "Load Z-Image Turbo"
+    },
     "class_type": "UNETLoader",
-    "_meta": { "title": "Load Z-Image Turbo" },
-    "inputs": { "unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default" }
+    "inputs": {
+      "unet_name": "z_image_turbo_bf16.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "10": {
+    "_meta": {
+      "title": "Save Image"
+    },
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "@filename_prefix",
+      "images": [
+        "9",
+        0
+      ]
+    }
   },
   "2": {
+    "_meta": {
+      "title": "Load Qwen Text Encoder"
+    },
     "class_type": "CLIPLoader",
-    "_meta": { "title": "Load Qwen Text Encoder" },
-    "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "lumina2" }
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "device": "default",
+      "type": "lumina2"
+    }
   },
   "3": {
+    "_meta": {
+      "title": "Load VAE"
+    },
     "class_type": "VAELoader",
-    "_meta": { "title": "Load VAE" },
-    "inputs": { "vae_name": "ae.safetensors" }
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
   },
   "4": {
+    "_meta": {
+      "title": "Positive Prompt"
+    },
     "class_type": "CLIPTextEncode",
-    "_meta": { "title": "Positive Prompt" },
-    "inputs": { "text": "@prompt", "clip": ["2", 0] }
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "text": "@prompt"
+    }
   },
   "5": {
+    "_meta": {
+      "title": "Negative (Zeroed)"
+    },
     "class_type": "ConditioningZeroOut",
-    "_meta": { "title": "Negative (Zeroed)" },
-    "inputs": { "conditioning": ["4", 0] }
+    "inputs": {
+      "conditioning": [
+        "4",
+        0
+      ]
+    }
   },
   "6": {
+    "_meta": {
+      "title": "Empty Latent"
+    },
     "class_type": "EmptySD3LatentImage",
-    "_meta": { "title": "Empty Latent" },
-    "inputs": { "width": "@width", "height": "@height", "batch_size": 1 }
+    "inputs": {
+      "batch_size": 1,
+      "height": "@height",
+      "width": "@width"
+    }
   },
   "7": {
+    "_meta": {
+      "title": "Z-Image Sampling Shift"
+    },
     "class_type": "ModelSamplingAuraFlow",
-    "_meta": { "title": "Z-Image Sampling Shift" },
-    "inputs": { "model": ["1", 0], "shift": "@shift" }
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": "@shift"
+    }
   },
   "8": {
+    "_meta": {
+      "title": "KSampler"
+    },
     "class_type": "KSampler",
-    "_meta": { "title": "KSampler" },
     "inputs": {
-      "model": ["7", 0],
-      "seed": "@seed",
-      "steps": "@steps",
-      "cfg": 1.0,
+      "cfg": 1,
+      "denoise": 1,
+      "latent_image": [
+        "6",
+        0
+      ],
+      "model": [
+        "7",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "positive": [
+        "4",
+        0
+      ],
       "sampler_name": "@sampler",
       "scheduler": "@scheduler",
-      "positive": ["4", 0],
-      "negative": ["5", 0],
-      "latent_image": ["6", 0],
-      "denoise": 1.0
+      "seed": "@seed",
+      "steps": "@steps"
     }
   },
   "9": {
+    "_meta": {
+      "title": "VAE Decode"
+    },
     "class_type": "VAEDecode",
-    "_meta": { "title": "VAE Decode" },
-    "inputs": { "samples": ["8", 0], "vae": ["3", 0] }
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
   },
-  "10": {
-    "class_type": "SaveImage",
-    "_meta": { "title": "Save Image" },
-    "inputs": { "images": ["9", 0], "filename_prefix": "@filename_prefix" }
-  }
+  "_meta_note": "Z-Image Turbo text-to-image. Expected models: diffusion_models/z_image_turbo_bf16.safetensors, text_encoders/qwen_3_4b.safetensors, vae/ae.safetensors. Params: @prompt, @seed, @width, @height, @steps, @sampler, @scheduler, @shift, @filename_prefix."
 }

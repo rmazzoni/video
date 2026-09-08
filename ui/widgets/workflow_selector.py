@@ -47,6 +47,8 @@ class WorkflowSelector(QWidget):
             if index >= 0:
                 self.combo.setCurrentIndex(index)
         self.combo.blockSignals(False)
+        if self.combo.currentText():
+            self.workflow_selected.emit(self.combo.currentText())
 
     def selected_workflow(self) -> str:
         return self.combo.currentText()
