@@ -2125,7 +2125,10 @@ class MainWindow(QMainWindow):
         def _tweak_prompt():
             metadata = _image_metadata(image_list[state["idx"]])
             if metadata:
-                self._open_prompt_beat_dialog(metadata[0], metadata[2], metadata[1])
+                # Parent to this viewer dialog (not MainWindow) so the two modal
+                # dialogs nest correctly instead of competing as separate top-level
+                # modals, which made the viewer appear to vanish and reappear.
+                self._open_prompt_beat_dialog(metadata[0], metadata[2], metadata[1], parent=dlg)
 
         # Sync the viewer checkbox → grid checkbox (one direction)
         def _on_viewer_chk(checked: int):
@@ -3680,7 +3683,8 @@ class MainWindow(QMainWindow):
         save.clicked.connect(_save)
         dialog.exec()
 
-    def _open_prompt_beat_dialog(self, scene_id: int, model_key: str, beat_index: int) -> None:
+    def _open_prompt_beat_dialog(self, scene_id: int, model_key: str, beat_index: int,
+                                  parent=None) -> None:
         import yaml as _yaml
         from PyQt6.QtWidgets import QDialog, QTextEdit
         from prompts.model_prompt_service import ModelPromptService
@@ -3722,7 +3726,7 @@ class MainWindow(QMainWindow):
             preview_candidates.append(os.path.join(preview_dir, f"scene_{scene_id:03d}.png"))
         image_path = next((path for path in preview_candidates if os.path.exists(path)), "")
 
-        dialog = QDialog(self)
+        dialog = QDialog(parent or self)
         dialog.setWindowTitle(f"Scene {scene_id} | {model_key} | Beat {beat_index}")
         dialog.resize(900, 820)
         layout = QVBoxLayout(dialog)

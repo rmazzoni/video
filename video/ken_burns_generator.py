@@ -134,12 +134,20 @@ class KenBurnsGenerator:
         # accuracy; LANCZOS gives high-quality downsample.  Parallel rendering
         # keeps all CPU cores busy so the pipe-write to ffmpeg becomes the
         # wall-clock limit rather than PIL.
-        rng = random.Random((self.seed if self.seed is not None else 0) ^ (scene_id * 2654435761))
-        motion = rng.choice(_MOTIONS)
+        pan_number = scene_id if motion_index is None else motion_index
+        rng = random.Random(
+            (self.seed if self.seed is not None else 0)
+            ^ (scene_id * 2654435761)
+            ^ (pan_number * 2246822519)
+        )
+        zooming_in = pan_number % 2 == 0
+        motion = rng.choice([
+            candidate for candidate in _MOTIONS
+            if (candidate["zoom_end"] > candidate["zoom_start"]) == zooming_in
+        ])
 
         zoom_start = motion["zoom_start"]
         zoom_end   = motion["zoom_end"]
-        pan_number = scene_id if motion_index is None else motion_index
         pan_x      = _pan_x_for_clip(pan_number)
         pan_y      = motion["pan_y"]
 
@@ -156,10 +164,11 @@ class KenBurnsGenerator:
             zoom  = zoom_start + (zoom_end - zoom_start) * t
             src_w = img_w / zoom
             src_h = img_h / zoom
-            cx = img_w / 2.0 + pan_x * img_w * t
-            cy = img_h / 2.0 + pan_y * img_h * t
-            x0 = max(0.0, min(cx - src_w / 2.0, img_w - src_w))
-            y0 = max(0.0, min(cy - src_h / 2.0, img_h - src_h))
+            x_travel = min(abs(pan_x) * 10.0, 1.0)
+            y_travel = min(abs(pan_y) * 10.0, 1.0)
+            travel_progress = t if zooming_in else 1.0 - t
+            x0 = max(0.0, img_w - src_w) * x_travel * travel_progress
+            y0 = max(0.0, img_h - src_h) * y_travel * travel_progress
             return (
                 image.transform(
                     (out_w, out_h),
@@ -215,10 +224,9 @@ class KenBurnsGenerator:
             final_z  = zoom_end
             crop_w   = img_w / final_z
             crop_h   = img_h / final_z
-            final_cx = img_w / 2.0 + pan_x * img_w
-            final_cy = img_h / 2.0 + pan_y * img_h
-            crop_x   = max(0.0, min(final_cx - crop_w / 2.0, img_w - crop_w))
-            crop_y   = max(0.0, min(final_cy - crop_h / 2.0, img_h - crop_h))
+            final_progress = 1.0 if zooming_in else 0.0
+            crop_x   = max(0.0, img_w - crop_w) * x_travel * final_progress
+            crop_y   = max(0.0, img_h - crop_h) * y_travel * final_progress
             hold_vf  = (
                 f"crop={crop_w:.2f}:{crop_h:.2f}:{crop_x:.2f}:{crop_y:.2f}"
                 f",scale={out_w}:{out_h},setsar=1"
