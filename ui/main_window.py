@@ -5814,15 +5814,16 @@ class MainWindow(QMainWindow):
         self.log_output.appendPlainText(message)
 
     @staticmethod
-    def _flush_cuda_main_thread() -> None:
+    def _flush_cuda_background() -> None:
         """
-        Called from the main thread (via QTimer) after a GPU pipeline stage
-        completes.  Forces Python GC and frees the CUDA allocator cache so
-        that VRAM drops back to idle.  NOTE: torch.cuda.synchronize() is
-        intentionally NOT called here — calling it from the Qt event-loop
-        thread (a different thread from the one that submitted the kernels)
-        can hard-crash the CUDA driver on Windows, making the process
-        disappear silently.
+        Runs on its own throwaway Python thread after a pipeline stage
+        completes. Forces Python GC and frees the CUDA allocator cache so
+        that VRAM drops back to idle. This MUST NOT run on the Qt main
+        thread: torch.cuda.empty_cache()/synchronize() calls made from the
+        event-loop thread — a different thread than whichever pipeline
+        worker last touched CUDA — can block on the driver for a long time
+        (or hard-crash it on Windows) while the GPU is still winding down,
+        which froze the whole UI until the process was killed.
         """
         import gc
         gc.collect()
@@ -5839,11 +5840,10 @@ class MainWindow(QMainWindow):
             btn.setEnabled(True)
         self.btn_cancel_pipeline.setEnabled(False)
 
-        # Flush any leftover CUDA work from the worker thread on the main
-        # thread so the GPU drops back to idle without waiting for a window
-        # focus event to trigger the event-loop flush.
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self._flush_cuda_main_thread)
+        # Flush any leftover CUDA work off the main thread so the GPU drops
+        # back to idle without ever blocking the Qt event loop on the driver.
+        import threading
+        threading.Thread(target=self._flush_cuda_background, daemon=True).start()
 
         # Auto-refresh the preview grid whenever preview_images or final_images completes.
         if success and payload and os.path.isdir(payload) and (
