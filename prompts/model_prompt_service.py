@@ -87,13 +87,15 @@ def build_prompt_user_payload(scene: Dict[str, Any], beat: VisualBeat) -> Dict[s
 class ModelPromptService:
     def __init__(self, profiles_dir: str, ollama_model: str, ollama_host: str,
                  max_visual_beats: int = None, project_profile_text: str = "",
-                 visual_style_key: str = DEFAULT_VISUAL_STYLE):
+                 visual_style_key: str = DEFAULT_VISUAL_STYLE,
+                 extraction_guidance: str = ""):
         self.profiles_dir = profiles_dir
         self.ollama_model = ollama_model
         self.ollama_host = ollama_host
         self.max_visual_beats = max_visual_beats
         self.project_profile_text = (project_profile_text or "").strip()
         self.visual_style_key = visual_style_key
+        self.extraction_guidance = (extraction_guidance or "").strip()
 
     def load_profile(self, model_key: str) -> Dict[str, Any]:
         if model_key not in MODEL_KEYS:
@@ -128,6 +130,7 @@ class ModelPromptService:
             ollama_model=self.ollama_model,
             ollama_host=self.ollama_host,
             max_visual_beats=self.max_visual_beats,
+            extra_system=self.extraction_guidance,
         )
 
     def extract_visual_beats(self, scene: Dict[str, Any]) -> List[str]:
@@ -146,16 +149,26 @@ class ModelPromptService:
             beats = [fallback_beat(str(scene.get("text") or ""))]
         rows = []
         for index, beat in enumerate(beats, 1):
-            prompt = self.regenerate_prompt(scene, model_key, beat)
-            rows.append({
-                "id": f"scene_{int(scene['id']):03d}_beat_{index:02d}_{model_key}",
-                "beat": index,
-                "visual_beat": beat.beat,
-                "text": prompt,
-                "generated_prompt": prompt,
-                "source": "generated",
-            })
+            rows.append(self.prompt_row_for_beat(scene, model_key, beat, index))
         return rows
+
+    def prompt_row_for_beat(
+        self,
+        scene: Dict[str, Any],
+        model_key: str,
+        visual_beat: BeatInput,
+        beat_index: int,
+    ) -> Dict[str, Any]:
+        beat = VisualBeat.from_stored(visual_beat) or fallback_beat(str(scene.get("text") or ""))
+        prompt = self.regenerate_prompt(scene, model_key, beat)
+        return {
+            "id": f"scene_{int(scene['id']):03d}_beat_{int(beat_index):02d}_{model_key}",
+            "beat": int(beat_index),
+            "visual_beat": beat.beat,
+            "text": prompt,
+            "generated_prompt": prompt,
+            "source": "generated",
+        }
 
     def regenerate_prompt(
         self,

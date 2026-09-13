@@ -64,14 +64,196 @@ class PipelineWorker(QObject):
             candidates.extend(glob.glob(os.path.join(images_dir, f"scene_*.{ext}")))
         return sorted(candidates, key=PipelineWorker._extract_scene_id)
 
+    def _make_prompt_service(self):
+        from prompts.beat_feedback import extract_guidance_text, load_beat_feedback
+        from prompts.model_prompt_service import ModelPromptService
+        from prompts.project_profiles import get_profile_text, load_project_profiles
+
+        profiles_dir = self._resolve_path(str(self.config.get(
+            "prompt_profiles_dir", "src/config/prompt_profiles")))
+        project_profile_key = str(self.config.get("project_profile_key", "")).strip()
+        project_profile_text = get_profile_text(
+            load_project_profiles(os.path.dirname(profiles_dir)), project_profile_key
+        )
+        feedback = load_beat_feedback(os.path.join(self.project_path, "output"))
+        include_examples = bool(self.config.get(
+            "include_beat_examples", feedback.get("include_examples", True)
+        ))
+        notes = str(self.config.get("beat_extraction_notes") or feedback.get("extraction_notes") or "")
+        return ModelPromptService(
+            profiles_dir=profiles_dir,
+            ollama_model=str(self.config.get("ollama_model", "qwen3:8b")),
+            ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
+            max_visual_beats=(int(self.config["max_visual_beats"])
+                              if self.config.get("max_visual_beats") is not None else None),
+            project_profile_text=project_profile_text,
+            visual_style_key=str(self.config.get("visual_style", "cinematic")),
+            extraction_guidance=extract_guidance_text(
+                notes,
+                feedback.get("examples") or [],
+                include_examples=include_examples,
+            ),
+        )
+
+    def _model_prompts_path(self) -> str:
+        return os.path.join(self.project_path, "output", "model_prompts.yaml")
+
+    def _load_model_prompts(self) -> dict:
+        path = self._model_prompts_path()
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as handle:
+            return yaml.safe_load(handle) or {}
+
+    def _write_model_prompts(self, model_prompts: dict) -> str:
+        path = self._model_prompts_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(model_prompts, handle, allow_unicode=True, sort_keys=False)
+        return path
+
+    def _regenerate_visual_beats(self, scenes: List[dict]) -> str:
+        from prompts.model_prompt_service import MODEL_KEYS
+        from prompts.visual_beats import (
+            align_prompt_rows_to_beats,
+            beats_as_dicts,
+            normalize_stored_beats,
+        )
+
+        service = self._make_prompt_service()
+        model_prompts = self._load_model_prompts()
+        total = max(len(scenes), 1)
+        for index, scene in enumerate(scenes, start=1):
+            self._check_cancel()
+            scene_id = int(scene["id"])
+            self._emit_progress(
+                20 + int(((index - 1) / total) * 75),
+                f"Extracting visual beats for scene {scene_id}",
+            )
+            visual_beats = service.extract_structured_beats(scene)
+            scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
+            existing_models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
+            updated_models = {}
+            for model_key in MODEL_KEYS:
+                existing = existing_models.get(model_key, {}) if isinstance(existing_models, dict) else {}
+                existing_rows = existing.get("prompts", []) if isinstance(existing, dict) else []
+                updated_models[model_key] = {
+                    "profile": existing.get("profile", f"{model_key}.yaml") if isinstance(existing, dict) else f"{model_key}.yaml",
+                    "prompts": align_prompt_rows_to_beats(
+                        existing_rows, visual_beats, scene_id, model_key
+                    ),
+                    "max_prompts_per_scene": existing.get(
+                        "max_prompts_per_scene",
+                        int(self.config.get("max_visual_beats") or 3),
+                    ) if isinstance(existing, dict) else int(self.config.get("max_visual_beats") or 3),
+                }
+            model_prompts[scene_id] = {
+                "scene_id": scene_id,
+                "visual_beats": beats_as_dicts(visual_beats),
+                "visual_beats_source": str(scene.get("text", "")),
+                "models": updated_models,
+            }
+            model_prompts.pop(str(scene_id), None)
+            self.log.emit(
+                f"Scene {scene_id}: extracted {len(visual_beats)} shared visual beat(s)."
+            )
+            self._write_model_prompts(model_prompts)
+        return self._write_model_prompts(model_prompts)
+
+    def _regenerate_beat_prompts(self, scenes: List[dict]) -> str:
+        from prompts.model_prompt_service import MODEL_KEYS, effective_prompt
+        from prompts.visual_beats import normalize_stored_beats
+
+        scene_id = int(self.config.get("prompt_scene_id") or 0)
+        beat_index = int(self.config.get("prompt_beat_index") or 0)
+        if scene_id <= 0 or beat_index <= 0:
+            raise ValueError("prompt_scene_id and prompt_beat_index are required.")
+        scene = next((item for item in scenes if int(item.get("id") or 0) == scene_id), None)
+        if scene is None:
+            raise ValueError(f"Scene {scene_id} was not found.")
+
+        service = self._make_prompt_service()
+        model_prompts = self._load_model_prompts()
+        scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
+        visual_beats = normalize_stored_beats(
+            scene_entry.get("visual_beats", []) if isinstance(scene_entry, dict) else []
+        )
+        if beat_index > len(visual_beats):
+            raise ValueError(f"Scene {scene_id} has no beat {beat_index}.")
+        beat = visual_beats[beat_index - 1]
+        configured_models = self.config.get(
+            "enabled_image_models", ["schnell", "dev", "flux2"]
+        )
+        active_models = tuple(key for key in MODEL_KEYS if key in configured_models)
+        if not active_models:
+            raise ValueError("Enable at least one image model in Prompts > Configure Models.")
+
+        existing_models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
+        updated_models = dict(existing_models) if isinstance(existing_models, dict) else {}
+        total = max(len(active_models), 1)
+        for index, model_key in enumerate(active_models, start=1):
+            self._check_cancel()
+            self._emit_progress(
+                25 + int(((index - 1) / total) * 70),
+                f"Regenerating {model_key} prompt for scene {scene_id} beat {beat_index}",
+            )
+            existing = updated_models.get(model_key, {})
+            existing_rows = list(existing.get("prompts", []) if isinstance(existing, dict) else [])
+            row = service.prompt_row_for_beat(scene, model_key, beat, beat_index)
+            replaced = False
+            for row_index, current in enumerate(existing_rows):
+                if isinstance(current, dict) and int(current.get("beat", 0) or 0) == beat_index:
+                    existing_rows[row_index] = row
+                    replaced = True
+                    break
+            if not replaced:
+                existing_rows.append(row)
+                existing_rows.sort(key=lambda item: int(item.get("beat", 0) or 0) if isinstance(item, dict) else 0)
+            updated_models[model_key] = {
+                "profile": f"{model_key}.yaml",
+                "prompts": existing_rows,
+                "max_prompts_per_scene": int(
+                    existing.get("max_prompts_per_scene", self.config.get("max_visual_beats") or 3)
+                    if isinstance(existing, dict) else (self.config.get("max_visual_beats") or 3)
+                ),
+            }
+            self.log.emit(f"Scene {scene_id} beat {beat_index} [{model_key}]: prompt regenerated.")
+
+        model_prompts[scene_id] = {
+            "scene_id": scene_id,
+            "visual_beats": scene_entry.get("visual_beats", []) if isinstance(scene_entry, dict) else [],
+            "visual_beats_source": str(
+                scene_entry.get("visual_beats_source", scene.get("text", ""))
+                if isinstance(scene_entry, dict) else scene.get("text", "")
+            ),
+            "models": updated_models,
+        }
+        model_prompts.pop(str(scene_id), None)
+        path = self._write_model_prompts(model_prompts)
+
+        schnell = updated_models.get("schnell", {})
+        schnell_prompt = effective_prompt(schnell)
+        if schnell_prompt:
+            prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
+            cached_prompts: dict = {}
+            if os.path.exists(prompts_path):
+                with open(prompts_path, "r", encoding="utf-8") as handle:
+                    cached_prompts = yaml.safe_load(handle) or {}
+            cached_prompts[scene_id] = schnell_prompt
+            cached_prompts.pop(str(scene_id), None)
+            with open(prompts_path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump(cached_prompts, handle, allow_unicode=True, sort_keys=False)
+        return path
+
     @pyqtSlot()
     def run(self):
         try:
             stage = (self.stage or "full").strip().lower()
-            if stage not in {"narration", "scenes", "prompts", "tts",
+            if stage not in {"narration", "scenes", "beats", "beat_prompts", "prompts", "tts",
                              "preview_images", "preview_scene", "prompt_image_candidate",
                              "preview_clips", "preview_video",
-                             "final_images", "final_clips", "final_video"}:                raise ValueError(f"Unknown stage: {stage}")
+                             "final_images", "final_clips", "final_video"}:
+                raise ValueError(f"Unknown stage: {stage}")
 
             # Force-release any GPU memory left over from a previous pipeline run
             # before loading new models.  This handles the case where unload() in
@@ -172,10 +354,31 @@ class PipelineWorker(QObject):
                     self.finished.emit(True, scenes_path)
                     return
 
+            if stage in {"beats", "beat_prompts"}:
+                self._check_cancel()
+                if not scenes:
+                    if not os.path.exists(scenes_path):
+                        raise ValueError("No scenes.yaml found. Split scenes from the Script tab first.")
+                    with open(scenes_path, "r", encoding="utf-8") as handle:
+                        scenes = (yaml.safe_load(handle) or {}).get("scenes") or []
+                if not scenes:
+                    raise ValueError("No scenes were produced from narration text.")
+                if stage == "beats":
+                    self._emit_progress(20, "Extracting shared visual beats")
+                    path = self._regenerate_visual_beats(scenes)
+                    self._emit_progress(100, "Visual beats extracted")
+                    self.finished.emit(True, path)
+                    return
+                self._emit_progress(20, "Regenerating prompts for one visual beat")
+                path = self._regenerate_beat_prompts(scenes)
+                self._emit_progress(100, "Beat prompts regenerated")
+                self.finished.emit(True, path)
+                return
+
             if stage == "prompts":
                 self._check_cancel()
                 self._emit_progress(25, "Building model-specific prompts")
-                from prompts.model_prompt_service import MODEL_KEYS, ModelPromptService, effective_prompt
+                from prompts.model_prompt_service import MODEL_KEYS, effective_prompt
                 from prompts.visual_beats import beats_as_dicts, normalize_stored_beats
 
                 prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
@@ -189,23 +392,7 @@ class PipelineWorker(QObject):
                     with open(model_prompts_path, "r", encoding="utf-8") as fh:
                         model_prompts = yaml.safe_load(fh) or {}
 
-                profiles_dir = self._resolve_path(str(self.config.get(
-                    "prompt_profiles_dir", "src/config/prompt_profiles")))
-                from prompts.project_profiles import get_profile_text, load_project_profiles
-
-                project_profile_key = str(self.config.get("project_profile_key", "")).strip()
-                project_profile_text = get_profile_text(
-                    load_project_profiles(os.path.dirname(profiles_dir)), project_profile_key
-                )
-                service = ModelPromptService(
-                    profiles_dir=profiles_dir,
-                    ollama_model=str(self.config.get("ollama_model", "qwen3:8b")),
-                    ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
-                    max_visual_beats=(int(self.config["max_visual_beats"])
-                                      if self.config.get("max_visual_beats") is not None else None),
-                    project_profile_text=project_profile_text,
-                    visual_style_key=str(self.config.get("visual_style", "cinematic")),
-                )
+                service = self._make_prompt_service()
                 requested_model = str(self.config.get("prompt_model_key", "")).strip().lower()
                 configured_models = self.config.get(
                     "enabled_image_models", ["schnell", "dev", "flux2"]

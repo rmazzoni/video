@@ -90,6 +90,7 @@ class VisualBeat:
     action: str = ""
     setting: str = ""
     objects: List[str] = field(default_factory=list)
+    source: str = "generated"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -99,6 +100,7 @@ class VisualBeat:
             "action": self.action,
             "setting": self.setting,
             "objects": list(self.objects),
+            "source": self.source,
         }
 
     @classmethod
@@ -118,6 +120,7 @@ class VisualBeat:
             raw_objects = value.get("objects") or []
             if not isinstance(raw_objects, list):
                 raw_objects = [raw_objects] if raw_objects else []
+            source = str(value.get("source") or "generated").strip() or "generated"
             return cls(
                 beat=beat or quote,
                 source_quote=quote,
@@ -125,6 +128,7 @@ class VisualBeat:
                 action=str(value.get("action") or "").strip(),
                 setting=str(value.get("setting") or "").strip(),
                 objects=[str(item).strip() for item in raw_objects if str(item).strip()],
+                source=source,
             )
         return None
 
@@ -192,6 +196,37 @@ def beats_as_dicts(beats: Sequence[VisualBeat]) -> List[Dict[str, Any]]:
     return [beat.to_dict() for beat in beats]
 
 
+def align_prompt_rows_to_beats(
+    existing_rows: Sequence[Any],
+    beats: Sequence[VisualBeat],
+    scene_id: int,
+    model_key: str,
+) -> List[Dict[str, Any]]:
+    """Keep existing prompt rows that still match a beat index; drop extras.
+
+    Missing beats are left ungenerated so Build Prompts / Regenerate Prompt
+    can fill them after the user reviews the new shot list.
+    """
+    rows = [row for row in existing_rows if isinstance(row, dict)]
+    aligned: List[Dict[str, Any]] = []
+    for index, beat in enumerate(beats, 1):
+        previous = next(
+            (row for row in rows if int(row.get("beat", 0) or 0) == index),
+            None,
+        )
+        if previous is None:
+            continue
+        updated = dict(previous)
+        updated["beat"] = index
+        updated["visual_beat"] = beat.beat
+        updated["id"] = (
+            str(updated.get("id") or "").strip()
+            or f"scene_{int(scene_id):03d}_beat_{index:02d}_{model_key}"
+        )
+        aligned.append(updated)
+    return aligned
+
+
 def parse_raw_beat(item: Any) -> Optional[VisualBeat]:
     return VisualBeat.from_stored(item)
 
@@ -212,6 +247,7 @@ def _clean_slots(beat: VisualBeat) -> VisualBeat:
         action=action,
         setting=setting,
         objects=objects,
+        source=beat.source or "generated",
     )
 
 
@@ -268,12 +304,37 @@ def validate_extracted_beats(
     return accepted[:limit]
 
 
+def build_extraction_messages(
+    scene: Dict[str, Any],
+    limit: int,
+    extra_system: str = "",
+) -> List[Dict[str, str]]:
+    system = EXTRACT_SYSTEM_PROMPT
+    extra = str(extra_system or "").strip()
+    if extra:
+        system = f"{system}\n\n{extra}"
+    user = json.dumps({
+        "scene_id": int(scene.get("id") or 0),
+        "narration": str(scene.get("text") or "").strip(),
+        "maximum_visual_beats": int(limit),
+        "instructions": (
+            "Copy source_quote verbatim. Do not pad to the maximum. "
+            "Omit any fact not present in the quote."
+        ),
+    }, ensure_ascii=False)
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
 def extract_structured_beats(
     scene: Dict[str, Any],
     *,
     ollama_model: str,
     ollama_host: str,
     max_visual_beats: Optional[int] = None,
+    extra_system: str = "",
 ) -> List[VisualBeat]:
     narration = str(scene.get("text") or "").strip()
     limit = max(1, int(max_visual_beats or 3))
@@ -289,21 +350,7 @@ def extract_structured_beats(
             model=ollama_model,
             format=BEAT_RESPONSE_SCHEMA,
             options={"temperature": 0.1, "top_p": 0.8},
-            messages=[
-                {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": json.dumps({
-                        "scene_id": int(scene.get("id") or 0),
-                        "narration": narration,
-                        "maximum_visual_beats": limit,
-                        "instructions": (
-                            "Copy source_quote verbatim. Do not pad to the maximum. "
-                            "Omit any fact not present in the quote."
-                        ),
-                    }, ensure_ascii=False),
-                },
-            ],
+            messages=build_extraction_messages(scene, limit, extra_system),
         )
         message = getattr(response, "message", None)
         content = (

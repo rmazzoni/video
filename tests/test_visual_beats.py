@@ -1,6 +1,12 @@
 import os
 import unittest
 
+from prompts.beat_feedback import (
+    beats_differ,
+    extract_guidance_text,
+    format_correction_examples,
+    record_correction,
+)
 from prompts.model_prompt_service import (
     PROMPT_ONLY_SCHEMA,
     build_prompt_user_payload,
@@ -10,7 +16,9 @@ from prompts.project_profiles import load_project_profiles
 from prompts.prompt_grounding import check_prompt
 from prompts.visual_beats import (
     VisualBeat,
+    align_prompt_rows_to_beats,
     beats_as_dicts,
+    build_extraction_messages,
     dedupe_beats,
     fallback_beat,
     normalize_stored_beats,
@@ -149,6 +157,30 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(beats[1].subject, "reti")
         dumped = beats_as_dicts(beats)
         self.assertEqual(dumped[1]["source_quote"], "Le reti sono stese a asciugare.")
+        self.assertEqual(dumped[1]["source"], "generated")
+
+    def test_align_prompt_rows_keeps_matching_indexes_and_drops_extras(self):
+        beats = [
+            VisualBeat(beat="A fisherman walks on the pier.", source_quote="Il pescatore cammina sul molo all'alba."),
+        ]
+        rows = [
+            {"beat": 1, "text": "old prompt one", "visual_beat": "old one"},
+            {"beat": 2, "text": "old prompt two", "visual_beat": "old two"},
+        ]
+        aligned = align_prompt_rows_to_beats(rows, beats, scene_id=1, model_key="zimage")
+        self.assertEqual(len(aligned), 1)
+        self.assertEqual(aligned[0]["text"], "old prompt one")
+        self.assertEqual(aligned[0]["visual_beat"], "A fisherman walks on the pier.")
+
+    def test_extraction_messages_include_guidance(self):
+        messages = build_extraction_messages(
+            {"id": 1, "text": NARRATION},
+            limit=3,
+            extra_system="Prefer one beat per action.",
+        )
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("Prefer one beat per action.", messages[0]["content"])
+        self.assertIn("Il pescatore", messages[1]["content"])
 
 
 class PromptGroundingTests(unittest.TestCase):
@@ -209,6 +241,58 @@ class PromptPayloadTests(unittest.TestCase):
         self.assertIn("UNSPECIFIED DEFAULTS ONLY", wrapped)
         self.assertIn("Wear thobes in every scene.", wrapped)
         self.assertEqual(wrap_project_profile("  "), "")
+
+
+class BeatFeedbackTests(unittest.TestCase):
+    def test_record_correction_skips_identical_beats(self):
+        beat = VisualBeat(
+            beat="A fisherman walks on the pier.",
+            source_quote="Il pescatore cammina sul molo all'alba.",
+        )
+        feedback = {"examples": []}
+        self.assertFalse(record_correction(
+            feedback, scene_id=1, narration=NARRATION, original=beat, corrected=beat
+        ))
+        self.assertEqual(feedback["examples"], [])
+
+    def test_record_correction_stores_before_and_after(self):
+        original = VisualBeat(
+            beat="A diplomat shakes hands.",
+            source_quote="A diplomat shakes hands.",
+        )
+        corrected = VisualBeat(
+            beat="A fisherman walks along the pier at dawn.",
+            source_quote="Il pescatore cammina sul molo all'alba.",
+            subject="il pescatore",
+        )
+        feedback = {"examples": []}
+        self.assertTrue(record_correction(
+            feedback, scene_id=1, narration=NARRATION, original=original, corrected=corrected
+        ))
+        self.assertEqual(len(feedback["examples"]), 1)
+        self.assertEqual(feedback["examples"][0]["corrected"]["beat"], corrected.beat)
+        self.assertTrue(beats_differ(original, corrected))
+
+    def test_guidance_includes_notes_and_examples(self):
+        text = extract_guidance_text(
+            "One beat per visual action.",
+            [{
+                "narration": NARRATION,
+                "original": {"beat": "A diplomat.", "source_quote": "A diplomat."},
+                "corrected": {
+                    "beat": "A fisherman walks on the pier.",
+                    "source_quote": "Il pescatore cammina sul molo all'alba.",
+                },
+            }],
+        )
+        self.assertIn("PROJECT BEAT NOTES", text)
+        self.assertIn("One beat per visual action.", text)
+        self.assertIn("LEARN FROM THESE USER CORRECTIONS", text)
+        self.assertIn("Il pescatore", text)
+        self.assertEqual(extract_guidance_text("  ", [], include_examples=False), "")
+        self.assertIn("User correction", format_correction_examples([{
+            "corrected": {"beat": "Nets dry.", "source_quote": "Le reti sono stese a asciugare."},
+        }]))
 
 
 class ProjectProfileYamlTests(unittest.TestCase):
