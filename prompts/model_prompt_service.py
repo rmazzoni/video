@@ -1,13 +1,21 @@
 """Profile-driven generation and persistence for model-specific scene prompts."""
 
 import json
+import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence, Union
 
 import yaml
 
 from prompts.prompt_builder import PromptBuilder, structure_prompt_for_model
+from prompts.prompt_grounding import check_prompt, retry_instruction
 from prompts.response_sanitizer import sanitize_generated_prompt
+from prompts.visual_beats import (
+    VisualBeat,
+    extract_structured_beats,
+    fallback_beat,
+    normalize_stored_beats,
+)
 from prompts.visual_styles import (
     DEFAULT_VISUAL_STYLE,
     visual_style_fallback_preset,
@@ -15,6 +23,8 @@ from prompts.visual_styles import (
     visual_style_prompt_anchor,
 )
 
+
+logger = logging.getLogger(__name__)
 
 MODEL_KEYS = ("schnell", "zimage", "dev", "hidream", "flux2")
 MODEL_TYPES = {
@@ -25,37 +35,53 @@ MODEL_TYPES = {
     "flux2": "flux2",
 }
 
-DEV_RESPONSE_SCHEMA = {
+PROMPT_ONLY_SCHEMA = {
     "type": "object",
     "properties": {
-        "prompts": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "visual_beat": {"type": "string"},
-                    "prompt": {"type": "string"},
-                },
-                "required": ["visual_beat", "prompt"],
-                "additionalProperties": False,
-            },
-        },
+        "prompt": {"type": "string"},
     },
-    "required": ["prompts"],
+    "required": ["prompt"],
     "additionalProperties": False,
 }
 
-BEATS_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "visual_beats": {
-            "type": "array",
-            "items": {"type": "string"},
-        },
-    },
-    "required": ["visual_beats"],
-    "additionalProperties": False,
-}
+LOCKED_BEAT_INSTRUCTION = (
+    "LOCKED VISUAL BEAT:\n"
+    "The locked visual beat is the entire image content. Preserve its subject, "
+    "action, setting, and objects. Do not add people, events, props, text, "
+    "devices, crowds, or places that are absent from the locked visual beat and "
+    "the original narration. You may add camera, lighting, materials, and "
+    "atmosphere only. Output one image prompt paragraph; do not redefine the beat."
+)
+
+PROJECT_PROFILE_WRAPPER = (
+    "PROJECT PROFILE — UNSPECIFIED DEFAULTS ONLY:\n"
+    "Use the following only to fill wardrobe, architecture, or regional appearance "
+    "when the locked visual beat does not specify them. They must not replace the "
+    "beat, add characters, or introduce objects or events that are not in the "
+    "locked beat and narration.\n\n"
+)
+
+BeatInput = Union[str, Dict[str, Any], VisualBeat]
+
+
+def wrap_project_profile(profile_text: str) -> str:
+    text = str(profile_text or "").strip()
+    if not text:
+        return ""
+    return f"{PROJECT_PROFILE_WRAPPER}{text}"
+
+
+def build_prompt_user_payload(scene: Dict[str, Any], beat: VisualBeat) -> Dict[str, Any]:
+    return {
+        "scene_id": int(scene.get("id") or 0),
+        "narration": scene.get("text", ""),
+        "locked_visual_beat": beat.to_dict(),
+        "source_fidelity": (
+            "Depict only the locked visual beat. Use the narration as supporting "
+            "context. Do not reuse generic content from other scenes or invent a "
+            "person, object, or place when none is described."
+        ),
+    }
 
 
 class ModelPromptService:
@@ -79,199 +105,164 @@ class ModelPromptService:
         if self.max_visual_beats is not None:
             profile["max_prompts_per_scene"] = int(self.max_visual_beats)
         profile["style_preset"] = visual_style_fallback_preset(self.visual_style_key)
+        system_parts = [LOCKED_BEAT_INSTRUCTION]
+        base_instruction = str(profile.get("system_instruction", "")).strip()
+        if base_instruction:
+            system_parts.append(base_instruction)
         style_instruction = visual_style_instruction(self.visual_style_key, model_key)
         if style_instruction:
-            base_instruction = str(profile.get("system_instruction", ""))
-            profile["system_instruction"] = (
-                f"{base_instruction}\n\nGLOBAL VISUAL STYLE:\n{style_instruction}"
-            )
-        if self.project_profile_text:
-            base_instruction = str(profile.get("system_instruction", ""))
-            profile["system_instruction"] = f"{base_instruction}\n\n{self.project_profile_text}"
+            system_parts.append(f"GLOBAL VISUAL STYLE:\n{style_instruction}")
+        wrapped_profile = wrap_project_profile(self.project_profile_text)
+        if wrapped_profile:
+            system_parts.append(wrapped_profile)
+        profile["system_instruction"] = "\n\n".join(system_parts)
         return profile
 
     def generate(self, scene: Dict[str, Any], model_key: str) -> List[Dict[str, Any]]:
-        profile = self.load_profile(model_key)
-        generated = self._generate_with_ollama(scene, profile)
-        if not generated:
-            generated = self._fallback(scene, profile)
-        return [
-            {
-                "id": f"scene_{int(scene['id']):03d}_beat_{index:02d}_{model_key}",
-                "beat": index,
-                "visual_beat": item["visual_beat"],
-                "text": item["prompt"],
-                "generated_prompt": item["prompt"],
-                "source": "generated",
-            }
-            for index, item in enumerate(generated, 1)
-        ]
+        beats = self.extract_structured_beats(scene)
+        return self.generate_for_beats(scene, model_key, beats)
+
+    def extract_structured_beats(self, scene: Dict[str, Any]) -> List[VisualBeat]:
+        return extract_structured_beats(
+            scene,
+            ollama_model=self.ollama_model,
+            ollama_host=self.ollama_host,
+            max_visual_beats=self.max_visual_beats,
+        )
 
     def extract_visual_beats(self, scene: Dict[str, Any]) -> List[str]:
         """Identify model-independent shots once for reuse by every image model."""
-        limit = self.max_visual_beats or 3
-        try:
-            import ollama
+        return [beat.beat for beat in self.extract_structured_beats(scene)]
 
-            client = ollama.Client(host=self.ollama_host)
-            response = client.chat(
-                model=self.ollama_model,
-                format=BEATS_RESPONSE_SCHEMA,
-                options={"temperature": 0.2, "top_p": 0.8},
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Analyze narration for storyboard shots independently of any image model. "
-                            "Return the fewest distinct visual beats needed to represent the scene, "
-                            "up to the requested maximum. Each beat must describe one concrete, "
-                            "visually distinct action or moment in one concise sentence. Do not write "
-                            "image prompts, camera language, lighting, style, or model instructions."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps({
-                            "scene_id": int(scene["id"]),
-                            "narration": scene["text"],
-                            "maximum_visual_beats": int(limit),
-                        }, ensure_ascii=False),
-                    },
-                ],
-            )
-            message = getattr(response, "message", None)
-            content = getattr(message, "content", "") if message is not None else response["message"]["content"]
-            payload = json.loads(content)
-            beats = [
-                str(beat).strip()
-                for beat in payload.get("visual_beats", [])[:int(limit)]
-                if str(beat).strip()
-            ]
-            if beats:
-                return beats
-        except Exception:
-            pass
-        return [str(scene.get("text", "")).strip()]
-
-    def generate_for_beats(self, scene: Dict[str, Any], model_key: str,
-                           visual_beats: List[str]) -> List[Dict[str, Any]]:
+    def generate_for_beats(
+        self,
+        scene: Dict[str, Any],
+        model_key: str,
+        visual_beats: Sequence[BeatInput],
+    ) -> List[Dict[str, Any]]:
         """Generate model-specific wording without allowing the model to redefine shots."""
+        beats = normalize_stored_beats(visual_beats)
+        if not beats:
+            beats = [fallback_beat(str(scene.get("text") or ""))]
         rows = []
-        for index, visual_beat in enumerate(visual_beats, 1):
-            prompt = self.regenerate_prompt(scene, model_key, visual_beat)
+        for index, beat in enumerate(beats, 1):
+            prompt = self.regenerate_prompt(scene, model_key, beat)
             rows.append({
                 "id": f"scene_{int(scene['id']):03d}_beat_{index:02d}_{model_key}",
                 "beat": index,
-                "visual_beat": visual_beat,
+                "visual_beat": beat.beat,
                 "text": prompt,
                 "generated_prompt": prompt,
                 "source": "generated",
             })
         return rows
 
-    def regenerate_prompt(self, scene: Dict[str, Any], model_key: str, visual_beat: str) -> str:
+    def regenerate_prompt(
+        self,
+        scene: Dict[str, Any],
+        model_key: str,
+        visual_beat: BeatInput,
+    ) -> str:
         """Generate one replacement prompt while keeping the selected visual beat fixed."""
         profile = self.load_profile(model_key)
-        override_note = ""
-        if self.project_profile_text:
-            # The stored visual_beat text may already describe wardrobe/setting details
-            # that predate or ignore the project profile; force the constraints to win.
-            override_note = (
-                "\n\nThe visual beat description above may not reflect the PROJECT GEOGRAPHIC "
-                "& CULTURAL CONSTRAINTS given in your system instructions. Apply those "
-                "constraints regardless, replacing any conflicting clothing, uniforms, or "
-                "architecture in the beat description with constraint-compliant equivalents."
-            )
-        focused_scene = dict(scene)
-        focused_scene["text"] = (
-            f"Original script:\n{scene['text']}\n\nVisual beat to depict:\n{visual_beat}{override_note}"
+        beat = VisualBeat.from_stored(visual_beat)
+        if beat is None:
+            beat = fallback_beat(str(scene.get("text") or ""))
+        return self._generate_prompt_for_beat(scene, profile, beat)
+
+    def _chat_prompt(self, system_instruction: str, user_content: str) -> str:
+        import ollama
+
+        client = ollama.Client(host=self.ollama_host)
+        response = client.chat(
+            model=self.ollama_model,
+            format=PROMPT_ONLY_SCHEMA,
+            options={
+                "temperature": 0.35,
+                "top_p": 0.85,
+                "stop": ["\nScript Segment", "\nNarration:", "\nUser:"],
+            },
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_content},
+            ],
         )
-        focused_profile = dict(profile)
-        focused_profile["max_prompts_per_scene"] = 1
-        generated = self._generate_with_ollama(focused_scene, focused_profile)
-        if generated:
-            return generated[0]["prompt"]
-        return self._fallback(focused_scene, profile)[0]["prompt"]
+        message = getattr(response, "message", None)
+        content = (
+            getattr(message, "content", "")
+            if message is not None
+            else response["message"]["content"]
+        )
+        payload = json.loads(content)
+        return sanitize_generated_prompt(payload.get("prompt", ""))
 
-    def _generate_with_ollama(self, scene: Dict[str, Any], profile: Dict[str, Any]) -> List[Dict[str, str]]:
+    def _generate_prompt_for_beat(
+        self,
+        scene: Dict[str, Any],
+        profile: Dict[str, Any],
+        beat: VisualBeat,
+    ) -> str:
+        narration = str(scene.get("text") or "")
+        model_key = str(profile.get("model_key", ""))
+        user_payload = json.dumps(build_prompt_user_payload(scene, beat), ensure_ascii=False)
+        system_instruction = str(profile.get("system_instruction", ""))
+
+        prompt = ""
         try:
-            import ollama
-
-            model_key = str(profile.get("model_key", ""))
-            system_instruction = str(profile.get("system_instruction", ""))
-            response_format = "json"
-            if model_key == "dev":
-                response_format = DEV_RESPONSE_SCHEMA
-                system_instruction += (
-                    "\n\nThe Ollama API wraps your answer in JSON. Return one object in the enforced "
-                    "schema. Put only clean FLUX Dev visual prose in each prompt field and the "
-                    "concise shot description in visual_beat. Do not place JSON, field names, "
-                    "script labels, commentary, or markdown inside either string."
-                )
-
-            client = ollama.Client(host=self.ollama_host)
-            response = client.chat(
-                model=self.ollama_model,
-                format=response_format,
-                options={
-                    "temperature": 0.6,
-                    "top_p": 0.85,
-                    "stop": ["\nScript Segment", "\nNarration:", "\nUser:"],
-                },
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {
-                        "role": "user",
-                        "content": json.dumps({
-                            "scene_id": int(scene["id"]),
-                            "scene": scene["text"],
-                            "source_fidelity": (
-                                "Use this scene as the authoritative source. Make its specific subject, "
-                                "action, setting, time, and important objects visible. Do not reuse generic "
-                                "content from other scenes or invent a person when none is described."
-                            ),
-                            "maximum_visual_beats": int(profile.get("max_prompts_per_scene", 3)),
-                            "requirements": profile.get("requirements", []),
-                            "response_schema": {"prompts": [{"visual_beat": "string", "prompt": "string"}]},
-                        }, ensure_ascii=False),
-                    },
-                ],
-            )
-            message = getattr(response, "message", None)
-            content = getattr(message, "content", "") if message is not None else response["message"]["content"]
-            payload = json.loads(content)
-            limit = int(profile.get("max_prompts_per_scene", 3))
-            prompts = []
-            for item in payload.get("prompts", [])[:limit]:
-                if not isinstance(item, dict):
-                    continue
-                clean_prompt = sanitize_generated_prompt(item.get("prompt", ""))
-                if clean_prompt:
-                    anchor = visual_style_prompt_anchor(self.visual_style_key, model_key)
-                    if anchor:
-                        clean_prompt = f"{anchor} {clean_prompt}"
-                    prompts.append({
-                        "visual_beat": str(item.get("visual_beat", "")).strip() or str(scene["text"]),
-                        "prompt": clean_prompt,
-                    })
-            return prompts
+            prompt = self._chat_prompt(system_instruction, user_payload)
+            result = check_prompt(prompt, beat, narration)
+            if prompt and not result.ok:
+                logger.info("Prompt failed grounding (%s); retrying once", result.summary())
+                retry_payload = json.dumps({
+                    **build_prompt_user_payload(scene, beat),
+                    "correction": retry_instruction(result),
+                    "previous_prompt": prompt,
+                }, ensure_ascii=False)
+                retry_prompt = self._chat_prompt(system_instruction, retry_payload)
+                retry_result = check_prompt(retry_prompt, beat, narration)
+                if retry_prompt and retry_result.ok:
+                    prompt = retry_prompt
+                else:
+                    logger.warning(
+                        "Prompt still ungrounded after retry (%s); using template",
+                        retry_result.summary() if retry_prompt else "empty retry",
+                    )
+                    prompt = ""
         except Exception:
-            return []
+            logger.exception("Locked prompt generation failed; using template fallback")
+            prompt = ""
 
-    def _fallback(self, scene: Dict[str, Any], profile: Dict[str, Any]) -> List[Dict[str, str]]:
+        if not prompt:
+            prompt = self._template_prompt(scene, profile, beat)
+        else:
+            anchor = visual_style_prompt_anchor(self.visual_style_key, model_key)
+            if anchor:
+                prompt = f"{anchor} {prompt}"
+        return prompt
+
+    def _template_prompt(
+        self,
+        scene: Dict[str, Any],
+        profile: Dict[str, Any],
+        beat: VisualBeat,
+    ) -> str:
         builder = PromptBuilder(
             style_preset=str(profile.get("style_preset", "cinematic")),
             default_aspect_ratio=str(profile.get("aspect_ratio", "16:9")),
         )
-        prompt = builder.build_prompt(scene)
+        focused_scene = dict(scene)
+        focused_scene["text"] = beat.beat or scene.get("text", "")
+        prompt = builder.build_prompt(focused_scene)
         anchor = visual_style_prompt_anchor(
             self.visual_style_key, str(profile.get("model_key", ""))
         )
         if anchor:
             prompt = f"{anchor} {prompt}"
-        prompt = structure_prompt_for_model(prompt, MODEL_TYPES[profile["model_key"]],
-                                            str(profile.get("style_preset", "cinematic")))
-        return [{"visual_beat": str(scene["text"]), "prompt": prompt}]
+        return structure_prompt_for_model(
+            prompt,
+            MODEL_TYPES[profile["model_key"]],
+            str(profile.get("style_preset", "cinematic")),
+        )
 
 
 def effective_prompt(entry: Dict[str, Any]) -> str:

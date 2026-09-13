@@ -176,6 +176,7 @@ class PipelineWorker(QObject):
                 self._check_cancel()
                 self._emit_progress(25, "Building model-specific prompts")
                 from prompts.model_prompt_service import MODEL_KEYS, ModelPromptService, effective_prompt
+                from prompts.visual_beats import beats_as_dicts, normalize_stored_beats
 
                 prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
                 model_prompts_path = os.path.join(self.project_path, "output", "model_prompts.yaml")
@@ -227,21 +228,22 @@ class PipelineWorker(QObject):
                     self._check_cancel()
                     scene_id = int(scene["id"])
                     scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
-                    visual_beats = scene_entry.get("visual_beats", []) if isinstance(scene_entry, dict) else []
-                    visual_beats = [str(beat).strip() for beat in visual_beats if str(beat).strip()]
+                    visual_beats = normalize_stored_beats(
+                        scene_entry.get("visual_beats", []) if isinstance(scene_entry, dict) else []
+                    )
                     beat_source = str(scene_entry.get("visual_beats_source", "")) if isinstance(scene_entry, dict) else ""
                     if not visual_beats or beat_source != str(scene.get("text", "")):
                         self._emit_progress(
                             25 + int(((index - 1) / max(total_scenes, 1)) * 70),
                             f"Extracting visual beats for scene {scene_id}",
                         )
-                        visual_beats = service.extract_visual_beats(scene)
+                        visual_beats = service.extract_structured_beats(scene)
                         self.log.emit(
                             f"Scene {scene_id}: identified {len(visual_beats)} shared visual beat(s)."
                         )
                     updated_entry = {
                         "scene_id": scene_id,
-                        "visual_beats": visual_beats,
+                        "visual_beats": beats_as_dicts(visual_beats),
                         "visual_beats_source": str(scene.get("text", "")),
                         "models": {},
                     }
@@ -909,6 +911,7 @@ class PipelineWorker(QObject):
                 if missing_prompt_models:
                     from prompts.model_prompt_service import ModelPromptService
                     from prompts.project_profiles import get_profile_text, load_project_profiles
+                    from prompts.visual_beats import beats_as_dicts, normalize_stored_beats
 
                     profiles_dir = self._resolve_path(str(self.config.get(
                         "prompt_profiles_dir", "src/config/prompt_profiles")))
@@ -934,13 +937,12 @@ class PipelineWorker(QObject):
                         self._check_cancel()
                         sid = int(scene["id"])
                         scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
-                        visual_beats = [
-                            str(beat).strip()
-                            for beat in scene_entry.get("visual_beats", [])
-                            if str(beat).strip()
-                        ] if isinstance(scene_entry, dict) else []
+                        visual_beats = normalize_stored_beats(
+                            scene_entry.get("visual_beats", [])
+                            if isinstance(scene_entry, dict) else []
+                        )
                         if not visual_beats:
-                            visual_beats = service.extract_visual_beats(scene)
+                            visual_beats = service.extract_structured_beats(scene)
                         models = dict(scene_entry.get("models", {})) if isinstance(scene_entry, dict) else {}
                         profile = service.load_profile(model_key)
                         models[model_key] = {
@@ -952,7 +954,7 @@ class PipelineWorker(QObject):
                         }
                         model_prompts[sid] = {
                             "scene_id": sid,
-                            "visual_beats": visual_beats,
+                            "visual_beats": beats_as_dicts(visual_beats),
                             "visual_beats_source": str(scene.get("text", "")),
                             "models": models,
                         }
