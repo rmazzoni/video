@@ -184,29 +184,21 @@ class ModelPromptService:
         return self._generate_prompt_for_beat(scene, profile, beat)
 
     def _chat_prompt(self, system_instruction: str, user_content: str) -> str:
-        import ollama
+        from prompts.ollama_runtime import chat_json_object
 
-        client = ollama.Client(host=self.ollama_host)
-        response = client.chat(
+        payload = chat_json_object(
+            host=self.ollama_host,
             model=self.ollama_model,
-            format=PROMPT_ONLY_SCHEMA,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_content},
+            ],
             options={
                 "temperature": 0.35,
                 "top_p": 0.85,
                 "stop": ["\nScript Segment", "\nNarration:", "\nUser:"],
             },
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_content},
-            ],
         )
-        message = getattr(response, "message", None)
-        content = (
-            getattr(message, "content", "")
-            if message is not None
-            else response["message"]["content"]
-        )
-        payload = json.loads(content)
         return sanitize_generated_prompt(payload.get("prompt", ""))
 
     def _generate_prompt_for_beat(

@@ -48,8 +48,8 @@ class PromptEnhancer:
             user_message += f"\n\nStyle: {style_hint}"
 
         try:
-            import ollama
-            client = ollama.Client(host=self._host)
+            from prompts.ollama_runtime import make_ollama_client
+            client = make_ollama_client(self._host)
             response = client.chat(
                 model=self._model,
                 options={
@@ -88,8 +88,8 @@ class PromptEnhancer:
             return self._available
 
         try:
-            import ollama
-            client = ollama.Client(host=self._host)
+            from prompts.ollama_runtime import make_ollama_client
+            client = make_ollama_client(self._host)
             response = client.list()
             # SDK >= 0.4: response is a ListResponse with .models list of Model objects
             models_list = getattr(response, "models", None) or response.get("models", [])

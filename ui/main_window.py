@@ -2993,14 +2993,25 @@ class MainWindow(QMainWindow):
         btn_save_notes = QPushButton("Save Notes")
         btn_save_notes.setToolTip("Save extraction notes without regenerating beats")
         btn_save_notes.clicked.connect(self._beats_save_notes)
-        btn_regenerate = QPushButton("Regenerate Beats")
-        btn_regenerate.setToolTip(
+        self._beats_regenerate_btn = QPushButton("Regenerate Beats")
+        self._beats_regenerate_btn.setToolTip(
             "Re-extract shared visual beats for every scene. Does not generate image prompts."
         )
-        btn_regenerate.clicked.connect(self._beats_regenerate_all)
+        self._beats_regenerate_btn.clicked.connect(self._beats_regenerate_all)
         notes_row.addWidget(btn_save_notes)
-        notes_row.addWidget(btn_regenerate)
+        notes_row.addWidget(self._beats_regenerate_btn)
         root.addLayout(notes_row)
+
+        self._beats_progress = QProgressBar()
+        self._beats_progress.setRange(0, 100)
+        self._beats_progress.setFixedHeight(8)
+        self._beats_progress.setTextVisible(False)
+        self._beats_progress.setVisible(False)
+        self._beats_progress.setStyleSheet(
+            "QProgressBar { background:#0F0D13; border:none; }"
+            "QProgressBar::chunk { background:#4CAF50; }"
+        )
+        root.addWidget(self._beats_progress)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -3030,10 +3041,27 @@ class MainWindow(QMainWindow):
             f"Saved beat notes ({example_count} correction example(s) kept for Qwen)."
         )
 
+    def _beats_set_busy(self, running: bool, message: str = "") -> None:
+        if hasattr(self, "_beats_regenerate_btn"):
+            self._beats_regenerate_btn.setEnabled(not running)
+        if hasattr(self, "_beats_progress"):
+            self._beats_progress.setVisible(running)
+            if running:
+                self._beats_progress.setValue(0)
+        if message:
+            self._beats_status_label.setText(message)
+
     def _beats_regenerate_all(self) -> None:
         path = self.project_path_input.text().strip()
         if not path:
             QMessageBox.warning(self, "No project", "Open a project first.")
+            return
+        if getattr(self.controller, "_thread", None) is not None:
+            QMessageBox.warning(
+                self,
+                "Pipeline busy",
+                "Wait for the current pipeline operation to finish before regenerating beats.",
+            )
             return
         answer = QMessageBox.question(
             self,
@@ -3043,11 +3071,16 @@ class MainWindow(QMainWindow):
             "Build Prompts or Regenerate Prompts on a beat.\n\n"
             "Manual beat edits in this project will be overwritten. Saved "
             "corrections still teach the next extraction.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
         self._beats_save_notes()
-        self.controller.set_project_path(path)
+        if os.path.abspath(path) != os.path.abspath(self.controller.project_path or ""):
+            self.controller.set_project_path(path)
+        self._beats_run_pending = True
+        self._beats_set_busy(True, "Extracting visual beats with Qwen. This can take a while per scene...")
         self.controller.run_pipeline("beats", {
             "beat_extraction_notes": self._beats_notes_editor.toPlainText().strip(),
             "include_beat_examples": self._beats_include_examples.isChecked(),
@@ -3089,6 +3122,7 @@ class MainWindow(QMainWindow):
         except Exception:
             model_prompts = {}
 
+        single_beat_scenes = 0
         for scene in scenes:
             sid = int(scene["id"])
             narration = str(scene.get("text") or "")
@@ -3096,6 +3130,8 @@ class MainWindow(QMainWindow):
             beats = normalize_stored_beats(
                 scene_entry.get("visual_beats", []) if isinstance(scene_entry, dict) else []
             )
+            if len(beats) <= 1:
+                single_beat_scenes += 1
 
             card = QWidget()
             card.setObjectName("beatSceneCard")
@@ -3106,7 +3142,13 @@ class MainWindow(QMainWindow):
             card_layout.setContentsMargins(10, 8, 10, 8)
             card_layout.setSpacing(4)
 
-            title = QLabel(f"Scene {sid}  ·  {len(beats)} visual beat(s)")
+            sentence_count = len([
+                part.strip() for part in re.split(r"(?<=[.!?])\s+", narration) if part.strip()
+            ])
+            title = QLabel(
+                f"Scene {sid}  ·  {len(beats)} visual beat(s)"
+                + (f"  ·  {sentence_count} sentences in narration" if sentence_count else "")
+            )
             title.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; border:none;")
             card_layout.addWidget(title)
 
@@ -3119,7 +3161,9 @@ class MainWindow(QMainWindow):
             card_layout.addWidget(narration_label)
 
             if not beats:
-                empty = QLabel("Not extracted yet. Click Regenerate Beats.")
+                empty = QLabel(
+                    "No camera-ready beat in this narration. Commentary-only scenes stay empty."
+                )
                 empty.setStyleSheet("color:#8E8B90; font-size:12px; border:none;")
                 card_layout.addWidget(empty)
             for index, beat in enumerate(beats, 1):
@@ -3152,9 +3196,16 @@ class MainWindow(QMainWindow):
             layout.insertWidget(layout.count() - 1, card)
 
         example_count = len(feedback.get("examples") or [])
+        hint = ""
+        if scenes and single_beat_scenes == len(scenes):
+            hint = (
+                " Each scene currently has one stored beat, usually a first-sentence fallback "
+                "from the last prompt build. Click Regenerate Beats to extract every visual moment."
+            )
         self._beats_status_label.setText(
             f"{len(scenes)} scene(s). Beats are shared by every image model. "
             f"{example_count} correction example(s) will be sent to Qwen on the next extraction."
+            + hint
         )
 
     def _open_beat_editor(self, scene_id: int, beat_index: int) -> None:
@@ -3236,33 +3287,64 @@ class MainWindow(QMainWindow):
             layout.addWidget(editor)
             popup_text_editors.append((editor, color, height))
 
-        def _editable_section(title: str, text: str, height: int, color: str) -> QTextEdit:
+        def _editable_section(title: str, text: str, height: int, color: str,
+                              tooltip: str = "") -> QTextEdit:
             title_label = QLabel(title)
             title_label.setStyleSheet(f"color:{color}; font-weight:bold;")
+            if tooltip:
+                title_label.setToolTip(tooltip)
             layout.addWidget(title_label)
             editor = QTextEdit()
             editor.setPlainText(text)
             editor.setFixedHeight(height)
+            if tooltip:
+                editor.setToolTip(tooltip)
             layout.addWidget(editor)
             popup_text_editors.append((editor, color, height))
             return editor
 
         _readonly_section("Scene narration", narration, 90, "#96BDE2")
-        quote_editor = _editable_section("Source quote (verbatim from narration)", original.source_quote, 70, "#E6E1E5")
-        subject_editor = _editable_section("Subject", original.subject, 48, "#E6E1E5")
-        action_editor = _editable_section("Action", original.action, 48, "#E6E1E5")
-        setting_editor = _editable_section("Setting", original.setting, 48, "#E6E1E5")
+        quote_editor = _editable_section(
+            "Source quote (verbatim from narration)",
+            original.source_quote,
+            70,
+            "#E6E1E5",
+            "The exact words in the narration this shot is taken from. Prompts may not leave this quote.",
+        )
+        subject_editor = _editable_section(
+            "Subject",
+            original.subject,
+            48,
+            "#E6E1E5",
+            "Who or what is on camera. Copied from the quote only.",
+        )
+        action_editor = _editable_section(
+            "Action",
+            original.action,
+            48,
+            "#E6E1E5",
+            "What is happening in the frame. Copied from the quote only.",
+        )
+        setting_editor = _editable_section(
+            "Setting",
+            original.setting,
+            48,
+            "#E6E1E5",
+            "Place or time of day visible in the quote.",
+        )
         objects_editor = _editable_section(
             "Objects (one per line)",
             "\n".join(original.objects),
             70,
             "#E6E1E5",
+            "Visible props named in the quote. One item per line.",
         )
         beat_editor = _editable_section(
             "English visual beat",
             original.beat,
             80,
             "#9FD6B8",
+            "One English sentence that restates only the visible facts. This is the locked shot for every image model.",
         )
 
         def _set_popup_font_size(size: int):
@@ -6330,6 +6412,10 @@ class MainWindow(QMainWindow):
         self.pipeline_progress.setValue(value)
         self.pipeline_status_label.setText(message)
         self._append_log(message)
+        if getattr(self, "_beats_run_pending", False) and hasattr(self, "_beats_progress"):
+            self._beats_progress.setVisible(True)
+            self._beats_progress.setValue(value)
+            self._beats_status_label.setText(message)
 
     def _append_log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
@@ -6390,6 +6476,11 @@ class MainWindow(QMainWindow):
             self._sync_pending = False
             self._dub_refresh()
 
+        beats_run = getattr(self, "_beats_run_pending", False)
+        self._beats_run_pending = False
+        if beats_run:
+            self._beats_set_busy(False)
+
         if success:
             # Reuse the same single-scene target as the Lightbox refresh above so
             # this doesn't redundantly rebuild every prompt card in every model
@@ -6401,10 +6492,17 @@ class MainWindow(QMainWindow):
                 lambda sid=target_scene_id, key=target_model_key:
                     self._prompts_refresh(only_scene_id=sid, only_model_key=key),
             )
-            if payload and os.path.basename(payload) == "model_prompts.yaml":
+            if beats_run or (payload and os.path.basename(payload) == "model_prompts.yaml"):
                 QTimer.singleShot(0, self._beats_refresh)
+            if payload and os.path.basename(payload) == "model_prompts.yaml":
                 QTimer.singleShot(0, self._refresh_draft_grid)
                 QTimer.singleShot(0, self._refresh_lightbox)
+
+        if beats_run:
+            if success:
+                self._beats_status_label.setText("Visual beats updated. Review them before building prompts.")
+            else:
+                self._beats_status_label.setText(f"Beat extraction failed: {payload}")
 
         if success:
             self.pipeline_status_label.setText("Pipeline complete")

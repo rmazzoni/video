@@ -47,21 +47,73 @@ BEAT_RESPONSE_SCHEMA: Dict[str, Any] = {
 }
 
 EXTRACT_SYSTEM_PROMPT = (
-    "Identify camera-ready visual beats in narration. A beat is something a "
-    "camera can see: a subject, an action, a place, or an object. Commentary, "
-    "statistics, motives, and 'this shows that' claims are not beats.\n\n"
-    "Return only as many beats as there are distinct visual moments, at most "
-    "the requested maximum. Returning fewer than the maximum is required when "
-    "the narration has fewer visual moments. Never invent extra shots to fill "
-    "the quota. Never pad.\n\n"
-    "source_quote must be copied verbatim from the narration. subject, action, "
-    "setting, and objects must use only facts inside that quote, in the source "
-    "language. If a fact is not in the quote, leave the field empty.\n\n"
-    "beat is one English sentence that restates only those facts. If the "
-    "paragraph is abstract, pick the single most concrete stated fact. Do not "
-    "invent a person, prop, place, or action to symbolize an idea.\n\n"
+    "Identify camera-ready visual beats in narration. A beat is one frame a "
+    "camera can point at: who or what is visible, what they are doing, and "
+    "where. Commentary, statistics, motives, strategies, relationships, and "
+    "'this shows that' claims are not beats.\n\n"
+    "Never use a negative or absence sentence as a beat. 'It was not an "
+    "Iranian drone', 'It was not a Russian weapon', and 'The UAE does not "
+    "have a formal army' are explanations, not shots. Do not illustrate the "
+    "thing being denied.\n\n"
+    "Return one beat per distinct visual moment, at most the requested maximum. "
+    "A scene that names several visible things (a strike, a convoy, a place, "
+    "a group of people) must return several beats. Returning fewer than the "
+    "maximum is required when there are fewer visual moments. Never invent "
+    "extra shots to fill the quota. Never pad with commentary.\n\n"
+    "source_quote must be copied verbatim from the narration. Use one sentence "
+    "or a short clause, never the whole paragraph, when the paragraph contains "
+    "more than one visual moment. subject, action, setting, and objects must "
+    "use only facts inside that quote, in the source language. If a fact is "
+    "not in the quote, leave the field empty. These slots describe the locked "
+    "image: subject = who/what is on camera, action = what is happening, "
+    "setting = place or time of day, objects = visible props.\n\n"
+    "beat is one English sentence that restates only those visible facts. "
+    "Do not invent a person, prop, place, or action to symbolize an idea.\n\n"
     "Do not write image-model prompts, camera language, lighting, style, or "
-    "wardrobe unless the quote itself names them."
+    "wardrobe unless the quote itself names them. Never copy the entire "
+    "narration into source_quote or beat. If the scene is only commentary, "
+    "return an empty visual_beats list."
+)
+
+MAX_QUOTE_CHARS = 220
+_CLAUSE_SPLIT_RE = re.compile(r"\s*;\s*|\s*:\s+|\s*,\s+and\s+", re.IGNORECASE)
+_META_LEAD_RE = re.compile(
+    r"^\s*(by the end of this video|let us (now )?(examine|start)|"
+    r"you are going to understand)\b",
+    re.IGNORECASE,
+)
+
+_NEGATION_CLAIM_RE = re.compile(
+    r"\b(it\s+)?(was|were|is|are)\s+not\b"
+    r"|\b(does|do|did|has|have)\s+not\b"
+    r"|\b(has|have)\s+no\b"
+    r"|\bnot\s+an?\b"
+    r"|\bno\s+formal\b"
+    r"|\bwithout\s+any\b",
+    re.IGNORECASE,
+)
+_ABSTRACT_RE = re.compile(
+    r"\b(relationship|implications?|strategy|strategic\s+assets?|master\s+plan|"
+    r"options?|architecture|competition|competes?|political\s+cover|"
+    r"goodwill|investments?|context\s+of\s+what|by\s+the\s+end\s+of\s+this\s+video|"
+    r"understand\s+exactly|nobody\s+is\s+talking|let\s+us\s+start|"
+    r"specific\s+context|represents\s+the)\b",
+    re.IGNORECASE,
+)
+_VISUAL_VERB_RE = re.compile(
+    r"\b(hit|hits|hitting|struck|strike|striking|moving|move|walk|walks|walking|"
+    r"fly|flies|flying|drive|driving|stand|standing|sit|sitting|burn|burning|"
+    r"load|loading|target|targeted|targeting|cross|crossing|enter|entering|"
+    r"hold|holding|carry|carrying|fire|firing|launch|launching|cammina|"
+    r"stese|asciugare)\b",
+    re.IGNORECASE,
+)
+_VISIBLE_NOUN_RE = re.compile(
+    r"\b(drone|convoy|vehicle|vehicles|truck|trucks|fighter|fighters|soldier|"
+    r"soldiers|militia|port|pier|molo|farm|farmland|corridor|ship|ships|"
+    r"missile|missiles|uniform|building|buildings|crowd|road|bridge|desert|"
+    r"city|aircraft|weapon|weapons|pescatore|reti|dawn|sunrise|alba)\b",
+    re.IGNORECASE,
 )
 
 _TOKEN_RE = re.compile(r"[0-9]+|[^\W\d_]+", re.UNICODE)
@@ -169,10 +221,70 @@ def split_sentences(text: str) -> List[str]:
     return [part.strip() for part in _SENTENCE_SPLIT_RE.split(stripped) if part.strip()]
 
 
+def split_clauses(text: str) -> List[str]:
+    """Break a run-on paragraph into clauses a camera could isolate."""
+    pieces: List[str] = []
+    for sentence in split_sentences(text) or [str(text or "").strip()]:
+        if not sentence:
+            continue
+        if len(sentence) < MAX_QUOTE_CHARS:
+            pieces.append(sentence)
+            continue
+        parts = [part.strip(" ,;:") for part in _CLAUSE_SPLIT_RE.split(sentence) if part.strip()]
+        if len(parts) >= 2:
+            pieces.extend(part for part in parts if part)
+        else:
+            pieces.append(sentence)
+    return pieces
+
+
 def fallback_beat(narration: str) -> VisualBeat:
     sentences = split_sentences(narration)
     quote = (sentences[0] if sentences else str(narration or "").strip())
-    return VisualBeat(beat=quote, source_quote=quote)
+    return VisualBeat(beat=quote, source_quote=quote, source="fallback")
+
+
+def fallback_beats(narration: str, limit: int = 3) -> List[VisualBeat]:
+    """Use distinct visual clauses when Qwen returns nothing grounded.
+
+    Never keep the whole narration as a beat. Commentary-only scenes return [].
+    """
+    limit = max(1, int(limit))
+    chosen: List[VisualBeat] = []
+    for sentence in split_clauses(narration):
+        if len(content_tokens(sentence)) < 3:
+            continue
+        if quote_is_too_broad(sentence, narration):
+            continue
+        if not is_visual_moment(sentence):
+            continue
+        chosen.append(VisualBeat(
+            beat=sentence,
+            source_quote=sentence,
+            source="fallback",
+        ))
+        if len(chosen) >= limit:
+            break
+    return chosen
+
+
+def is_visual_moment(text: str) -> bool:
+    """True when the text can be pointed at with a camera in one frame."""
+    blob = str(text or "").strip()
+    if not blob:
+        return False
+    if _META_LEAD_RE.search(blob):
+        return False
+    if _NEGATION_CLAIM_RE.search(blob):
+        return False
+    abstract = len(_ABSTRACT_RE.findall(blob))
+    visual_verbs = len(_VISUAL_VERB_RE.findall(blob))
+    visible_nouns = len(_VISIBLE_NOUN_RE.findall(blob))
+    if abstract and visual_verbs == 0 and visible_nouns == 0:
+        return False
+    if abstract >= 2 and visual_verbs == 0:
+        return False
+    return visual_verbs > 0 or visible_nouns > 0
 
 
 def normalize_stored_beats(raw: Any) -> List[VisualBeat]:
@@ -251,17 +363,108 @@ def _clean_slots(beat: VisualBeat) -> VisualBeat:
     )
 
 
+def recover_source_quote(quote: str, narration: str) -> str:
+    """Return a verbatim narration span for a quote, or empty if ungrounded."""
+    raw = str(quote or "").strip()
+    if quote_in_narration(raw, narration):
+        return raw
+    quote_tokens = set(content_tokens(raw))
+    if not quote_tokens:
+        return ""
+    best = ""
+    best_score = 0
+    for sentence in split_sentences(narration):
+        sentence_tokens = set(content_tokens(sentence))
+        if not sentence_tokens:
+            continue
+        overlap = len(quote_tokens & sentence_tokens)
+        needed = max(1, (len(quote_tokens) + 1) // 2)
+        if overlap >= needed and overlap > best_score:
+            best = sentence
+            best_score = overlap
+    if best and quote_in_narration(best, narration):
+        return best
+    return ""
+
+
+def quote_is_too_broad(quote: str, narration: str) -> bool:
+    """A beat quote must be one short clause, not the whole scene."""
+    normalized_quote = normalize_text(quote)
+    normalized_narration = normalize_text(narration)
+    if not normalized_quote:
+        return False
+    if len(split_sentences(quote)) > 1:
+        return True
+    if len(quote.strip()) > MAX_QUOTE_CHARS:
+        return True
+    if not normalized_narration:
+        return False
+    if normalized_quote == normalized_narration and len(normalized_narration) > 120:
+        return True
+    if len(normalized_narration) > 160 and len(normalized_quote) >= int(0.55 * len(normalized_narration)):
+        return True
+    return False
+
+
+def split_raw_beat_item(item: Any, narration: str) -> List[Dict[str, Any]]:
+    """Turn a whole-paragraph Qwen quote into one candidate per clause."""
+    beat = parse_raw_beat(item)
+    if beat is None:
+        return []
+    text = beat.source_quote.strip() or beat.beat.strip()
+    pieces = split_sentences(text)
+    if len(pieces) <= 1:
+        pieces = split_clauses(text)
+    if len(pieces) <= 1:
+        return [beat.to_dict()]
+    rows: List[Dict[str, Any]] = []
+    for piece in pieces:
+        if not quote_in_narration(piece, narration):
+            continue
+        rows.append({
+            "beat": piece,
+            "source_quote": piece,
+            "subject": "",
+            "action": "",
+            "setting": "",
+            "objects": [],
+            "source": beat.source,
+        })
+    return rows or [beat.to_dict()]
+
+
 def validate_beat(item: Any, narration: str) -> Optional[VisualBeat]:
     beat = parse_raw_beat(item)
     if beat is None:
         return None
-    quote = beat.source_quote.strip() or beat.beat.strip()
-    if not quote_in_narration(quote, narration):
+    quote = recover_source_quote(
+        beat.source_quote.strip() or beat.beat.strip(),
+        narration,
+    )
+    if not quote:
+        return None
+    if quote_is_too_broad(quote, narration):
+        return None
+    if not is_visual_moment(quote) and not is_visual_moment(beat.beat):
         return None
     beat.source_quote = quote
     if not beat.beat.strip():
         beat.beat = quote
     return _clean_slots(beat)
+
+
+def quotes_are_same_moment(left: str, right: str) -> bool:
+    """True when one quote is only a small extension of the other."""
+    a = normalize_text(left)
+    b = normalize_text(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if shorter not in longer:
+        return False
+    return len(shorter) >= int(0.6 * len(longer))
 
 
 def dedupe_beats(beats: Sequence[VisualBeat]) -> List[VisualBeat]:
@@ -272,9 +475,9 @@ def dedupe_beats(beats: Sequence[VisualBeat]) -> List[VisualBeat]:
             continue
         replaced = False
         for index, existing in enumerate(kept):
-            existing_quote = normalize_text(existing.source_quote or existing.beat)
-            if quote == existing_quote or quote in existing_quote or existing_quote in quote:
-                if len(quote) > len(existing_quote):
+            existing_quote = existing.source_quote or existing.beat
+            if quotes_are_same_moment(quote, existing_quote):
+                if len(quote) > len(normalize_text(existing_quote)):
                     kept[index] = beat
                 replaced = True
                 break
@@ -290,17 +493,24 @@ def validate_extracted_beats(
 ) -> List[VisualBeat]:
     limit = max(1, int(limit))
     accepted: List[VisualBeat] = []
-    for item in list(raw_items)[:limit]:
+    expanded: List[Any] = []
+    for item in list(raw_items):
+        expanded.extend(split_raw_beat_item(item, narration))
+    for item in expanded[: max(limit * 3, limit)]:
         beat = validate_beat(item, narration)
         if beat is not None:
             accepted.append(beat)
     accepted = dedupe_beats(accepted)
-    if len(split_sentences(narration)) <= 1 and len(accepted) > 1:
+    sentences = split_sentences(narration)
+    short_single_sentence = (
+        len(sentences) <= 1
+        and len(str(narration or "").strip()) < 180
+        and len(accepted) > 1
+    )
+    if short_single_sentence:
         accepted = accepted[:1]
     if not accepted:
-        fallback = fallback_beat(narration)
-        if fallback.source_quote:
-            accepted = [fallback]
+        accepted = fallback_beats(narration, limit)
     return accepted[:limit]
 
 
@@ -319,7 +529,9 @@ def build_extraction_messages(
         "maximum_visual_beats": int(limit),
         "instructions": (
             "Copy source_quote verbatim. Do not pad to the maximum. "
-            "Omit any fact not present in the quote."
+            "Omit any fact not present in the quote. Reply with JSON only: "
+            '{"visual_beats":[{"source_quote":"","subject":"","action":"",'
+            '"setting":"","objects":[],"beat":""}]}'
         ),
     }, ensure_ascii=False)
     return [
@@ -341,33 +553,27 @@ def extract_structured_beats(
     if not narration:
         return []
 
+    from prompts.ollama_runtime import chat_json_object
+
     raw_items: List[Any] = []
     try:
-        import ollama
-
-        client = ollama.Client(host=ollama_host)
-        response = client.chat(
+        payload = chat_json_object(
+            host=ollama_host,
             model=ollama_model,
-            format=BEAT_RESPONSE_SCHEMA,
-            options={"temperature": 0.1, "top_p": 0.8},
             messages=build_extraction_messages(scene, limit, extra_system),
+            options={"temperature": 0.1, "top_p": 0.8},
         )
-        message = getattr(response, "message", None)
-        content = (
-            getattr(message, "content", "")
-            if message is not None
-            else response["message"]["content"]
-        )
-        payload = json.loads(content)
         raw_items = payload.get("visual_beats") or []
         if not isinstance(raw_items, list):
             raw_items = []
-    except Exception:
-        logger.exception("Visual beat extraction failed; using fallback beat")
-        return [fallback_beat(narration)]
+    except Exception as exc:
+        logger.exception("Visual beat extraction failed for scene %s", scene.get("id"))
+        raise RuntimeError(
+            f"Qwen beat extraction failed for scene {scene.get('id')}: {exc}"
+        ) from exc
 
     beats = validate_extracted_beats(raw_items, narration, limit)
     if not beats:
-        logger.warning("No grounded visual beats survived validation; using fallback")
-        return [fallback_beat(narration)]
+        logger.warning("No grounded visual beats survived validation; using fallback sentences")
+        return fallback_beats(narration, limit)
     return beats

@@ -1,6 +1,12 @@
 import os
 import unittest
 
+from prompts.ollama_runtime import (
+    is_loopback_host,
+    model_is_available,
+    normalize_ollama_host,
+    parse_model_json,
+)
 from prompts.beat_feedback import (
     beats_differ,
     extract_guidance_text,
@@ -21,8 +27,11 @@ from prompts.visual_beats import (
     build_extraction_messages,
     dedupe_beats,
     fallback_beat,
+    fallback_beats,
+    is_visual_moment,
     normalize_stored_beats,
     quote_in_narration,
+    recover_source_quote,
     slot_is_grounded,
     validate_extracted_beats,
 )
@@ -137,9 +146,151 @@ class ValidationTests(unittest.TestCase):
 
     def test_fallback_when_nothing_is_grounded(self):
         beats = validate_extracted_beats([], NARRATION, limit=3)
-        self.assertEqual(len(beats), 1)
+        self.assertEqual(len(beats), 2)
         self.assertTrue(quote_in_narration(beats[0].source_quote, NARRATION))
+        self.assertTrue(quote_in_narration(beats[1].source_quote, NARRATION))
         self.assertEqual(beats[0].beat, fallback_beat(NARRATION).beat)
+
+    def test_long_scene_keeps_distinct_quotes(self):
+        narration = (
+            "The drone strike hit the convoy at four in the morning local time. "
+            "Eight vehicles. UAE funded Sudanese RSF militia fighters moving through "
+            "a contested corridor in southwestern Sudan."
+        )
+        raw = [
+            {
+                "source_quote": "The drone strike hit the convoy at four in the morning local time.",
+                "subject": "drone strike",
+                "action": "hit the convoy",
+                "setting": "four in the morning",
+                "objects": ["convoy"],
+                "beat": "A drone strike hits a convoy at four in the morning.",
+            },
+            {
+                "source_quote": "UAE funded Sudanese RSF militia fighters moving through a contested corridor in southwestern Sudan.",
+                "subject": "RSF militia fighters",
+                "action": "moving through a contested corridor",
+                "setting": "southwestern Sudan",
+                "objects": [],
+                "beat": "RSF militia fighters move through a contested corridor in southwestern Sudan.",
+            },
+        ]
+        beats = validate_extracted_beats(raw, narration, limit=3)
+        self.assertEqual(len(beats), 2)
+
+    def test_whole_narration_is_not_kept_as_the_beat(self):
+        narration = (
+            "The Saudi-UAE secret war that nobody is talking about just became kinetic, "
+            "and the specific implications of that kinetic escalation for the Gulf "
+            "Cooperation Council, for the Islamic Military Coalition, and for the "
+            "broader regional security architecture that MBS has been building."
+        )
+        raw = [{
+            "source_quote": narration,
+            "subject": "Saudi-UAE war",
+            "action": "became kinetic",
+            "setting": "",
+            "objects": [],
+            "beat": narration,
+        }]
+        beats = validate_extracted_beats(raw, narration, limit=3)
+        self.assertTrue(all(b.source_quote != narration for b in beats))
+        self.assertTrue(all(len(b.source_quote) < len(narration) for b in beats))
+
+    def test_commentary_runon_can_yield_no_beats(self):
+        narration = (
+            "Let us now examine the broader pattern of Saudi UAE competition and why "
+            "the kinetic escalation in Sudan represents a qualitative threshold "
+            "crossing rather than just a quantitative increase in the existing "
+            "financial and political rivalry between the two states."
+        )
+        beats = validate_extracted_beats([], narration, limit=3)
+        self.assertEqual(beats, [])
+
+    def test_whole_paragraph_quote_is_dropped_as_too_broad(self):
+        narration = (
+            "The drone strike hit the convoy at four in the morning local time. "
+            "Eight vehicles. UAE funded Sudanese RSF militia fighters moving through "
+            "a contested corridor in southwestern Sudan."
+        )
+        raw = [{
+            "source_quote": narration,
+            "subject": "drone strike",
+            "action": "hit the convoy",
+            "setting": "Sudan",
+            "objects": ["vehicles"],
+            "beat": "A drone strike hits a convoy in Sudan.",
+        }]
+        beats = validate_extracted_beats(raw, narration, limit=3)
+        self.assertGreaterEqual(len(beats), 2)
+        self.assertTrue(all(len(beat.source_quote) < len(narration) for beat in beats))
+
+    def test_recovers_near_verbatim_quote_to_a_sentence(self):
+        recovered = recover_source_quote(
+            "The drone strike hit the convoy at 4 in the morning",
+            "The drone strike hit the convoy at four in the morning local time. Eight vehicles.",
+        )
+        self.assertEqual(
+            recovered,
+            "The drone strike hit the convoy at four in the morning local time.",
+        )
+
+    def test_fallback_beats_uses_multiple_sentences(self):
+        beats = fallback_beats(NARRATION, limit=3)
+        self.assertEqual(len(beats), 2)
+
+    def test_rejects_negation_and_abstract_commentary(self):
+        narration = (
+            "The drone strike hit the convoy at four in the morning local time. "
+            "It was not an Iranian drone. It was not a Russian supplied weapon. "
+            "The UAE does not have a formal army in Sudan. "
+            "The UAE's RSF relationship in Sudan has been providing Abu Dhabi "
+            "with specific strategic assets that the broader MBS master plan "
+            "directly competes with."
+        )
+        raw = [
+            {
+                "source_quote": "It was not an Iranian drone.",
+                "subject": "drone",
+                "action": "was not",
+                "setting": "",
+                "objects": ["drone"],
+                "beat": "It was not an Iranian drone.",
+            },
+            {
+                "source_quote": "The UAE does not have a formal army in Sudan.",
+                "subject": "UAE",
+                "action": "does not have",
+                "setting": "Sudan",
+                "objects": ["army"],
+                "beat": "The UAE does not have a formal army in Sudan.",
+            },
+            {
+                "source_quote": (
+                    "The UAE's RSF relationship in Sudan has been providing Abu Dhabi "
+                    "with specific strategic assets that the broader MBS master plan "
+                    "directly competes with."
+                ),
+                "subject": "UAE",
+                "action": "providing assets",
+                "setting": "Sudan",
+                "objects": [],
+                "beat": "The UAE RSF relationship provides strategic assets.",
+            },
+            {
+                "source_quote": "The drone strike hit the convoy at four in the morning local time.",
+                "subject": "drone strike",
+                "action": "hit the convoy",
+                "setting": "four in the morning",
+                "objects": ["convoy"],
+                "beat": "A drone strike hits a convoy at four in the morning.",
+            },
+        ]
+        beats = validate_extracted_beats(raw, narration, limit=4)
+        self.assertEqual(len(beats), 1)
+        self.assertIn("convoy", beats[0].source_quote.lower())
+        self.assertFalse(is_visual_moment("It was not a Russian supplied weapon."))
+        self.assertTrue(is_visual_moment("UAE funded Sudanese RSF militia fighters moving through a contested corridor."))
 
 
 class PersistenceTests(unittest.TestCase):
@@ -241,6 +392,31 @@ class PromptPayloadTests(unittest.TestCase):
         self.assertIn("UNSPECIFIED DEFAULTS ONLY", wrapped)
         self.assertIn("Wear thobes in every scene.", wrapped)
         self.assertEqual(wrap_project_profile("  "), "")
+
+
+class OllamaRuntimeTests(unittest.TestCase):
+    def test_parse_model_json_strips_think_and_fences(self):
+        payload = parse_model_json(
+            "<think>planning</think>\n```json\n{\"visual_beats\": []}\n```"
+        )
+        self.assertEqual(payload, {"visual_beats": []})
+
+    def test_parse_model_json_extracts_object_from_prose(self):
+        payload = parse_model_json(
+            'Here you go:\n{"visual_beats": [{"beat": "A fisherman walks."}]}\nDone.'
+        )
+        self.assertEqual(payload["visual_beats"][0]["beat"], "A fisherman walks.")
+
+    def test_localhost_is_forced_onto_loopback(self):
+        self.assertEqual(normalize_ollama_host("http://localhost:11434"), "http://127.0.0.1:11434")
+        self.assertEqual(normalize_ollama_host("localhost"), "http://127.0.0.1:11434")
+        self.assertTrue(is_loopback_host("http://localhost:11434"))
+        self.assertFalse(is_loopback_host("http://192.168.1.10:11434"))
+
+    def test_model_name_matches_tags(self):
+        self.assertTrue(model_is_available(["qwen3:8b", "llama3"], "qwen3:8b"))
+        self.assertTrue(model_is_available(["qwen3:8b"], "qwen3"))
+        self.assertFalse(model_is_available(["llama3"], "qwen3:8b"))
 
 
 class BeatFeedbackTests(unittest.TestCase):

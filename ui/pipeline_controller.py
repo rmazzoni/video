@@ -120,7 +120,26 @@ class PipelineWorker(QObject):
             normalize_stored_beats,
         )
 
+        from prompts.ollama_runtime import (
+            ensure_ollama_ready,
+            is_loopback_host,
+            normalize_ollama_host,
+        )
+
         service = self._make_prompt_service()
+        ollama_host = normalize_ollama_host(service.ollama_host)
+        self.log.emit(
+            f"Checking Ollama at {ollama_host} for model {service.ollama_model}..."
+        )
+        if not is_loopback_host(ollama_host):
+            self.log.emit(
+                f"Warning: Ollama host is not loopback, so Qwen traffic will use the LAN: {ollama_host}"
+            )
+        ensure_ollama_ready(ollama_host, service.ollama_model)
+        self.log.emit(
+            f"Ollama ready on loopback={is_loopback_host(ollama_host)}. "
+            f"Extracting visual beats with {service.ollama_model}."
+        )
         model_prompts = self._load_model_prompts()
         total = max(len(scenes), 1)
         for index, scene in enumerate(scenes, start=1):
@@ -130,6 +149,7 @@ class PipelineWorker(QObject):
                 20 + int(((index - 1) / total) * 75),
                 f"Extracting visual beats for scene {scene_id}",
             )
+            self.log.emit(f"Scene {scene_id}: asking Qwen for visual beats...")
             visual_beats = service.extract_structured_beats(scene)
             scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
             existing_models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
@@ -154,9 +174,16 @@ class PipelineWorker(QObject):
                 "models": updated_models,
             }
             model_prompts.pop(str(scene_id), None)
-            self.log.emit(
-                f"Scene {scene_id}: extracted {len(visual_beats)} shared visual beat(s)."
-            )
+            fallback_count = sum(1 for beat in visual_beats if beat.source == "fallback")
+            if fallback_count == len(visual_beats):
+                self.log.emit(
+                    f"Scene {scene_id}: Qwen returned no grounded beats; "
+                    f"used {len(visual_beats)} narration sentence(s)."
+                )
+            else:
+                self.log.emit(
+                    f"Scene {scene_id}: extracted {len(visual_beats)} shared visual beat(s)."
+                )
             self._write_model_prompts(model_prompts)
         return self._write_model_prompts(model_prompts)
 
@@ -172,7 +199,10 @@ class PipelineWorker(QObject):
         if scene is None:
             raise ValueError(f"Scene {scene_id} was not found.")
 
+        from prompts.ollama_runtime import ensure_ollama_ready
+
         service = self._make_prompt_service()
+        ensure_ollama_ready(service.ollama_host, service.ollama_model)
         model_prompts = self._load_model_prompts()
         scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
         visual_beats = normalize_stored_beats(
@@ -255,36 +285,40 @@ class PipelineWorker(QObject):
                              "final_images", "final_clips", "final_video"}:
                 raise ValueError(f"Unknown stage: {stage}")
 
-            # Force-release any GPU memory left over from a previous pipeline run
-            # before loading new models.  This handles the case where unload() in
-            # a prior run failed to free everything (e.g. lingering Python refs).
-            import gc as _gc
-            _gc.collect()
-            try:
-                import torch as _t
-                if _t.cuda.is_available():
-                    _t.cuda.empty_cache()
-                    _t.cuda.synchronize()
-                    _gc.collect()
-                    alloc = _t.cuda.memory_allocated() / 1024**3
-                    if alloc > 0.5:
-                        self.log.emit(f"âš  VRAM start: {alloc:.2f} GiB still allocated from previous run â€” forcing further cleanup")
-                        # Walk all live Python objects and delete any torch modules
-                        import sys
-                        for obj in list(_gc.get_objects()):
-                            try:
-                                if isinstance(obj, _t.nn.Module):
-                                    for p in list(obj.parameters()):
-                                        if p.is_cuda:
-                                            p.data = p.data.cpu()
-                            except Exception:
-                                pass
-                        _gc.collect()
+            # Beat/prompt stages talk to Ollama only. CUDA sync here can stall
+            # the worker for a long time with no progress, which looks like a
+            # dead click on the Beats tab.
+            if stage not in {"beats", "beat_prompts"}:
+                # Force-release any GPU memory left over from a previous pipeline run
+                # before loading new models.  This handles the case where unload() in
+                # a prior run failed to free everything (e.g. lingering Python refs).
+                import gc as _gc
+                _gc.collect()
+                try:
+                    import torch as _t
+                    if _t.cuda.is_available():
                         _t.cuda.empty_cache()
-                    alloc2 = _t.cuda.memory_allocated() / 1024**3
-                    self.log.emit(f"VRAM at stage start: {alloc2:.2f} GiB allocated")
-            except Exception:
-                pass
+                        _t.cuda.synchronize()
+                        _gc.collect()
+                        alloc = _t.cuda.memory_allocated() / 1024**3
+                        if alloc > 0.5:
+                            self.log.emit(f"âš  VRAM start: {alloc:.2f} GiB still allocated from previous run â€” forcing further cleanup")
+                            # Walk all live Python objects and delete any torch modules
+                            import sys
+                            for obj in list(_gc.get_objects()):
+                                try:
+                                    if isinstance(obj, _t.nn.Module):
+                                        for p in list(obj.parameters()):
+                                            if p.is_cuda:
+                                                p.data = p.data.cpu()
+                                except Exception:
+                                    pass
+                            _gc.collect()
+                            _t.cuda.empty_cache()
+                        alloc2 = _t.cuda.memory_allocated() / 1024**3
+                        self.log.emit(f"VRAM at stage start: {alloc2:.2f} GiB allocated")
+                except Exception:
+                    pass
 
             def _log_vram(label: str = "") -> None:
                 try:
@@ -356,6 +390,7 @@ class PipelineWorker(QObject):
 
             if stage in {"beats", "beat_prompts"}:
                 self._check_cancel()
+                self._emit_progress(5, "Loading scenes for visual beats")
                 if not scenes:
                     if not os.path.exists(scenes_path):
                         raise ValueError("No scenes.yaml found. Split scenes from the Script tab first.")
@@ -392,7 +427,13 @@ class PipelineWorker(QObject):
                     with open(model_prompts_path, "r", encoding="utf-8") as fh:
                         model_prompts = yaml.safe_load(fh) or {}
 
+                from prompts.ollama_runtime import ensure_ollama_ready
+
                 service = self._make_prompt_service()
+                self.log.emit(
+                    f"Checking Ollama at {service.ollama_host} for model {service.ollama_model}..."
+                )
+                ensure_ollama_ready(service.ollama_host, service.ollama_model)
                 requested_model = str(self.config.get("prompt_model_key", "")).strip().lower()
                 configured_models = self.config.get(
                     "enabled_image_models", ["schnell", "dev", "flux2"]
