@@ -239,6 +239,15 @@ class MainWindow(QMainWindow):
         ("flux2_v3",   "FLUX.2 +1"),
     ]
 
+    _BEATS_TEXT_SIZE_DEFAULT = 12
+    _BEATS_TEXT_SIZE_MIN = 8
+    _BEATS_TEXT_SIZE_MAX = 36
+    _BEATS_FONT_SIZE_RE = re.compile(r"font-size:\s*\d+px")
+    _UNSAVED_BUTTON_STYLE = (
+        "QPushButton { background:#5B2026; color:#FFD7D9; border:1px solid #E73A4B; }"
+        "QPushButton:hover { background:#7A2B33; }"
+    )
+
     def __init__(self):
         super().__init__()
 
@@ -2960,15 +2969,45 @@ class MainWindow(QMainWindow):
 
     def _build_beats_tab(self) -> QWidget:
         page = QWidget()
+        self._beats_page = page
         root = QVBoxLayout(page)
         root.setSpacing(6)
 
+        header_row = QHBoxLayout()
+        header_row.setSpacing(6)
         self._beats_status_label = QLabel(
             "Extract shared visual beats, review them against the narration, then build prompts."
         )
         self._beats_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
         self._beats_status_label.setWordWrap(True)
-        root.addWidget(self._beats_status_label)
+        header_row.addWidget(self._beats_status_label, 1)
+
+        self._beats_text_size = self._BEATS_TEXT_SIZE_DEFAULT
+        reset_a = QPushButton("A")
+        reset_a.setObjectName("beatsTextSizeReset")
+        reset_a.setFixedSize(28, 28)
+        reset_a.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        reset_a.setToolTip("Reset text size to default")
+        reset_a.setStyleSheet(
+            "QPushButton { background:transparent; border:none; color:#E6E1E5; "
+            "font-weight:bold; font-size:16px; padding:0; min-height:24px; }"
+            "QPushButton:hover { color:#96BDE2; }"
+        )
+        reset_a.clicked.connect(self._beats_reset_text_size)
+        self._beats_text_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self._beats_text_size_slider.setRange(self._BEATS_TEXT_SIZE_MIN, self._BEATS_TEXT_SIZE_MAX)
+        self._beats_text_size_slider.setValue(self._BEATS_TEXT_SIZE_DEFAULT)
+        self._beats_text_size_slider.setFixedWidth(120)
+        self._beats_text_size_slider.setToolTip("Adjust text size for the Beats tab")
+        self._beats_text_size_slider.valueChanged.connect(self._beats_set_text_size)
+        self._beats_text_size_label = QLabel(f"{self._BEATS_TEXT_SIZE_DEFAULT}px")
+        self._beats_text_size_label.setObjectName("beatsTextSizeValue")
+        self._beats_text_size_label.setFixedWidth(36)
+        self._beats_text_size_label.setStyleSheet("color:#8E8B90; font-size:10px; border:none;")
+        header_row.addWidget(reset_a)
+        header_row.addWidget(self._beats_text_size_slider)
+        header_row.addWidget(self._beats_text_size_label)
+        root.addLayout(header_row)
 
         notes_label = QLabel("Beat extraction notes")
         notes_label.setStyleSheet("font-weight:bold;")
@@ -3022,7 +3061,44 @@ class MainWindow(QMainWindow):
         self._beats_cards_layout.addStretch(1)
         scroll.setWidget(cards_widget)
         root.addWidget(scroll, 1)
+        self._beats_apply_text_size()
         return page
+
+    def _beats_reset_text_size(self) -> None:
+        self._beats_set_text_size(self._BEATS_TEXT_SIZE_DEFAULT)
+
+    def _beats_set_text_size(self, size: int) -> None:
+        size = max(self._BEATS_TEXT_SIZE_MIN, min(self._BEATS_TEXT_SIZE_MAX, int(size)))
+        self._beats_text_size = size
+        slider = getattr(self, "_beats_text_size_slider", None)
+        if slider is not None and slider.value() != size:
+            slider.blockSignals(True)
+            slider.setValue(size)
+            slider.blockSignals(False)
+        label = getattr(self, "_beats_text_size_label", None)
+        if label is not None:
+            label.setText(f"{size}px")
+        self._beats_apply_text_size()
+
+    def _beats_apply_text_size(self) -> None:
+        page = getattr(self, "_beats_page", None)
+        if page is None:
+            return
+        size = getattr(self, "_beats_text_size", self._BEATS_TEXT_SIZE_DEFAULT)
+        skip = {"beatsTextSizeReset", "beatsTextSizeValue"}
+        for widget in page.findChildren(QWidget):
+            if widget.objectName() in skip:
+                continue
+            if not isinstance(widget, (QLabel, QPlainTextEdit, QPushButton, QCheckBox)):
+                continue
+            style = widget.styleSheet() or ""
+            if self._BEATS_FONT_SIZE_RE.search(style):
+                widget.setStyleSheet(self._BEATS_FONT_SIZE_RE.sub(f"font-size:{size}px", style))
+            else:
+                widget.setStyleSheet(f"{style} font-size:{size}px;".strip())
+        notes = getattr(self, "_beats_notes_editor", None)
+        if notes is not None:
+            notes.setMaximumHeight(max(90, int(90 * size / self._BEATS_TEXT_SIZE_DEFAULT)))
 
     def _beats_save_notes(self) -> None:
         from prompts.beat_feedback import load_beat_feedback, save_beat_feedback
@@ -3105,6 +3181,7 @@ class MainWindow(QMainWindow):
         project = self.project_path_input.text().strip()
         if not project:
             self._beats_status_label.setText("Open a project to review visual beats.")
+            self._beats_apply_text_size()
             return
 
         output = os.path.join(project, "output")
@@ -3117,6 +3194,7 @@ class MainWindow(QMainWindow):
         scenes, _dubbing, _prompts, _overrides = self._prompts_project_data()
         if not scenes:
             self._beats_status_label.setText("No scenes found. Split scenes from the Script tab first.")
+            self._beats_apply_text_size()
             return
 
         try:
@@ -3227,9 +3305,16 @@ class MainWindow(QMainWindow):
             f"{example_count} correction example(s) will be sent to Qwen on the next extraction."
             + hint
         )
+        self._beats_apply_text_size()
 
     def _beats_add_beat(self, scene_id: int) -> None:
-        from prompts.visual_beats import VisualBeat, beats_as_dicts, normalize_stored_beats
+        from prompts.model_prompt_service import MODEL_KEYS
+        from prompts.visual_beats import (
+            VisualBeat,
+            beats_as_dicts,
+            normalize_stored_beats,
+            sync_model_prompts_to_beats,
+        )
 
         project = self.project_path_input.text().strip()
         if not project:
@@ -3277,7 +3362,12 @@ class MainWindow(QMainWindow):
         scene_entry["visual_beats_source"] = str(
             scene_entry.get("visual_beats_source") or narration
         )
-        scene_entry.setdefault("models", {})
+        scene_entry["models"] = sync_model_prompts_to_beats(
+            scene_entry.get("models", {}),
+            beats,
+            scene_id,
+            MODEL_KEYS,
+        )
         data[scene_id] = scene_entry
         data.pop(str(scene_id), None)
         os.makedirs(os.path.dirname(prompts_path), exist_ok=True)
@@ -3292,6 +3382,9 @@ class MainWindow(QMainWindow):
         )
         self._open_beat_editor(scene_id, len(beats))
 
+    def _set_unsaved_button_style(self, button: QPushButton, needs_save: bool) -> None:
+        button.setStyleSheet(self._UNSAVED_BUTTON_STYLE if needs_save else "")
+
     def _open_beat_editor(self, scene_id: int, beat_index: int) -> None:
         from PyQt6.QtWidgets import QDialog, QTextEdit
         from prompts.beat_feedback import (
@@ -3299,11 +3392,13 @@ class MainWindow(QMainWindow):
             record_correction,
             save_beat_feedback,
         )
+        from prompts.model_prompt_service import MODEL_KEYS
         from prompts.visual_beats import (
             VisualBeat,
             beats_as_dicts,
             normalize_stored_beats,
             quote_in_narration,
+            sync_model_prompts_to_beats,
         )
 
         project = self.project_path_input.text().strip()
@@ -3511,6 +3606,28 @@ class MainWindow(QMainWindow):
                 source="manually_edited",
             )
 
+        def _beat_snapshot(beat: VisualBeat) -> tuple:
+            return (
+                beat.beat,
+                beat.source_quote,
+                beat.subject,
+                beat.action,
+                beat.setting,
+                tuple(beat.objects),
+            )
+
+        saved_beat_state = {
+            "snapshot": _beat_snapshot(original),
+            "unsaved_new": original.source == "user_added",
+        }
+
+        def _update_save_state():
+            current = _read_beat()
+            changed = _beat_snapshot(current) != saved_beat_state["snapshot"]
+            self._set_unsaved_button_style(
+                save, changed or saved_beat_state["unsaved_new"]
+            )
+
         def _persist_beat(corrected: VisualBeat) -> bool:
             if not corrected.beat and not corrected.source_quote:
                 QMessageBox.warning(dialog, "Empty beat", "Enter a source quote or English beat before saving.")
@@ -3529,16 +3646,12 @@ class MainWindow(QMainWindow):
             scene_entry["visual_beats_source"] = str(
                 scene_entry.get("visual_beats_source") or narration
             )
-            models = scene_entry.setdefault("models", {})
-            for model_key, model_entry in list(models.items()):
-                if not isinstance(model_entry, dict):
-                    continue
-                rows = model_entry.get("prompts", [])
-                if not isinstance(rows, list):
-                    continue
-                for row in rows:
-                    if isinstance(row, dict) and int(row.get("beat", 0) or 0) == beat_index:
-                        row["visual_beat"] = corrected.beat
+            scene_entry["models"] = sync_model_prompts_to_beats(
+                scene_entry.get("models", {}),
+                beats,
+                scene_id,
+                MODEL_KEYS,
+            )
             data[scene_id] = scene_entry
             data.pop(str(scene_id), None)
             os.makedirs(os.path.dirname(prompts_path), exist_ok=True)
@@ -3562,6 +3675,9 @@ class MainWindow(QMainWindow):
             corrected = _read_beat()
             if not _persist_beat(corrected):
                 return False
+            saved_beat_state["snapshot"] = _beat_snapshot(corrected)
+            saved_beat_state["unsaved_new"] = False
+            _update_save_state()
             status.setText("Beat saved. Use Regenerate Prompts to rewrite model prompts for this shot.")
             self._beats_refresh()
             self._prompts_refresh()
@@ -3635,6 +3751,16 @@ class MainWindow(QMainWindow):
         cancel.clicked.connect(dialog.reject)
         save.clicked.connect(lambda: _save(close_dialog=False))
         regenerate.clicked.connect(_regenerate_prompts)
+        for editor in (
+            quote_editor,
+            subject_editor,
+            action_editor,
+            setting_editor,
+            objects_editor,
+            beat_editor,
+        ):
+            editor.textChanged.connect(_update_save_state)
+        _update_save_state()
         dialog.exec()
 
     def _build_prompts_tab(self) -> QWidget:
@@ -4554,19 +4680,10 @@ class MainWindow(QMainWindow):
         candidate_state = {"path": ""}
         saved_prompt_state = {"text": prompt_editor.toPlainText().strip()}
 
-        def _set_save_button_style(button: QPushButton, needs_save: bool):
-            if needs_save:
-                button.setStyleSheet(
-                    "QPushButton { background:#5B2026; color:#FFD7D9; border:1px solid #E73A4B; }"
-                    "QPushButton:hover { background:#7A2B33; }"
-                )
-            else:
-                button.setStyleSheet("")
-
         def _update_save_states():
             prompt_changed = prompt_editor.toPlainText().strip() != saved_prompt_state["text"]
-            _set_save_button_style(save, prompt_changed)
-            _set_save_button_style(save_image, bool(candidate_state["path"]))
+            self._set_unsaved_button_style(save, prompt_changed)
+            self._set_unsaved_button_style(save_image, bool(candidate_state["path"]))
 
         prompt_editor.textChanged.connect(_update_save_states)
         _update_save_states()

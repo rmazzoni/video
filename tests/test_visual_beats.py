@@ -27,6 +27,7 @@ from prompts.visual_beats import (
     build_extraction_messages,
     dedupe_beats,
     compact_visual_quote,
+    ensure_prompt_rows_for_beats,
     fallback_beat,
     fallback_beats,
     is_visual_moment,
@@ -34,6 +35,8 @@ from prompts.visual_beats import (
     quote_in_narration,
     recover_source_quote,
     slot_is_grounded,
+    stub_prompt_row,
+    sync_model_prompts_to_beats,
     validate_extracted_beats,
 )
 
@@ -357,6 +360,67 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(len(aligned), 1)
         self.assertEqual(aligned[0]["text"], "old prompt one")
         self.assertEqual(aligned[0]["visual_beat"], "A fisherman walks on the pier.")
+
+    def test_ensure_prompt_rows_adds_stubs_for_missing_beats(self):
+        beats = [
+            VisualBeat(beat="A fisherman walks on the pier.", source_quote="Il pescatore cammina sul molo all'alba."),
+            VisualBeat(beat="Nets dry on the pier.", source_quote="Le reti sono stese a asciugare.", source="user_added"),
+        ]
+        rows = [
+            {"beat": 1, "text": "cinematic fisherman prompt", "visual_beat": "old one", "source": "generated"},
+        ]
+        aligned = ensure_prompt_rows_for_beats(rows, beats, scene_id=1, model_key="schnell")
+        self.assertEqual(len(aligned), 2)
+        self.assertEqual(aligned[0]["text"], "cinematic fisherman prompt")
+        self.assertEqual(aligned[0]["visual_beat"], "A fisherman walks on the pier.")
+        self.assertEqual(aligned[1]["text"], "Nets dry on the pier.")
+        self.assertEqual(aligned[1]["source"], "pending")
+        self.assertEqual(aligned[1]["id"], "scene_001_beat_02_schnell")
+
+    def test_ensure_prompt_rows_updates_pending_text_when_beat_changes(self):
+        beats = [VisualBeat(beat="Nets dry on the pier.", source="user_added")]
+        rows = [stub_prompt_row(1, "dev", VisualBeat(beat="New visual beat", source="user_added"), 1)]
+        aligned = ensure_prompt_rows_for_beats(rows, beats, scene_id=1, model_key="dev")
+        self.assertEqual(aligned[0]["text"], "Nets dry on the pier.")
+        self.assertEqual(aligned[0]["visual_beat"], "Nets dry on the pier.")
+        self.assertEqual(aligned[0]["source"], "pending")
+
+    def test_ensure_prompt_rows_keeps_manual_prompt_text(self):
+        beats = [VisualBeat(beat="Nets dry on the pier.", source="manually_edited")]
+        rows = [{
+            "beat": 1,
+            "text": "hand-tuned prompt",
+            "visual_beat": "New visual beat",
+            "source": "manually_edited",
+        }]
+        aligned = ensure_prompt_rows_for_beats(rows, beats, scene_id=1, model_key="flux2")
+        self.assertEqual(aligned[0]["text"], "hand-tuned prompt")
+        self.assertEqual(aligned[0]["visual_beat"], "Nets dry on the pier.")
+        self.assertEqual(aligned[0]["source"], "manually_edited")
+
+    def test_sync_model_prompts_copies_beats_onto_every_model(self):
+        beats = [
+            VisualBeat(beat="A fisherman walks on the pier."),
+            VisualBeat(beat="Nets dry on the pier.", source="user_added"),
+        ]
+        models = {
+            "schnell": {
+                "profile": "schnell.yaml",
+                "prompts": [{"beat": 1, "text": "old schnell", "visual_beat": "old", "source": "generated"}],
+                "max_prompts_per_scene": 3,
+            }
+        }
+        synced = sync_model_prompts_to_beats(
+            models, beats, scene_id=4, model_keys=("schnell", "zimage", "dev")
+        )
+        self.assertEqual(set(synced), {"schnell", "zimage", "dev"})
+        self.assertEqual(len(synced["schnell"]["prompts"]), 2)
+        self.assertEqual(synced["schnell"]["prompts"][0]["text"], "old schnell")
+        self.assertEqual(synced["schnell"]["prompts"][1]["text"], "Nets dry on the pier.")
+        self.assertEqual(len(synced["zimage"]["prompts"]), 2)
+        self.assertEqual(synced["zimage"]["prompts"][0]["text"], "A fisherman walks on the pier.")
+        self.assertEqual(synced["dev"]["prompts"][1]["source"], "pending")
+        self.assertGreaterEqual(synced["zimage"]["max_prompts_per_scene"], 2)
 
     def test_extraction_messages_include_guidance(self):
         messages = build_extraction_messages(

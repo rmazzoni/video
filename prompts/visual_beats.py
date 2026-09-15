@@ -367,6 +367,26 @@ def beats_as_dicts(beats: Sequence[VisualBeat]) -> List[Dict[str, Any]]:
     return [beat.to_dict() for beat in beats]
 
 
+PENDING_PROMPT_SOURCES = {"pending", "user_added"}
+
+
+def stub_prompt_row(
+    scene_id: int,
+    model_key: str,
+    beat: VisualBeat,
+    index: int,
+) -> Dict[str, Any]:
+    """Placeholder prompt so a beat appears on every model tab before Qwen runs."""
+    text = str(beat.beat or beat.source_quote or "").strip()
+    return {
+        "id": f"scene_{int(scene_id):03d}_beat_{index:02d}_{model_key}",
+        "beat": int(index),
+        "visual_beat": beat.beat,
+        "text": text,
+        "source": "pending",
+    }
+
+
 def align_prompt_rows_to_beats(
     existing_rows: Sequence[Any],
     beats: Sequence[VisualBeat],
@@ -396,6 +416,73 @@ def align_prompt_rows_to_beats(
         )
         aligned.append(updated)
     return aligned
+
+
+def ensure_prompt_rows_for_beats(
+    existing_rows: Sequence[Any],
+    beats: Sequence[VisualBeat],
+    scene_id: int,
+    model_key: str,
+) -> List[Dict[str, Any]]:
+    """Keep matching prompt rows and insert stubs for beats the model is missing."""
+    rows = [row for row in existing_rows if isinstance(row, dict)]
+    aligned: List[Dict[str, Any]] = []
+    for index, beat in enumerate(beats, 1):
+        previous = next(
+            (row for row in rows if int(row.get("beat", 0) or 0) == index),
+            None,
+        )
+        if previous is None:
+            aligned.append(stub_prompt_row(scene_id, model_key, beat, index))
+            continue
+        updated = dict(previous)
+        updated["beat"] = index
+        updated["visual_beat"] = beat.beat
+        updated["id"] = (
+            str(updated.get("id") or "").strip()
+            or f"scene_{int(scene_id):03d}_beat_{index:02d}_{model_key}"
+        )
+        source = str(updated.get("source") or "").strip()
+        if source in PENDING_PROMPT_SOURCES or not source:
+            updated["text"] = beat.beat
+            updated["source"] = "pending"
+        aligned.append(updated)
+    return aligned
+
+
+def sync_model_prompts_to_beats(
+    models: Any,
+    beats: Sequence[VisualBeat],
+    scene_id: int,
+    model_keys: Sequence[str],
+) -> Dict[str, Any]:
+    """Copy the shared beat list onto every model so Prompts tabs stay in sync."""
+    existing = models if isinstance(models, dict) else {}
+    updated: Dict[str, Any] = {}
+    for model_key, value in existing.items():
+        if model_key not in model_keys:
+            updated[model_key] = value
+    for model_key in model_keys:
+        entry = existing.get(model_key)
+        if not isinstance(entry, dict):
+            entry = {}
+        existing_rows = entry.get("prompts", [])
+        if not isinstance(existing_rows, list):
+            existing_rows = []
+        updated[model_key] = {
+            "profile": entry.get("profile") or f"{model_key}.yaml",
+            "prompts": ensure_prompt_rows_for_beats(
+                existing_rows,
+                beats,
+                scene_id,
+                model_key,
+            ),
+            "max_prompts_per_scene": max(
+                int(entry.get("max_prompts_per_scene") or len(beats) or 3),
+                len(beats),
+            ),
+        }
+    return updated
 
 
 def parse_raw_beat(item: Any) -> Optional[VisualBeat]:
