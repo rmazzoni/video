@@ -12,9 +12,9 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
         "prompt_anchors": {
             "schnell": "Cinematic photograph, natural materials, photographic lighting and depth.",
             "zimage": "Cinematic photograph, natural materials, photographic depth, motivated light.",
-            "dev": "Cinematic photography, realistic materials, optical depth, motivated natural light.",
-            "hidream": "Cinematic photography, rich natural detail, dimensional depth, and motivated light.",
-            "flux2": "Cinematic photograph with realistic surfaces, optical depth, and motivated lighting.",
+            "dev": "Photographic scene, realistic materials, directional light, spatial depth.",
+            "hidream": "Clear photograph, distinct faces, natural materials, directional room light.",
+            "flux2": "Precise photographic scene, realistic surfaces, directional light.",
         },
         "models": {
             "schnell": (
@@ -35,22 +35,22 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "lens perspective, camera distance, blocking, atmosphere, color contrast, and "
                 "directional light from the dramatic needs of this scene. Preserve environmental "
                 "detail and visual tension; avoid a generic commercial portrait or uniformly soft, "
-                "flat illumination."
+                "flat illumination. Stage the beat as a specific room or landscape; do not repeat "
+                "the beat sentence inside a list of lighting tags."
             ),
             "hidream": (
-                "Use richly detailed cinematic photography with coherent spatial staging, natural "
-                "anatomy, nuanced expressions, tactile materials, distinct depth planes, and motivated "
-                "light. Favor clear air and crisp local contrast unless the narration explicitly calls "
-                "for fog, mist, smoke, or haze. Let the narration determine lens perspective and "
-                "composition. Preserve the literal action and identity while avoiding generic portrait "
-                "staging or decorative clutter."
+                "Use clear, spatially staged photography with natural anatomy, readable faces, "
+                "tactile materials, and distinct foreground, middle, and background planes. "
+                "HiDream muddies when prompts stack volumetric light, haze, bloom, or repeated "
+                "cinematic adjectives — prefer one lighting direction, clear air, and concrete "
+                "furniture or terrain. Describe the room and people; do not sandwich the beat "
+                "between style slogans."
             ),
             "flux2": (
-                "Use sophisticated cinematic photography with purposeful composition, spatial "
-                "depth, material detail, and motivated light. Translate the narration into a "
-                "specific captured moment, allowing wide tableaux, dynamic perspective, restrained "
-                "visual metaphor, or intimate observation as appropriate. Avoid polished stock-photo "
-                "staging and repeated portrait formulas."
+                "Use precise cinematic photography with purposeful composition, spatial "
+                "depth, material detail, and motivated light. Translate the beat into a "
+                "specific captured moment with explicit left-right and near-far placement. "
+                "Avoid polished stock-photo staging, portrait formulas, and keyword piles."
             ),
         },
     },

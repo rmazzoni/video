@@ -14,10 +14,13 @@ from prompts.beat_feedback import (
     record_correction,
 )
 from prompts.model_prompt_service import (
+    LOCKED_BEAT_INSTRUCTION,
+    ModelPromptService,
     PROMPT_ONLY_SCHEMA,
     build_prompt_user_payload,
     wrap_project_profile,
 )
+from prompts.prompt_builder import PromptBuilder, join_prompt_parts
 from prompts.project_profiles import load_project_profiles
 from prompts.prompt_grounding import check_prompt
 from prompts.visual_beats import (
@@ -469,6 +472,18 @@ class PromptGroundingTests(unittest.TestCase):
         self.assertIn("John Smith", result.extras)
         self.assertIn("47", result.extras)
 
+    def test_allows_camera_and_aspect_ratio_numbers(self):
+        beat = VisualBeat(
+            beat="A fisherman walks along the pier.",
+            source_quote="Il pescatore cammina sul molo all'alba.",
+        )
+        result = check_prompt(
+            "A fisherman walks along the pier, 35mm lens, aspect ratio 16:9.",
+            beat,
+            NARRATION,
+        )
+        self.assertTrue(result.ok, result.summary())
+
 
 class PromptPayloadTests(unittest.TestCase):
     def test_prompt_schema_does_not_ask_for_visual_beat(self):
@@ -491,6 +506,73 @@ class PromptPayloadTests(unittest.TestCase):
         self.assertIn("UNSPECIFIED DEFAULTS ONLY", wrapped)
         self.assertIn("Wear thobes in every scene.", wrapped)
         self.assertEqual(wrap_project_profile("  "), "")
+
+    def test_locked_instruction_asks_for_a_staged_scene(self):
+        self.assertIn("Do not copy the beat sentence verbatim", LOCKED_BEAT_INSTRUCTION)
+        self.assertIn("Do not mention aspect ratio", LOCKED_BEAT_INSTRUCTION)
+
+    def test_user_payload_forbids_aspect_ratio(self):
+        beat = VisualBeat(beat="A fisherman walks along the pier.")
+        payload = build_prompt_user_payload({"id": 1, "text": NARRATION}, beat)
+        self.assertIn("aspect ratio", payload["writing_rules"].lower())
+
+
+class PromptAssemblyTests(unittest.TestCase):
+    def test_join_prompt_parts_avoids_double_periods(self):
+        joined = join_prompt_parts(
+            "Cinematic photograph, natural materials.",
+            "A meeting of Arab leaders in a conference room of the Gulf Cooperation Council.",
+        )
+        self.assertEqual(
+            joined,
+            "Cinematic photograph, natural materials. "
+            "A meeting of Arab leaders in a conference room of the Gulf Cooperation Council.",
+        )
+        self.assertNotIn("..", joined)
+
+    def test_prompt_builder_omits_aspect_ratio(self):
+        prompt = PromptBuilder(style_preset="cinematic", default_aspect_ratio="16:9").build_prompt(
+            {"id": 1, "text": "A meeting of Arab leaders in a conference room."}
+        )
+        self.assertNotIn("Aspect ratio", prompt)
+        self.assertNotIn("16:9", prompt)
+
+    def test_template_prompt_is_style_prefix_plus_beat(self):
+        profiles_dir = os.path.join(
+            os.path.dirname(__file__), "..", "config", "prompt_profiles"
+        )
+        service = ModelPromptService(profiles_dir, "qwen3:8b", "http://127.0.0.1:11434")
+        beat = VisualBeat(
+            beat="A meeting of Arab leaders in a conference room of the Gulf Cooperation Council.",
+            source="user_added",
+        )
+        prompt = service._template_prompt(
+            {"id": 1, "text": NARRATION},
+            {"model_key": "schnell", "style_preset": "cinematic"},
+            beat,
+        )
+        self.assertTrue(prompt.startswith("Cinematic photograph"))
+        self.assertIn("Arab leaders", prompt)
+        self.assertNotIn("Aspect ratio", prompt)
+        self.assertNotIn("volumetric light", prompt)
+        self.assertNotIn("characters facing the camera", prompt)
+        self.assertNotIn("..", prompt)
+
+    def test_hidream_template_avoids_volumetric_keyword_pile(self):
+        profiles_dir = os.path.join(
+            os.path.dirname(__file__), "..", "config", "prompt_profiles"
+        )
+        service = ModelPromptService(profiles_dir, "qwen3:8b", "http://127.0.0.1:11434")
+        beat = VisualBeat(beat="A meeting of Arab leaders in a conference room.")
+        prompt = service._template_prompt(
+            {"id": 1, "text": NARRATION},
+            {"model_key": "hidream"},
+            beat,
+        )
+        self.assertIn("Clear photograph", prompt)
+        self.assertIn("Arab leaders", prompt)
+        self.assertNotIn("volumetric", prompt.lower())
+        self.assertNotIn("Aspect ratio", prompt)
 
 
 class OllamaRuntimeTests(unittest.TestCase):

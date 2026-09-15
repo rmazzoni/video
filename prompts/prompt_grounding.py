@@ -10,6 +10,14 @@ from prompts.visual_beats import VisualBeat, content_tokens, normalize_text
 
 _NUMBER_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
 _PROPER_SPAN_RE = re.compile(r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+)\b")
+_CAMERA_NUMBER_RE = re.compile(
+    r"\baspect(?:\s+ratio)?\s+\d+\s*[:/]\s*\d+\b"
+    r"|\b\d+\s*[:/]\s*\d+\b"
+    r"|\bf/\s*\d+(?:\.\d+)?"
+    r"|\b\d+(?:\.\d+)?\s*mm\b"
+    r"|\biso\s*\d+\b",
+    re.IGNORECASE,
+)
 
 # Camera/style words Qwen (or style anchors) may add; they are not plot.
 _STYLE_ALLOWLIST = {
@@ -60,8 +68,9 @@ def _allowed_text(beat: VisualBeat, narration: str) -> str:
 
 def extra_numbers(prompt: str, allowed: str) -> List[str]:
     allowed_norm = normalize_text(allowed)
+    cleaned = _CAMERA_NUMBER_RE.sub(" ", prompt or "")
     extras = []
-    for match in _NUMBER_RE.findall(prompt or ""):
+    for match in _NUMBER_RE.findall(cleaned):
         if normalize_text(match) not in allowed_norm:
             extras.append(match)
     return extras

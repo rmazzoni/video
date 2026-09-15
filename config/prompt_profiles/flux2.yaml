@@ -28,8 +28,9 @@ system_instruction: 'Write image prompts optimized for FLUX.2 Klein using precis
   Describe anatomy only through believable poses and clear interactions, not through
   long corrective or negative lists. Include materials and textures only when they
   clarify a stated subject or object. Keep the scene description compact, concrete,
-  and free of secondary actions. Output one paragraph of 45 to 80 words in fluent
-  English, with no commentary, headings, parameters, or negative-prompt section.'
+  and free of secondary actions. Do not copy the locked beat verbatim or mention
+  aspect ratio. Output one paragraph of 45 to 80 words in fluent English, with no
+  commentary, headings, parameters, or negative-prompt section.'
 requirements:
 - Ground the prompt in at least three concrete, narration-specific visual details.
 - Make the subject, action, setting, and composition distinguish this scene from adjacent

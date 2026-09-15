@@ -3,6 +3,21 @@ from typing import Dict, List, Optional
 from prompts.style_presets import STYLE_PRESETS
 
 
+def join_prompt_parts(*parts: str) -> str:
+    """Join prompt fragments into one paragraph without doubled periods or spaces."""
+    sentences: List[str] = []
+    for part in parts:
+        text = " ".join(str(part or "").split()).strip(" ,;")
+        if not text:
+            continue
+        text = text.rstrip(".")
+        if text:
+            sentences.append(text)
+    if not sentences:
+        return ""
+    return ". ".join(sentences) + "."
+
+
 def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: str = "cinematic") -> str:
     """
     Return prompt prose in the form expected by the image model.
@@ -76,16 +91,7 @@ class PromptBuilder:
         characters = self._get_character_references()
         camera = self._get_default_camera_direction()
 
-        prompt = (
-            f"{scene_text}. "
-            f"{style}. "
-            f"{characters}"
-            f"{camera}. "
-            f"Aspect ratio {self.aspect_ratio}."
-        )
-
-        # Clean up double spaces
-        return " ".join(prompt.split())
+        return join_prompt_parts(scene_text, style, characters, camera)
 
     # ---------------------------------------------------------
     # INTERNAL HELPERS

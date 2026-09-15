@@ -76,12 +76,23 @@ def make_ollama_client(host: str):
     return ollama.Client(host=normalize_ollama_host(host), trust_env=False)
 
 
+def _looks_like_prompt_prose(text: str) -> bool:
+    stripped = _THINK_RE.sub("", str(text or "")).strip()
+    stripped = _FENCE_RE.sub("", stripped).strip()
+    if len(stripped) < 40:
+        return False
+    if stripped.lstrip().startswith("{"):
+        return False
+    return True
+
+
 def chat_json_object(
     *,
     host: str,
     model: str,
     messages: Sequence[Dict[str, str]],
     options: Optional[Dict[str, Any]] = None,
+    allow_prose: bool = False,
 ) -> Any:
     """Chat with Qwen the same way prompt enhancement does, then parse JSON.
 
@@ -118,10 +129,14 @@ def chat_json_object(
         try:
             payload = parse_model_json(last_text)
         except Exception as exc:
+            if allow_prose and _looks_like_prompt_prose(last_text):
+                return {"prompt": _THINK_RE.sub("", last_text).strip()}
             errors.append(f"format={fmt!r} parse: {exc}")
             continue
         if isinstance(payload, dict):
             return payload
+        if allow_prose and _looks_like_prompt_prose(last_text):
+            return {"prompt": _THINK_RE.sub("", last_text).strip()}
         errors.append(f"format={fmt!r}: JSON was {type(payload).__name__}, not an object")
     snippet = (last_text or "")[:400]
     detail = " | ".join(errors) or "no response"

@@ -22,6 +22,10 @@ system_instruction: 'Write image prompts optimized for HiDream-I1 Dev as one flu
   distinct foreground, middle-ground, and background planes by default. Include fog,
   mist, smoke, bloom, or atmospheric haze only when the source explicitly requires it.
 
+  Do not copy the locked beat sentence and wrap it in cinematic keyword lists.
+  Name the furniture, walls, and seating that would be visible, and place each
+  person in the room. Avoid volumetric haze, 35mm-lens cliches, and aspect ratio.
+
   Use precise natural language for anatomy, poses, hands, and object interactions
   only where visible and important. HiDream responds well to coherent prose and rich
   material detail, but keep every detail relevant to the stated visual beat.

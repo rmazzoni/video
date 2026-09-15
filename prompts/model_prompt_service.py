@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Sequence, Union
 
 import yaml
 
-from prompts.prompt_builder import PromptBuilder, structure_prompt_for_model
+from prompts.prompt_builder import join_prompt_parts
 from prompts.prompt_grounding import check_prompt, retry_instruction
 from prompts.response_sanitizer import sanitize_generated_prompt
 from prompts.visual_beats import (
@@ -46,11 +46,19 @@ PROMPT_ONLY_SCHEMA = {
 
 LOCKED_BEAT_INSTRUCTION = (
     "LOCKED VISUAL BEAT:\n"
-    "The locked visual beat is the entire image content. Preserve its subject, "
-    "action, setting, and objects. Do not add people, events, props, text, "
-    "devices, crowds, or places that are absent from the locked visual beat and "
-    "the original narration. You may add camera, lighting, materials, and "
-    "atmosphere only. Output one image prompt paragraph; do not redefine the beat."
+    "The locked visual beat is the image content. Preserve its subject, action, "
+    "setting, and objects. Do not add people, events, props, text, devices, "
+    "crowds, or places that are absent from the locked visual beat and the "
+    "original narration.\n\n"
+    "Do not copy the beat sentence verbatim and do not wrap it in quality tags "
+    "or photographic keyword lists. Write one staged image prompt: where people "
+    "sit or stand, what is visible in the space, materials, and lighting motivated "
+    "by the setting. Choose a viewpoint that shows the event clearly. Wardrobe "
+    "and architecture may come from the project profile only when the beat leaves "
+    "them unspecified.\n\n"
+    "Do not mention aspect ratio, resolution, seed, sampler, or step count. A "
+    "short model style prefix is added later, so start with the scene rather than "
+    "a style slogan. Output one English paragraph."
 )
 
 PROJECT_PROFILE_WRAPPER = (
@@ -80,6 +88,11 @@ def build_prompt_user_payload(scene: Dict[str, Any], beat: VisualBeat) -> Dict[s
             "Depict only the locked visual beat. Use the narration as supporting "
             "context. Do not reuse generic content from other scenes or invent a "
             "person, object, or place when none is described."
+        ),
+        "writing_rules": (
+            "Stage the locked beat as a photograph. Do not quote it verbatim. "
+            "Do not mention aspect ratio or generation parameters. Return JSON "
+            "with a single 'prompt' string."
         ),
     }
 
@@ -198,8 +211,17 @@ class ModelPromptService:
                 "top_p": 0.85,
                 "stop": ["\nScript Segment", "\nNarration:", "\nUser:"],
             },
+            allow_prose=True,
         )
-        return sanitize_generated_prompt(payload.get("prompt", ""))
+        if not isinstance(payload, dict):
+            return ""
+        text = (
+            payload.get("prompt")
+            or payload.get("image_prompt")
+            or payload.get("text")
+            or ""
+        )
+        return sanitize_generated_prompt(str(text))
 
     def _generate_prompt_for_beat(
         self,
@@ -240,9 +262,10 @@ class ModelPromptService:
         if not prompt:
             prompt = self._template_prompt(scene, profile, beat)
         else:
-            anchor = visual_style_prompt_anchor(self.visual_style_key, model_key)
-            if anchor:
-                prompt = f"{anchor} {prompt}"
+            prompt = join_prompt_parts(
+                visual_style_prompt_anchor(self.visual_style_key, model_key),
+                prompt,
+            )
         return prompt
 
     def _template_prompt(
@@ -251,23 +274,32 @@ class ModelPromptService:
         profile: Dict[str, Any],
         beat: VisualBeat,
     ) -> str:
-        builder = PromptBuilder(
-            style_preset=str(profile.get("style_preset", "cinematic")),
-            default_aspect_ratio=str(profile.get("aspect_ratio", "16:9")),
+        """Fallback when Qwen is unavailable: style prefix plus a staged beat.
+
+        Do not append aspect ratio or a second cinematic keyword list. Canvas
+        size is already set in application settings.
+        """
+        return join_prompt_parts(
+            visual_style_prompt_anchor(
+                self.visual_style_key, str(profile.get("model_key", ""))
+            ),
+            self._staged_beat_text(scene, beat),
         )
-        focused_scene = dict(scene)
-        focused_scene["text"] = beat.beat or scene.get("text", "")
-        prompt = builder.build_prompt(focused_scene)
-        anchor = visual_style_prompt_anchor(
-            self.visual_style_key, str(profile.get("model_key", ""))
-        )
-        if anchor:
-            prompt = f"{anchor} {prompt}"
-        return structure_prompt_for_model(
-            prompt,
-            MODEL_TYPES[profile["model_key"]],
-            str(profile.get("style_preset", "cinematic")),
-        )
+
+    @staticmethod
+    def _staged_beat_text(scene: Dict[str, Any], beat: VisualBeat) -> str:
+        if beat.subject and beat.action:
+            parts = [f"{beat.subject} {beat.action}".strip()]
+            if beat.setting:
+                setting = beat.setting.strip()
+                if setting.lower().startswith(("in ", "on ", "at ", "near ")):
+                    parts.append(setting)
+                else:
+                    parts.append(f"in {setting}")
+            if beat.objects:
+                parts.append("with " + ", ".join(beat.objects))
+            return " ".join(parts)
+        return str(beat.beat or scene.get("text") or "").strip()
 
 
 def effective_prompt(entry: Dict[str, Any]) -> str:

@@ -26,7 +26,8 @@ system_instruction: 'Write image prompts optimized for FLUX.1 Dev using fluent v
 
 
   Include enough material, atmospheric, and environmental detail to make the image
-  distinctive without overloading it. Output only one cohesive paragraph in fluent
+  distinctive without overloading it. Do not copy the locked beat verbatim or append
+  aspect ratio and generic lighting tags. Output only one cohesive paragraph in fluent
   English, with no commentary, headings, parameters, or negative-prompt section.'
 requirements:
 - Ground the prompt in at least three concrete, narration-specific visual details.
