@@ -3044,6 +3044,9 @@ class MainWindow(QMainWindow):
     def _beats_set_busy(self, running: bool, message: str = "") -> None:
         if hasattr(self, "_beats_regenerate_btn"):
             self._beats_regenerate_btn.setEnabled(not running)
+        for btn in getattr(self, "_beats_add_buttons", []):
+            if not sip.isdeleted(btn):
+                btn.setEnabled(not running)
         if hasattr(self, "_beats_progress"):
             self._beats_progress.setVisible(running)
             if running:
@@ -3090,6 +3093,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_beats_cards_layout"):
             return
         layout = self._beats_cards_layout
+        self._beats_add_buttons = []
         while layout.count() > 1:
             item = layout.takeAt(0)
             if item.widget():
@@ -3150,7 +3154,18 @@ class MainWindow(QMainWindow):
                 + (f"  ·  {sentence_count} sentences in narration" if sentence_count else "")
             )
             title.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; border:none;")
-            card_layout.addWidget(title)
+            header = QHBoxLayout()
+            header.setContentsMargins(0, 0, 0, 0)
+            header.setSpacing(8)
+            header.addWidget(title, 1)
+            add_btn = QPushButton("Add Beat")
+            add_btn.setToolTip("Add a visual beat after the existing beats in this scene")
+            add_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            add_btn.setEnabled(getattr(self.controller, "_thread", None) is None)
+            add_btn.clicked.connect(lambda _checked=False, s=sid: self._beats_add_beat(s))
+            header.addWidget(add_btn)
+            self._beats_add_buttons.append(add_btn)
+            card_layout.addLayout(header)
 
             narration_label = QLabel(narration or "(empty narration)")
             narration_label.setWordWrap(True)
@@ -3168,7 +3183,12 @@ class MainWindow(QMainWindow):
                 card_layout.addWidget(empty)
             for index, beat in enumerate(beats, 1):
                 manual = beat.source == "manually_edited"
-                heading = f"{index}. {beat.beat}" + ("  ·  manual" if manual else "")
+                added = beat.source == "user_added"
+                heading = f"{index}. {beat.beat}"
+                if manual:
+                    heading += "  ·  manual"
+                elif added:
+                    heading += "  ·  new"
                 beat_label = QLabel(heading)
                 beat_label.setWordWrap(True)
                 beat_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -3207,6 +3227,70 @@ class MainWindow(QMainWindow):
             f"{example_count} correction example(s) will be sent to Qwen on the next extraction."
             + hint
         )
+
+    def _beats_add_beat(self, scene_id: int) -> None:
+        from prompts.visual_beats import VisualBeat, beats_as_dicts, normalize_stored_beats
+
+        project = self.project_path_input.text().strip()
+        if not project:
+            QMessageBox.warning(self, "No project", "Open a project first.")
+            return
+        if getattr(self.controller, "_thread", None) is not None:
+            QMessageBox.warning(
+                self,
+                "Pipeline busy",
+                "Wait for the current pipeline operation to finish before adding a beat.",
+            )
+            return
+
+        prompts_path = os.path.join(project, "output", "model_prompts.yaml")
+        scenes, _dubbing, _prompts, _overrides = self._prompts_project_data()
+        scene = next((item for item in scenes if int(item["id"]) == scene_id), {})
+        narration = str(scene.get("text") or "")
+        try:
+            data = yaml.safe_load(Path(prompts_path).read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        scene_entry = data.get(scene_id) or data.get(str(scene_id)) or {
+            "scene_id": scene_id,
+            "visual_beats": [],
+            "visual_beats_source": narration,
+            "models": {},
+        }
+        if not isinstance(scene_entry, dict):
+            scene_entry = {
+                "scene_id": scene_id,
+                "visual_beats": [],
+                "visual_beats_source": narration,
+                "models": {},
+            }
+        beats = normalize_stored_beats(scene_entry.get("visual_beats", []))
+        beats.append(VisualBeat(
+            beat="New visual beat",
+            source_quote="",
+            source="user_added",
+        ))
+        scene_entry["scene_id"] = scene_id
+        scene_entry["visual_beats"] = beats_as_dicts(beats)
+        scene_entry["visual_beats_source"] = str(
+            scene_entry.get("visual_beats_source") or narration
+        )
+        scene_entry.setdefault("models", {})
+        data[scene_id] = scene_entry
+        data.pop(str(scene_id), None)
+        os.makedirs(os.path.dirname(prompts_path), exist_ok=True)
+        Path(prompts_path).write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        self._beats_refresh()
+        self._prompts_refresh(only_scene_id=scene_id)
+        self._beats_status_label.setText(
+            f"Added visual beat {len(beats)} to scene {scene_id}."
+        )
+        self._open_beat_editor(scene_id, len(beats))
 
     def _open_beat_editor(self, scene_id: int, beat_index: int) -> None:
         from PyQt6.QtWidgets import QDialog, QTextEdit
@@ -3464,7 +3548,7 @@ class MainWindow(QMainWindow):
             )
             output_dir = os.path.join(project, "output")
             feedback = load_beat_feedback(output_dir)
-            if record_correction(
+            if original.source != "user_added" and record_correction(
                 feedback,
                 scene_id=scene_id,
                 narration=narration,

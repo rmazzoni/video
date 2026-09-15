@@ -26,6 +26,7 @@ from prompts.visual_beats import (
     beats_as_dicts,
     build_extraction_messages,
     dedupe_beats,
+    compact_visual_quote,
     fallback_beat,
     fallback_beats,
     is_visual_moment,
@@ -290,7 +291,41 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(len(beats), 1)
         self.assertIn("convoy", beats[0].source_quote.lower())
         self.assertFalse(is_visual_moment("It was not a Russian supplied weapon."))
-        self.assertTrue(is_visual_moment("UAE funded Sudanese RSF militia fighters moving through a contested corridor."))
+        self.assertFalse(is_visual_moment(
+            "The first choice is more sustainable but more costly for UAE political "
+            "identity and for MBC's domestic standing as the leader who built UAE "
+            "strategic independence."
+        ))
+        self.assertFalse(is_visual_moment(
+            "The Gulf's internal political dynamics are entering a period of stress."
+        ))
+        self.assertTrue(is_visual_moment(
+            "UAE funded Sudanese RSF militia fighters moving through a contested corridor."
+        ))
+        self.assertTrue(is_visual_moment(
+            "The drone strike hit the convoy at four in the morning local time."
+        ))
+
+    def test_compacts_visual_kernel_out_of_analysis_sentence(self):
+        narration = (
+            "The convoy that was struck was moving toward a position that would have "
+            "consolidated RSF control over a logistics corridor that Saudi Arabia's "
+            "New Silk Road design routes through Saudi territory."
+        )
+        beats = validate_extracted_beats([], narration, limit=3)
+        self.assertGreaterEqual(len(beats), 1)
+        self.assertIn("convoy", beats[0].source_quote.lower())
+        self.assertNotIn("consolidated", beats[0].source_quote.lower())
+        self.assertLess(len(beats[0].source_quote), len(narration))
+        kernel = compact_visual_quote(
+            "The convoy strike moved the competition into a fourth category "
+            "that gulf state internal competition has historically avoided.",
+            "The convoy strike moved the competition into a fourth category "
+            "that gulf state internal competition has historically avoided.",
+        )
+        self.assertTrue(kernel)
+        self.assertIn("convoy", kernel.lower())
+        self.assertNotIn("historically avoided", kernel.lower())
 
 
 class PersistenceTests(unittest.TestCase):

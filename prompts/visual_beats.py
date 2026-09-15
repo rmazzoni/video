@@ -72,7 +72,9 @@ EXTRACT_SYSTEM_PROMPT = (
     "Do not write image-model prompts, camera language, lighting, style, or "
     "wardrobe unless the quote itself names them. Never copy the entire "
     "narration into source_quote or beat. If the scene is only commentary, "
-    "return an empty visual_beats list."
+    "return an empty visual_beats list. If a sentence cannot be photographed "
+    "as a still image, omit it. Political identity, costs, choices, standing, "
+    "and strategy are not beats."
 )
 
 MAX_QUOTE_CHARS = 220
@@ -97,22 +99,44 @@ _ABSTRACT_RE = re.compile(
     r"options?|architecture|competition|competes?|political\s+cover|"
     r"goodwill|investments?|context\s+of\s+what|by\s+the\s+end\s+of\s+this\s+video|"
     r"understand\s+exactly|nobody\s+is\s+talking|let\s+us\s+start|"
-    r"specific\s+context|represents\s+the)\b",
+    r"specific\s+context|represents\s+the|political identity|domestic standing|"
+    r"strategic independence|first choice|second choice|higher costs?|"
+    r"neutrality|diplomatic|institutional|qualitative|quantitative|"
+    r"consolidation|observer|public information|financial competition)\b",
+    re.IGNORECASE,
+)
+_EVALUATIVE_RE = re.compile(
+    r"\b(more|less)\s+(sustainable|costly|expensive|difficult|valuable)\b"
+    r"|\bpolitical identity\b"
+    r"|\bdomestic standing\b"
+    r"|\bstrategic independence\b"
+    r"|\bthe first choice\b"
+    r"|\bthe second choice\b"
+    r"|\bas the leader who\b"
+    r"|\bworth using\b"
+    r"|\bread it as the specific message\b",
     re.IGNORECASE,
 )
 _VISUAL_VERB_RE = re.compile(
-    r"\b(hit|hits|hitting|struck|strike|striking|moving|move|walk|walks|walking|"
-    r"fly|flies|flying|drive|driving|stand|standing|sit|sitting|burn|burning|"
-    r"load|loading|target|targeted|targeting|cross|crossing|enter|entering|"
-    r"hold|holding|carry|carrying|fire|firing|launch|launching|cammina|"
-    r"stese|asciugare)\b",
+    r"\b(hit|hits|hitting|struck|strike|striking|moving|walk|walks|walking|"
+    r"fly|flies|flying|drive|driving|stands|stood|standing (?:in|on|near|at|beside)|"
+    r"sit|sitting|burn|burning|load|loading|targeted|targeting|"
+    r"cross|crossing|enter|entering|carry|carrying|firing|launch|launching|"
+    r"cammina|stese|asciugare)\b",
     re.IGNORECASE,
 )
 _VISIBLE_NOUN_RE = re.compile(
     r"\b(drone|convoy|vehicle|vehicles|truck|trucks|fighter|fighters|soldier|"
     r"soldiers|militia|port|pier|molo|farm|farmland|corridor|ship|ships|"
     r"missile|missiles|uniform|building|buildings|crowd|road|bridge|desert|"
-    r"city|aircraft|weapon|weapons|pescatore|reti|dawn|sunrise|alba)\b",
+    r"city|aircraft|weapon|weapons|pescatore|reti|dawn|sunrise|alba|"
+    r"base|bases|troops|commanders?|night)\b",
+    re.IGNORECASE,
+)
+_ANALYSIS_TAIL_RE = re.compile(
+    r"\s*,?\s*(that would have|that gulf state|which (?:means|represents|involves)|"
+    r"because the|in ways that|rather than just|as (?:directly|part of) |"
+    r"that saudi arabia's|that the broader|that no external)\b.*$",
     re.IGNORECASE,
 )
 
@@ -244,23 +268,57 @@ def fallback_beat(narration: str) -> VisualBeat:
     return VisualBeat(beat=quote, source_quote=quote, source="fallback")
 
 
+def compact_visual_quote(text: str, narration: str) -> str:
+    """Keep the photographable clause and drop the analysis tail."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    candidates = [raw]
+    trimmed = _ANALYSIS_TAIL_RE.sub("", raw).strip(" ,;")
+    if trimmed and trimmed != raw:
+        candidates.append(trimmed)
+    candidates.extend(split_clauses(raw))
+    if len(raw) > MAX_QUOTE_CHARS:
+        cut = raw[:MAX_QUOTE_CHARS].rsplit(" ", 1)[0].strip(" ,;")
+        if cut:
+            candidates.append(cut)
+    seen = set()
+    for candidate in candidates:
+        candidate = candidate.strip()
+        key = normalize_text(candidate)
+        if not candidate or key in seen:
+            continue
+        seen.add(key)
+        if not quote_in_narration(candidate, narration):
+            continue
+        if quote_is_too_broad(candidate, narration):
+            continue
+        if is_visual_moment(candidate):
+            return candidate
+    return ""
+
+
 def fallback_beats(narration: str, limit: int = 3) -> List[VisualBeat]:
     """Use distinct visual clauses when Qwen returns nothing grounded.
 
-    Never keep the whole narration as a beat. Commentary-only scenes return [].
+    Long analysis sentences are compacted to the visible kernel. Scenes with
+    no photographable noun still return [].
     """
     limit = max(1, int(limit))
     chosen: List[VisualBeat] = []
-    for sentence in split_clauses(narration):
-        if len(content_tokens(sentence)) < 3:
+    seen = set()
+    pieces = split_sentences(narration) + split_clauses(narration)
+    for piece in pieces:
+        kernel = compact_visual_quote(piece, narration)
+        if not kernel:
             continue
-        if quote_is_too_broad(sentence, narration):
+        key = normalize_text(kernel)
+        if key in seen:
             continue
-        if not is_visual_moment(sentence):
-            continue
+        seen.add(key)
         chosen.append(VisualBeat(
-            beat=sentence,
-            source_quote=sentence,
+            beat=kernel,
+            source_quote=kernel,
             source="fallback",
         ))
         if len(chosen) >= limit:
@@ -269,7 +327,7 @@ def fallback_beats(narration: str, limit: int = 3) -> List[VisualBeat]:
 
 
 def is_visual_moment(text: str) -> bool:
-    """True when the text can be pointed at with a camera in one frame."""
+    """True when a still photograph could depict the text without inventing a scene."""
     blob = str(text or "").strip()
     if not blob:
         return False
@@ -277,14 +335,15 @@ def is_visual_moment(text: str) -> bool:
         return False
     if _NEGATION_CLAIM_RE.search(blob):
         return False
-    abstract = len(_ABSTRACT_RE.findall(blob))
-    visual_verbs = len(_VISUAL_VERB_RE.findall(blob))
+    if _EVALUATIVE_RE.search(blob):
+        return False
     visible_nouns = len(_VISIBLE_NOUN_RE.findall(blob))
-    if abstract and visual_verbs == 0 and visible_nouns == 0:
+    if visible_nouns == 0:
         return False
-    if abstract >= 2 and visual_verbs == 0:
+    abstract = len(_ABSTRACT_RE.findall(blob))
+    if abstract >= visible_nouns:
         return False
-    return visual_verbs > 0 or visible_nouns > 0
+    return True
 
 
 def normalize_stored_beats(raw: Any) -> List[VisualBeat]:
@@ -443,13 +502,12 @@ def validate_beat(item: Any, narration: str) -> Optional[VisualBeat]:
     )
     if not quote:
         return None
-    if quote_is_too_broad(quote, narration):
+    compacted = compact_visual_quote(quote, narration) or compact_visual_quote(beat.beat, narration)
+    if not compacted:
         return None
-    if not is_visual_moment(quote) and not is_visual_moment(beat.beat):
-        return None
-    beat.source_quote = quote
-    if not beat.beat.strip():
-        beat.beat = quote
+    beat.source_quote = compacted
+    if not beat.beat.strip() or quote_is_too_broad(beat.beat, narration) or not is_visual_moment(beat.beat):
+        beat.beat = compacted
     return _clean_slots(beat)
 
 
