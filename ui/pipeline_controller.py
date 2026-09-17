@@ -115,8 +115,8 @@ class PipelineWorker(QObject):
     def _regenerate_visual_beats(self, scenes: List[dict]) -> str:
         from prompts.model_prompt_service import MODEL_KEYS
         from prompts.visual_beats import (
-            align_prompt_rows_to_beats,
             beats_as_dicts,
+            ensure_prompt_rows_for_beats,
             normalize_stored_beats,
         )
 
@@ -159,7 +159,7 @@ class PipelineWorker(QObject):
                 existing_rows = existing.get("prompts", []) if isinstance(existing, dict) else []
                 updated_models[model_key] = {
                     "profile": existing.get("profile", f"{model_key}.yaml") if isinstance(existing, dict) else f"{model_key}.yaml",
-                    "prompts": align_prompt_rows_to_beats(
+                    "prompts": ensure_prompt_rows_for_beats(
                         existing_rows, visual_beats, scene_id, model_key
                     ),
                     "max_prompts_per_scene": existing.get(
@@ -189,7 +189,7 @@ class PipelineWorker(QObject):
 
     def _regenerate_beat_prompts(self, scenes: List[dict]) -> str:
         from prompts.model_prompt_service import MODEL_KEYS, effective_prompt
-        from prompts.visual_beats import normalize_stored_beats
+        from prompts.visual_beats import normalize_stored_beats, upsert_prompt_row
 
         scene_id = int(self.config.get("prompt_scene_id") or 0)
         beat_index = int(self.config.get("prompt_beat_index") or 0)
@@ -230,15 +230,7 @@ class PipelineWorker(QObject):
             existing = updated_models.get(model_key, {})
             existing_rows = list(existing.get("prompts", []) if isinstance(existing, dict) else [])
             row = service.prompt_row_for_beat(scene, model_key, beat, beat_index)
-            replaced = False
-            for row_index, current in enumerate(existing_rows):
-                if isinstance(current, dict) and int(current.get("beat", 0) or 0) == beat_index:
-                    existing_rows[row_index] = row
-                    replaced = True
-                    break
-            if not replaced:
-                existing_rows.append(row)
-                existing_rows.sort(key=lambda item: int(item.get("beat", 0) or 0) if isinstance(item, dict) else 0)
+            existing_rows = upsert_prompt_row(existing_rows, row)
             updated_models[model_key] = {
                 "profile": f"{model_key}.yaml",
                 "prompts": existing_rows,
@@ -414,7 +406,11 @@ class PipelineWorker(QObject):
                 self._check_cancel()
                 self._emit_progress(25, "Building model-specific prompts")
                 from prompts.model_prompt_service import MODEL_KEYS, effective_prompt
-                from prompts.visual_beats import beats_as_dicts, normalize_stored_beats
+                from prompts.visual_beats import (
+                    beats_as_dicts,
+                    coerce_beat_index,
+                    normalize_stored_beats,
+                )
 
                 prompts_path = os.path.join(self.project_path, "output", "prompts.yaml")
                 model_prompts_path = os.path.join(self.project_path, "output", "model_prompts.yaml")
@@ -488,13 +484,13 @@ class PipelineWorker(QObject):
                         )
                         if not force_regenerate:
                             manual_by_beat = {
-                                int(row.get("beat", row_index)): row
+                                coerce_beat_index(row.get("beat"), row_index): row
                                 for row_index, row in enumerate(existing_rows, 1)
                                 if isinstance(row, dict)
                                 and row.get("source") == "manually_edited"
                             }
                             for row in generated_rows:
-                                manual = manual_by_beat.get(int(row["beat"]))
+                                manual = manual_by_beat.get(coerce_beat_index(row.get("beat")))
                                 if manual:
                                     row["text"] = str(manual.get("text", row["text"]))
                                     row["source"] = "manually_edited"
@@ -1088,14 +1084,13 @@ class PipelineWorker(QObject):
                         model_prompts = yaml.safe_load(fh) or {}
 
                 def _preview_rows(scene, model_key):
+                    from prompts.visual_beats import prompt_row_is_ready
+
                     sid = int(scene["id"])
                     scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
                     model_entry = scene_entry.get("models", {}).get(model_key, {})
                     rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
-                    usable = [
-                        row for row in rows
-                        if isinstance(row, dict) and str(row.get("text", "")).strip()
-                    ]
+                    usable = [row for row in rows if prompt_row_is_ready(row)]
                     if usable:
                         return usable
                     fallback = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
@@ -1122,45 +1117,40 @@ class PipelineWorker(QObject):
                         "Enable Schnell or Z-Image Turbo in Prompts > Configure Models."
                     )
 
+                from prompts.visual_beats import (
+                    beats_as_dicts,
+                    coerce_beat_index,
+                    ensure_prompt_rows_for_beats,
+                    find_prompt_row,
+                    normalize_stored_beats,
+                    prompt_row_is_ready,
+                    upsert_prompt_row,
+                )
+
                 missing_prompt_models = []
                 for scene in scenes:
                     sid = int(scene["id"])
                     scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
+                    visual_beats = normalize_stored_beats(
+                        scene_entry.get("visual_beats", [])
+                        if isinstance(scene_entry, dict) else []
+                    )
                     models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
                     for _model_type, model_key in preview_models:
                         model_entry = models.get(model_key, {})
                         rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
-                        if not any(
-                            isinstance(row, dict) and str(row.get("text", "")).strip()
-                            for row in rows
-                        ):
+                        beat_count = len(visual_beats) or 1
+                        missing = False
+                        for beat_index in range(1, beat_count + 1):
+                            row = find_prompt_row(rows, beat_index)
+                            if not prompt_row_is_ready(row):
+                                missing = True
+                                break
+                        if missing:
                             missing_prompt_models.append((scene, model_key))
 
                 if missing_prompt_models:
-                    from prompts.model_prompt_service import ModelPromptService
-                    from prompts.project_profiles import get_profile_text, load_project_profiles
-                    from prompts.visual_beats import beats_as_dicts, normalize_stored_beats
-
-                    profiles_dir = self._resolve_path(str(self.config.get(
-                        "prompt_profiles_dir", "src/config/prompt_profiles")))
-                    project_profile_key = str(
-                        self.config.get("project_profile_key", "")
-                    ).strip()
-                    service = ModelPromptService(
-                        profiles_dir=profiles_dir,
-                        ollama_model=str(self.config.get("ollama_model", "qwen3:8b")),
-                        ollama_host=str(self.config.get(
-                            "ollama_host", "http://localhost:11434")),
-                        max_visual_beats=(int(self.config["max_visual_beats"])
-                                          if self.config.get("max_visual_beats") is not None
-                                          else None),
-                        project_profile_text=get_profile_text(
-                            load_project_profiles(os.path.dirname(profiles_dir)),
-                            project_profile_key,
-                        ),
-                        visual_style_key=str(self.config.get(
-                            "visual_style", "cinematic")),
-                    )
+                    service = self._make_prompt_service()
                     for scene, model_key in missing_prompt_models:
                         self._check_cancel()
                         sid = int(scene["id"])
@@ -1172,27 +1162,44 @@ class PipelineWorker(QObject):
                         if not visual_beats:
                             visual_beats = service.extract_structured_beats(scene)
                         models = dict(scene_entry.get("models", {})) if isinstance(scene_entry, dict) else {}
+                        existing = models.get(model_key, {}) if isinstance(models.get(model_key), dict) else {}
+                        existing_rows = existing.get("prompts", []) if isinstance(existing, dict) else []
+                        rows = ensure_prompt_rows_for_beats(
+                            existing_rows, visual_beats, sid, model_key
+                        )
+                        generated_any = False
+                        for beat_index, beat in enumerate(visual_beats, 1):
+                            row = find_prompt_row(rows, beat_index)
+                            if prompt_row_is_ready(row):
+                                continue
+                            rows = upsert_prompt_row(
+                                rows,
+                                service.prompt_row_for_beat(scene, model_key, beat, beat_index),
+                            )
+                            generated_any = True
                         profile = service.load_profile(model_key)
                         models[model_key] = {
-                            "profile": f"{model_key}.yaml",
-                            "prompts": service.generate_for_beats(
-                                scene, model_key, visual_beats),
+                            "profile": existing.get("profile", f"{model_key}.yaml"),
+                            "prompts": rows,
                             "max_prompts_per_scene": int(
-                                profile.get("max_prompts_per_scene", 3)),
+                                existing.get("max_prompts_per_scene")
+                                or profile.get("max_prompts_per_scene", 3)
+                            ),
                         }
                         model_prompts[sid] = {
                             "scene_id": sid,
                             "visual_beats": beats_as_dicts(visual_beats),
-                            "visual_beats_source": str(scene.get("text", "")),
+                            "visual_beats_source": str(
+                                scene_entry.get("visual_beats_source", scene.get("text", ""))
+                                if isinstance(scene_entry, dict) else scene.get("text", "")
+                            ),
                             "models": models,
                         }
                         model_prompts.pop(str(sid), None)
-                        for stale_path in glob.glob(os.path.join(
-                                draft_dir, f"scene_{sid:03d}_{model_key}_b*_v*.png")):
-                            os.remove(stale_path)
-                        self.log.emit(
-                            f"Scene {sid} [{model_key}]: generated missing preview prompts."
-                        )
+                        if generated_any:
+                            self.log.emit(
+                                f"Scene {sid} [{model_key}]: generated missing preview prompts."
+                            )
                     with open(model_prompts_path, "w", encoding="utf-8") as fh:
                         yaml.safe_dump(model_prompts, fh, allow_unicode=True, sort_keys=False)
 
@@ -1203,7 +1210,7 @@ class PipelineWorker(QObject):
                         if target_scene and sid != target_scene:
                             continue
                         for row_index, row in enumerate(_preview_rows(scene, model_key), 1):
-                            beat_idx = int(row.get("beat", row_index))
+                            beat_idx = coerce_beat_index(row.get("beat"), row_index)
                             if target_beat and beat_idx != target_beat:
                                 continue
                             output_path = os.path.join(
@@ -1371,12 +1378,14 @@ class PipelineWorker(QObject):
                             "Enable an image model in Prompts > Configure Models for Final Images."
                         )
 
+                from prompts.visual_beats import coerce_beat_index, prompt_row_is_ready
+
                 def _model_prompt_rows(scene, model_key):
                     sid = int(scene["id"])
                     scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
                     model_entry = scene_entry.get("models", {}).get(model_key, {})
                     rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
-                    usable = [row for row in rows if isinstance(row, dict) and str(row.get("text", "")).strip()]
+                    usable = [row for row in rows if prompt_row_is_ready(row)]
                     if usable:
                         return usable
                     fallback = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
@@ -1393,7 +1402,7 @@ class PipelineWorker(QObject):
                     for scene in scenes if not target_scene or int(scene["id"]) == target_scene
                     for _model_type, model_key in model_variants
                     for row in _model_prompt_rows(scene, model_key)
-                    if not target_beat or int(row.get("beat", 1)) == target_beat
+                    if not target_beat or coerce_beat_index(row.get("beat"), 1) == target_beat
                 )
                 if total_ops == 0:
                     raise ValueError("No prompt found for the requested Lightbox scene and beat.")
@@ -1407,7 +1416,7 @@ class PipelineWorker(QObject):
                         if target_scene and sid != target_scene:
                             continue
                         for row_index, row in enumerate(_model_prompt_rows(scene, model_key), 1):
-                            beat_idx = int(row.get("beat", row_index))
+                            beat_idx = coerce_beat_index(row.get("beat"), row_index)
                             if target_beat and beat_idx != target_beat:
                                 continue
                             for v_idx, offset in enumerate(seed_offsets, 1):

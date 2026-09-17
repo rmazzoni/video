@@ -2271,12 +2271,10 @@ class MainWindow(QMainWindow):
                     Path(model_prompts_yaml).read_text(encoding="utf-8")
                 ) or {}
                 scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {}
+                from prompts.visual_beats import find_prompt_row
+
                 model_rows = scene_entry.get("models", {}).get(preview_model_key, {}).get("prompts", [])
-                model_row = next(
-                    (row for row in model_rows
-                     if isinstance(row, dict) and int(row.get("beat", 0)) == beat_index),
-                    None,
-                )
+                model_row = find_prompt_row(model_rows, beat_index)
                 if model_row is not None:
                     current_prompt = str(model_row.get("text", "")).strip() or current_prompt
             except Exception:
@@ -2450,16 +2448,44 @@ class MainWindow(QMainWindow):
             if scene_id is None:
                 return False
             try:
-                if model_row is not None:
-                    model_row["text"] = new_prompt
-                    model_row["source"] = "manually_edited"
-                    model_prompts[scene_id] = model_prompts.get(scene_id) or model_prompts.pop(
-                        str(scene_id), {}
-                    )
-                    Path(model_prompts_yaml).write_text(
-                        yaml.safe_dump(model_prompts, allow_unicode=True, sort_keys=False),
-                        encoding="utf-8",
-                    )
+                from prompts.visual_beats import (
+                    VisualBeat,
+                    stub_prompt_row,
+                    upsert_prompt_row,
+                )
+
+                scene_entry = model_prompts.get(scene_id) or model_prompts.get(str(scene_id)) or {
+                    "scene_id": scene_id,
+                    "models": {},
+                }
+                if not isinstance(scene_entry, dict):
+                    scene_entry = {"scene_id": scene_id, "models": {}}
+                models = scene_entry.setdefault("models", {})
+                if not isinstance(models, dict):
+                    models = {}
+                    scene_entry["models"] = models
+                model_entry = models.get(preview_model_key)
+                if not isinstance(model_entry, dict):
+                    model_entry = {"profile": f"{preview_model_key}.yaml", "prompts": []}
+                    models[preview_model_key] = model_entry
+                row_to_save = dict(model_row) if model_row is not None else stub_prompt_row(
+                    scene_id,
+                    preview_model_key,
+                    VisualBeat(beat=new_prompt, source="pending"),
+                    beat_index,
+                )
+                row_to_save["text"] = new_prompt
+                row_to_save["source"] = "manually_edited"
+                row_to_save["beat"] = beat_index
+                model_entry["prompts"] = upsert_prompt_row(
+                    model_entry.get("prompts", []), row_to_save
+                )
+                model_prompts[scene_id] = scene_entry
+                model_prompts.pop(str(scene_id), None)
+                Path(model_prompts_yaml).write_text(
+                    yaml.safe_dump(model_prompts, allow_unicode=True, sort_keys=False),
+                    encoding="utf-8",
+                )
                 if beat_index == 1:
                     overrides[scene_id] = new_prompt
                     overrides.pop(str(scene_id), None)
@@ -4276,6 +4302,8 @@ class MainWindow(QMainWindow):
             return
 
         import yaml as _yaml
+        from prompts.visual_beats import coerce_beat_index
+
         project = self.project_path_input.text().strip()
         model_prompts_path = os.path.join(project, "output", "model_prompts.yaml")
         try:
@@ -4300,7 +4328,7 @@ class MainWindow(QMainWindow):
                 legacy_match = re.match(
                     r"^scene_(\d+)\.(?:png|jpg|jpeg)$", filename, re.IGNORECASE)
                 if legacy_match:
-                    saved_preview_beats.add((int(legacy_match.group(1)), 1))
+                    saved_preview_beats.add(("schnell", int(legacy_match.group(1)), 1))
 
         saved_lightbox_beats = set()
         lightbox_dir = os.path.join(project, "output", "lightbox")
@@ -4361,7 +4389,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(title)
             for index, row in enumerate(rows, 1):
                 text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
-                beat_index = int(row.get("beat", index)) if isinstance(row, dict) else index
+                beat_index = coerce_beat_index(row.get("beat"), index) if isinstance(row, dict) else index
                 has_preview = (
                     model_key in ("schnell", "zimage")
                     and (model_key, sid, beat_index) in saved_preview_beats
@@ -4500,29 +4528,74 @@ class MainWindow(QMainWindow):
         import yaml as _yaml
         from PyQt6.QtWidgets import QDialog, QTextEdit
         from prompts.model_prompt_service import ModelPromptService
+        from prompts.visual_beats import (
+            VisualBeat,
+            find_prompt_row,
+            normalize_stored_beats,
+            stub_prompt_row,
+            upsert_prompt_row,
+        )
 
         project = self.project_path_input.text().strip()
         prompts_path = os.path.join(project, "output", "model_prompts.yaml")
         scenes, _dubbing, _prompts, _overrides = self._prompts_project_data()
         scene = next((item for item in scenes if int(item["id"]) == scene_id), {})
-        try:
-            data = _yaml.safe_load(Path(prompts_path).read_text(encoding="utf-8")) or {}
-            scene_entry = data.get(scene_id) or data.get(str(scene_id)) or {}
-            model_entry = scene_entry.get("models", {}).get(model_key, {})
-            rows = model_entry.get("prompts", [])
-            # Match by the row's own "beat" field first — list position can drift
-            # from the beat number once rows are regenerated/edited out of order.
-            row = next(
-                (r for r in rows if isinstance(r, dict) and int(r.get("beat", 0)) == beat_index),
-                None,
+        data = {}
+        if os.path.exists(prompts_path):
+            try:
+                data = _yaml.safe_load(Path(prompts_path).read_text(encoding="utf-8")) or {}
+            except Exception as exc:
+                QMessageBox.warning(self, "Prompt unavailable", str(exc))
+                return
+        if not isinstance(data, dict):
+            data = {}
+        scene_entry = data.get(scene_id) or data.get(str(scene_id)) or {
+            "scene_id": scene_id,
+            "visual_beats": [],
+            "models": {},
+        }
+        if not isinstance(scene_entry, dict):
+            scene_entry = {"scene_id": scene_id, "visual_beats": [], "models": {}}
+        models = scene_entry.setdefault("models", {})
+        if not isinstance(models, dict):
+            models = {}
+            scene_entry["models"] = models
+        model_entry = models.get(model_key)
+        if not isinstance(model_entry, dict):
+            model_entry = {"profile": f"{model_key}.yaml", "prompts": []}
+            models[model_key] = model_entry
+        rows = model_entry.get("prompts", [])
+        if not isinstance(rows, list):
+            rows = []
+        # Match by the row's own "beat" field first — list position can drift
+        # from the beat number once rows are regenerated/edited out of order.
+        row = find_prompt_row(rows, beat_index)
+        created_placeholder = row is None
+        visual_beats = normalize_stored_beats(scene_entry.get("visual_beats", []))
+        stored_beat = (
+            visual_beats[beat_index - 1]
+            if 1 <= beat_index <= len(visual_beats)
+            else None
+        )
+        if row is None:
+            row = stub_prompt_row(
+                scene_id,
+                model_key,
+                stored_beat or VisualBeat(
+                    beat=str(scene.get("text") or ""),
+                    source="pending",
+                ),
+                beat_index,
             )
-            if row is None:
-                row = rows[beat_index - 1]
-        except Exception as exc:
-            QMessageBox.warning(self, "Prompt unavailable", str(exc))
-            return
+            rows = upsert_prompt_row(rows, row)
+            model_entry["prompts"] = rows
+            row = find_prompt_row(rows, beat_index) or row
 
-        visual_beat = str(row.get("visual_beat") or scene.get("text", ""))
+        visual_beat = str(
+            row.get("visual_beat")
+            or (stored_beat.beat if stored_beat is not None else "")
+            or scene.get("text", "")
+        )
         generated_prompt = str(row.get("generated_prompt") or row.get("text", ""))
         lightbox_dir = os.path.join(project, "output", "lightbox")
         is_preview_model = model_key in ("schnell", "zimage")
@@ -4652,6 +4725,18 @@ class MainWindow(QMainWindow):
         _set_popup_font_size(font_slider.value())
 
         status = QLabel("")
+        if created_placeholder:
+            if stored_beat is None:
+                status.setText(
+                    f"No stored {model_key} prompt for beat {beat_index}. "
+                    f"This Lightbox image may be leftover from a previous beat list "
+                    f"({len(visual_beats)} beat(s) stored). Edit and Save to keep it."
+                )
+            else:
+                status.setText(
+                    f"No stored {model_key} prompt for beat {beat_index}. "
+                    "Loaded the visual beat as a placeholder. Save or Regenerate with Qwen."
+                )
         layout.addWidget(status)
         progress = QProgressBar()
         progress.setRange(0, 100)
@@ -4724,6 +4809,8 @@ class MainWindow(QMainWindow):
             previous_text = str(row.get("text", "")).strip()
             row["text"] = text
             row["source"] = "manually_edited"
+            row["beat"] = beat_index
+            model_entry["prompts"] = upsert_prompt_row(model_entry.get("prompts", []), row)
             data[scene_id] = scene_entry
             data.pop(str(scene_id), None)
             Path(prompts_path).write_text(

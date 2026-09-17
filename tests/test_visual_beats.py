@@ -28,18 +28,22 @@ from prompts.visual_beats import (
     align_prompt_rows_to_beats,
     beats_as_dicts,
     build_extraction_messages,
+    coerce_beat_index,
     dedupe_beats,
     compact_visual_quote,
     ensure_prompt_rows_for_beats,
     fallback_beat,
     fallback_beats,
+    find_prompt_row,
     is_visual_moment,
     normalize_stored_beats,
+    prompt_row_is_ready,
     quote_in_narration,
     recover_source_quote,
     slot_is_grounded,
     stub_prompt_row,
     sync_model_prompts_to_beats,
+    upsert_prompt_row,
     validate_extracted_beats,
 )
 
@@ -350,6 +354,54 @@ class PersistenceTests(unittest.TestCase):
         dumped = beats_as_dicts(beats)
         self.assertEqual(dumped[1]["source_quote"], "Le reti sono stese a asciugare.")
         self.assertEqual(dumped[1]["source"], "generated")
+
+    def test_find_prompt_row_does_not_index_past_short_lists(self):
+        rows = [
+            {"beat": 1, "text": "first"},
+            {"beat": 2, "text": "second"},
+        ]
+        self.assertIsNone(find_prompt_row(rows, 3))
+        self.assertIsNone(find_prompt_row([], 1))
+        self.assertIsNone(find_prompt_row(None, 1))
+        self.assertEqual(find_prompt_row(rows, 2)["text"], "second")
+
+    def test_find_prompt_row_uses_position_only_when_beat_field_is_missing(self):
+        rows = [{"text": "unnumbered one"}, {"text": "unnumbered two"}]
+        self.assertEqual(find_prompt_row(rows, 1)["text"], "unnumbered one")
+        self.assertEqual(find_prompt_row(rows, 2)["text"], "unnumbered two")
+        numbered = [{"beat": 1, "text": "keep"}, {"beat": 4, "text": "four"}]
+        self.assertIsNone(find_prompt_row(numbered, 2))
+
+    def test_coerce_beat_index_rejects_invalid_values(self):
+        self.assertEqual(coerce_beat_index(None), 0)
+        self.assertEqual(coerce_beat_index(""), 0)
+        self.assertEqual(coerce_beat_index("03"), 3)
+        self.assertEqual(coerce_beat_index("beat"), 0)
+        self.assertEqual(coerce_beat_index(0, 1), 1)
+
+    def test_upsert_prompt_row_replaces_matching_beat(self):
+        rows = [{"beat": 1, "text": "old"}, {"beat": 3, "text": "three"}]
+        updated = upsert_prompt_row(rows, {"beat": 3, "text": "new three"})
+        self.assertEqual([row["text"] for row in updated], ["old", "new three"])
+        appended = upsert_prompt_row(rows, {"beat": 2, "text": "two"})
+        self.assertEqual([row["beat"] for row in appended], [1, 2, 3])
+
+    def test_pending_prompt_rows_are_not_ready_for_images(self):
+        self.assertFalse(prompt_row_is_ready({"beat": 3, "text": "shot", "source": "pending"}))
+        self.assertTrue(prompt_row_is_ready({"beat": 3, "text": "shot", "source": "generated"}))
+
+    def test_ensure_prompt_rows_maps_unnumbered_rows_by_position(self):
+        beats = [
+            VisualBeat(beat="A fisherman walks on the pier."),
+            VisualBeat(beat="Nets dry on the pier."),
+        ]
+        rows = [{"text": "old prompt one", "source": "generated"}]
+        aligned = ensure_prompt_rows_for_beats(rows, beats, scene_id=5, model_key="schnell")
+        self.assertEqual(len(aligned), 2)
+        self.assertEqual(aligned[0]["text"], "old prompt one")
+        self.assertEqual(aligned[0]["beat"], 1)
+        self.assertEqual(aligned[1]["source"], "pending")
+        self.assertEqual(aligned[1]["beat"], 2)
 
     def test_align_prompt_rows_keeps_matching_indexes_and_drops_extras(self):
         beats = [

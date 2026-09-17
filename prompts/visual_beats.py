@@ -370,6 +370,64 @@ def beats_as_dicts(beats: Sequence[VisualBeat]) -> List[Dict[str, Any]]:
 PENDING_PROMPT_SOURCES = {"pending", "user_added"}
 
 
+def coerce_beat_index(value: Any, default: int = 0) -> int:
+    """Parse a 1-based beat number; invalid values become default."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
+def prompt_row_is_ready(row: Any) -> bool:
+    """True when a prompt row is usable for image generation."""
+    if not isinstance(row, dict):
+        return False
+    if not str(row.get("text") or "").strip():
+        return False
+    source = str(row.get("source") or "").strip()
+    return source not in PENDING_PROMPT_SOURCES
+
+
+def find_prompt_row(rows: Sequence[Any], beat_index: int) -> Optional[Dict[str, Any]]:
+    """Return the prompt dict for a 1-based beat without assuming list length.
+
+    Prefer an explicit ``beat`` field. Fall back to list position only when that
+    slot has no beat number of its own. Never raise IndexError.
+    """
+    target = coerce_beat_index(beat_index)
+    if target <= 0:
+        return None
+    items = [row for row in (rows or []) if isinstance(row, dict)]
+    for row in items:
+        if coerce_beat_index(row.get("beat")) == target:
+            return row
+    if 1 <= target <= len(items):
+        positional = items[target - 1]
+        if coerce_beat_index(positional.get("beat")) == 0:
+            return positional
+    return None
+
+
+def upsert_prompt_row(
+    rows: Sequence[Any],
+    row: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Replace or append a prompt row keyed by its beat number."""
+    items = [item for item in (rows or []) if isinstance(item, dict)]
+    beat_index = coerce_beat_index(row.get("beat"))
+    if beat_index <= 0:
+        items.append(dict(row))
+        return items
+    for index, item in enumerate(items):
+        if coerce_beat_index(item.get("beat")) == beat_index:
+            items[index] = dict(row)
+            return items
+    items.append(dict(row))
+    items.sort(key=lambda item: coerce_beat_index(item.get("beat")))
+    return items
+
+
 def stub_prompt_row(
     scene_id: int,
     model_key: str,
@@ -387,6 +445,49 @@ def stub_prompt_row(
     }
 
 
+def _row_for_beat(
+    rows: Sequence[Dict[str, Any]],
+    beat_index: int,
+    used: set,
+) -> Optional[Dict[str, Any]]:
+    for row in rows:
+        if id(row) in used:
+            continue
+        if coerce_beat_index(row.get("beat")) == beat_index:
+            used.add(id(row))
+            return row
+    if 1 <= beat_index <= len(rows):
+        positional = rows[beat_index - 1]
+        if id(positional) not in used and coerce_beat_index(positional.get("beat")) == 0:
+            used.add(id(positional))
+            return positional
+    return None
+
+
+def _refresh_prompt_row(
+    previous: Dict[str, Any],
+    beat: VisualBeat,
+    scene_id: int,
+    model_key: str,
+    index: int,
+    *,
+    update_pending_text: bool,
+) -> Dict[str, Any]:
+    updated = dict(previous)
+    updated["beat"] = index
+    updated["visual_beat"] = beat.beat
+    updated["id"] = (
+        str(updated.get("id") or "").strip()
+        or f"scene_{int(scene_id):03d}_beat_{index:02d}_{model_key}"
+    )
+    if update_pending_text:
+        source = str(updated.get("source") or "").strip()
+        if source in PENDING_PROMPT_SOURCES or not source:
+            updated["text"] = beat.beat
+            updated["source"] = "pending"
+    return updated
+
+
 def align_prompt_rows_to_beats(
     existing_rows: Sequence[Any],
     beats: Sequence[VisualBeat],
@@ -400,21 +501,16 @@ def align_prompt_rows_to_beats(
     """
     rows = [row for row in existing_rows if isinstance(row, dict)]
     aligned: List[Dict[str, Any]] = []
+    used: set = set()
     for index, beat in enumerate(beats, 1):
-        previous = next(
-            (row for row in rows if int(row.get("beat", 0) or 0) == index),
-            None,
-        )
+        previous = _row_for_beat(rows, index, used)
         if previous is None:
             continue
-        updated = dict(previous)
-        updated["beat"] = index
-        updated["visual_beat"] = beat.beat
-        updated["id"] = (
-            str(updated.get("id") or "").strip()
-            or f"scene_{int(scene_id):03d}_beat_{index:02d}_{model_key}"
+        aligned.append(
+            _refresh_prompt_row(
+                previous, beat, scene_id, model_key, index, update_pending_text=False
+            )
         )
-        aligned.append(updated)
     return aligned
 
 
@@ -427,26 +523,17 @@ def ensure_prompt_rows_for_beats(
     """Keep matching prompt rows and insert stubs for beats the model is missing."""
     rows = [row for row in existing_rows if isinstance(row, dict)]
     aligned: List[Dict[str, Any]] = []
+    used: set = set()
     for index, beat in enumerate(beats, 1):
-        previous = next(
-            (row for row in rows if int(row.get("beat", 0) or 0) == index),
-            None,
-        )
+        previous = _row_for_beat(rows, index, used)
         if previous is None:
             aligned.append(stub_prompt_row(scene_id, model_key, beat, index))
             continue
-        updated = dict(previous)
-        updated["beat"] = index
-        updated["visual_beat"] = beat.beat
-        updated["id"] = (
-            str(updated.get("id") or "").strip()
-            or f"scene_{int(scene_id):03d}_beat_{index:02d}_{model_key}"
+        aligned.append(
+            _refresh_prompt_row(
+                previous, beat, scene_id, model_key, index, update_pending_text=True
+            )
         )
-        source = str(updated.get("source") or "").strip()
-        if source in PENDING_PROMPT_SOURCES or not source:
-            updated["text"] = beat.beat
-            updated["source"] = "pending"
-        aligned.append(updated)
     return aligned
 
 
