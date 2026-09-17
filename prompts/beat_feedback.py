@@ -11,7 +11,7 @@ import yaml
 from prompts.visual_beats import VisualBeat
 
 FEEDBACK_FILENAME = "beat_corrections.yaml"
-MAX_EXAMPLES = 12
+MAX_EXAMPLES = 4
 
 
 def feedback_path(output_dir: str) -> str:

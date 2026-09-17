@@ -17,6 +17,7 @@ from prompts.model_prompt_service import (
     LOCKED_BEAT_INSTRUCTION,
     ModelPromptService,
     PROMPT_ONLY_SCHEMA,
+    beat_needs_profile_defaults,
     build_prompt_user_payload,
     wrap_project_profile,
 )
@@ -315,6 +316,11 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(is_visual_moment(
             "The drone strike hit the convoy at four in the morning local time."
         ))
+        self.assertTrue(is_visual_moment("Executives sat around a conference table."))
+        self.assertTrue(is_visual_moment(
+            "A technician inspected a wafer in the cleanroom."
+        ))
+        self.assertTrue(is_visual_moment("The president spoke from a podium."))
 
     def test_compacts_visual_kernel_out_of_analysis_sentence(self):
         narration = (
@@ -388,6 +394,7 @@ class PersistenceTests(unittest.TestCase):
 
     def test_pending_prompt_rows_are_not_ready_for_images(self):
         self.assertFalse(prompt_row_is_ready({"beat": 3, "text": "shot", "source": "pending"}))
+        self.assertFalse(prompt_row_is_ready({"beat": 3, "text": "shot", "source": "ungrounded"}))
         self.assertTrue(prompt_row_is_ready({"beat": 3, "text": "shot", "source": "generated"}))
 
     def test_ensure_prompt_rows_maps_unnumbered_rows_by_position(self):
@@ -413,7 +420,8 @@ class PersistenceTests(unittest.TestCase):
         ]
         aligned = align_prompt_rows_to_beats(rows, beats, scene_id=1, model_key="zimage")
         self.assertEqual(len(aligned), 1)
-        self.assertEqual(aligned[0]["text"], "old prompt one")
+        self.assertEqual(aligned[0]["text"], "A fisherman walks on the pier.")
+        self.assertEqual(aligned[0]["source"], "pending")
         self.assertEqual(aligned[0]["visual_beat"], "A fisherman walks on the pier.")
 
     def test_ensure_prompt_rows_adds_stubs_for_missing_beats(self):
@@ -426,7 +434,8 @@ class PersistenceTests(unittest.TestCase):
         ]
         aligned = ensure_prompt_rows_for_beats(rows, beats, scene_id=1, model_key="schnell")
         self.assertEqual(len(aligned), 2)
-        self.assertEqual(aligned[0]["text"], "cinematic fisherman prompt")
+        self.assertEqual(aligned[0]["text"], "A fisherman walks on the pier.")
+        self.assertEqual(aligned[0]["source"], "pending")
         self.assertEqual(aligned[0]["visual_beat"], "A fisherman walks on the pier.")
         self.assertEqual(aligned[1]["text"], "Nets dry on the pier.")
         self.assertEqual(aligned[1]["source"], "pending")
@@ -439,6 +448,18 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(aligned[0]["text"], "Nets dry on the pier.")
         self.assertEqual(aligned[0]["visual_beat"], "Nets dry on the pier.")
         self.assertEqual(aligned[0]["source"], "pending")
+
+    def test_ensure_prompt_rows_keeps_generated_when_beat_unchanged(self):
+        beats = [VisualBeat(beat="A fisherman walks on the pier.")]
+        rows = [{
+            "beat": 1,
+            "text": "cinematic fisherman prompt",
+            "visual_beat": "A fisherman walks on the pier.",
+            "source": "generated",
+        }]
+        aligned = ensure_prompt_rows_for_beats(rows, beats, scene_id=1, model_key="schnell")
+        self.assertEqual(aligned[0]["text"], "cinematic fisherman prompt")
+        self.assertEqual(aligned[0]["source"], "generated")
 
     def test_ensure_prompt_rows_keeps_manual_prompt_text(self):
         beats = [VisualBeat(beat="Nets dry on the pier.", source="manually_edited")]
@@ -470,7 +491,8 @@ class PersistenceTests(unittest.TestCase):
         )
         self.assertEqual(set(synced), {"schnell", "zimage", "dev"})
         self.assertEqual(len(synced["schnell"]["prompts"]), 2)
-        self.assertEqual(synced["schnell"]["prompts"][0]["text"], "old schnell")
+        self.assertEqual(synced["schnell"]["prompts"][0]["text"], "A fisherman walks on the pier.")
+        self.assertEqual(synced["schnell"]["prompts"][0]["source"], "pending")
         self.assertEqual(synced["schnell"]["prompts"][1]["text"], "Nets dry on the pier.")
         self.assertEqual(len(synced["zimage"]["prompts"]), 2)
         self.assertEqual(synced["zimage"]["prompts"][0]["text"], "A fisherman walks on the pier.")
@@ -508,7 +530,7 @@ class PromptGroundingTests(unittest.TestCase):
             NARRATION,
         )
         self.assertFalse(bad.ok)
-        self.assertTrue(bad.missing)
+        self.assertTrue(bad.missing or bad.extras)
 
     def test_flags_invented_proper_names_and_numbers(self):
         beat = VisualBeat(
@@ -536,6 +558,27 @@ class PromptGroundingTests(unittest.TestCase):
         )
         self.assertTrue(result.ok, result.summary())
 
+    def test_rejects_extra_people_garments_and_architecture(self):
+        beat = VisualBeat(
+            beat="A drone strike hits a convoy at four in the morning.",
+            source_quote="The drone strike hit the convoy at four in the morning local time.",
+        )
+        drifted = check_prompt(
+            "A senior official in a thobe stands in a marble atrium near a convoy.",
+            beat,
+        )
+        self.assertFalse(drifted.ok)
+        self.assertTrue(drifted.extras)
+        self.assertTrue(
+            any(term in drifted.extras for term in ("official", "thobe", "marble", "atrium")),
+            drifted.extras,
+        )
+        grounded = check_prompt(
+            "A drone strike hits a convoy at four in the morning under hard night light.",
+            beat,
+        )
+        self.assertTrue(grounded.ok, grounded.summary())
+
 
 class PromptPayloadTests(unittest.TestCase):
     def test_prompt_schema_does_not_ask_for_visual_beat(self):
@@ -550,14 +593,21 @@ class PromptPayloadTests(unittest.TestCase):
         )
         payload = build_prompt_user_payload({"id": 1, "text": NARRATION}, beat)
         self.assertEqual(payload["locked_visual_beat"]["beat"], beat.beat)
-        self.assertIn("narration", payload)
+        self.assertNotIn("narration", payload)
         self.assertNotIn("visual_beats", payload)
 
     def test_project_profile_is_wrapped_as_defaults_only(self):
         wrapped = wrap_project_profile("Wear thobes in every scene.")
-        self.assertIn("UNSPECIFIED DEFAULTS ONLY", wrapped)
+        self.assertIn("UNSPECIFIED WARDROBE AND ARCHITECTURE ONLY", wrapped)
         self.assertIn("Wear thobes in every scene.", wrapped)
         self.assertEqual(wrap_project_profile("  "), "")
+        complete = VisualBeat(
+            beat="A fisherman walks on the pier.",
+            subject="il pescatore",
+            setting="molo",
+        )
+        self.assertFalse(beat_needs_profile_defaults(complete))
+        self.assertTrue(beat_needs_profile_defaults(VisualBeat(beat="A fisherman walks.")))
 
     def test_locked_instruction_asks_for_a_staged_scene(self):
         self.assertIn("Do not copy the beat sentence verbatim", LOCKED_BEAT_INSTRUCTION)
@@ -609,6 +659,32 @@ class PromptAssemblyTests(unittest.TestCase):
         self.assertNotIn("volumetric light", prompt)
         self.assertNotIn("characters facing the camera", prompt)
         self.assertNotIn("..", prompt)
+
+    def test_system_instruction_skips_style_essay_and_complete_beats(self):
+        profiles_dir = os.path.join(
+            os.path.dirname(__file__), "..", "config", "prompt_profiles"
+        )
+        service = ModelPromptService(
+            profiles_dir,
+            "qwen3:8b",
+            "http://127.0.0.1:11434",
+            project_profile_text="Wear thobes in every scene.",
+        )
+        profile = service.load_profile("schnell")
+        complete = VisualBeat(
+            beat="A fisherman walks on the pier.",
+            subject="il pescatore",
+            action="cammina",
+            setting="molo",
+        )
+        system = service._system_instruction_for_beat(profile, complete)
+        self.assertNotIn("Wear thobes", system)
+        self.assertNotIn("GLOBAL VISUAL STYLE", system)
+        self.assertIn("LOCKED VISUAL BEAT", system)
+        incomplete = VisualBeat(beat="A fisherman walks on the pier.")
+        system2 = service._system_instruction_for_beat(profile, incomplete)
+        self.assertIn("Wear thobes", system2)
+        self.assertNotIn("GLOBAL VISUAL STYLE", system2)
 
     def test_hidream_template_avoids_volumetric_keyword_pile(self):
         profiles_dir = os.path.join(
@@ -709,8 +785,9 @@ class ProjectProfileYamlTests(unittest.TestCase):
         config_dir = os.path.join(os.path.dirname(__file__), "..", "config")
         profiles = load_project_profiles(os.path.abspath(config_dir))
         middle_east = profiles["middle_east_modern"]
-        self.assertIn("Preserve every explicit identity", middle_east)
-        self.assertNotIn("Never depict Western business suits", middle_east)
+        self.assertIn("Fill only unspecified clothing or place", middle_east)
+        self.assertIn("Never add people", middle_east)
+        self.assertNotIn("Prefer one principal person", middle_east)
         software = profiles["software_delevopment"]
         self.assertNotIn("middle_east_modern", software)
         self.assertIn("PROJECT PROFILE: CORPORATE GLOBAL", profiles["corporate_global"])

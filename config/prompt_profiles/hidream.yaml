@@ -2,40 +2,11 @@ display_name: HiDream-I1 Dev
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'Write image prompts optimized for HiDream-I1 Dev as one fluent
-  visual paragraph, not a keyword list.
-
-  Make the narration immediately identifiable through a specific subject, action,
-  setting, era or time of day, wardrobe, and meaningful objects supported by the source.
-  Never carry content from another scene, invent unsupported people or activity, or
-  replace the event with a generic portrait.
-
-  Describe one decisive moment with clear spatial relationships and deliberate visual
-  hierarchy. Let the scene determine camera distance, perspective, blocking, depth,
-  palette, and motivated lighting. Preserve all people essential to the event while
-  avoiding unsupported crowds.
-
-  State the dominant lighting and palette only once. Do not repeat or amplify color
-  words such as golden, amber, orange, red, or blue unless the source makes that color
-  essential. Preserve neutral material colors and tonal separation instead of covering
-  the whole image with a monochromatic haze. Use clear air, crisp local contrast, and
-  distinct foreground, middle-ground, and background planes by default. Include fog,
-  mist, smoke, bloom, or atmospheric haze only when the source explicitly requires it.
-
-  Do not copy the locked beat sentence and wrap it in cinematic keyword lists.
-  Name the furniture, walls, and seating that would be visible, and place each
-  person in the room. Avoid volumetric haze, 35mm-lens cliches, and aspect ratio.
-
-  Use precise natural language for anatomy, poses, hands, and object interactions
-  only where visible and important. HiDream responds well to coherent prose and rich
-  material detail, but keep every detail relevant to the stated visual beat.
-
-  Output only one cohesive English prompt with no commentary, headings, parameters,
-  or negative-prompt section.'
+system_instruction: 'Write one fluent HiDream-I1 Dev paragraph for the locked visual
+  beat only. Clear air, one lighting direction, no volumetric haze, no 35mm-lens
+  cliches, no aspect ratio. Name furniture or rooms only if the beat names them.
+  Do not add people, wardrobe, or crowds. Do not repeat color adjectives.'
 requirements:
-- Ground the prompt in at least three concrete, narration-specific visual details.
-- Make the subject, action, setting, and composition distinguish this scene from adjacent
-  scenes.
-- Use coherent descriptive prose with purposeful composition and motivated light.
-- Avoid repeated palette or lighting adjectives that create a global color cast.
-- Use one prompt when the scene contains only one visual beat.
+- Depict only the locked visual beat.
+- Avoid haze and repeated palette words.
+- Use one prompt per beat.

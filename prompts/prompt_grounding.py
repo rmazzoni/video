@@ -18,6 +18,28 @@ _CAMERA_NUMBER_RE = re.compile(
     r"|\biso\s*\d+\b",
     re.IGNORECASE,
 )
+_PEOPLE_RE = re.compile(
+    r"\b(man|woman|men|women|person|people|child|children|boy|girl|"
+    r"official|officials|aide|aides|diplomat|diplomats|senator|senators|"
+    r"worker|workers|executive|executives|crowd|crowds|audience|"
+    r"soldier|soldiers|officer|officers|president|minister|king|queen|"
+    r"leader|leaders|delegate|delegates|staff|crew|team|teams|"
+    r"assistant|assistants|guard|guards|civilian|civilians)\b",
+    re.IGNORECASE,
+)
+_GARMENT_RE = re.compile(
+    r"\b(suit|suits|tie|ties|thobe|thobes|ghutra|shemagh|agal|abaya|"
+    r"headscarf|hijab|uniform|uniforms|robe|robes|turban|blazer|"
+    r"tuxedo|gown)\b",
+    re.IGNORECASE,
+)
+_ARCHITECTURE_RE = re.compile(
+    r"\b(atrium|skyscraper|skyscrapers|boardroom|marble|limestone|"
+    r"chrome|minaret|mosque|palace|colonnade|chandelier|hologram|"
+    r"holograms|glass tower|glass facade|reflective glass|"
+    r"neon|cyberpunk)\b",
+    re.IGNORECASE,
+)
 
 # Camera/style words Qwen (or style anchors) may add; they are not plot.
 _STYLE_ALLOWLIST = {
@@ -53,15 +75,15 @@ def required_beat_tokens(beat: VisualBeat) -> List[str]:
     return distinctive_tokens(beat.beat)
 
 
-def _allowed_text(beat: VisualBeat, narration: str) -> str:
+def _allowed_text(beat: VisualBeat, profile_text: str = "") -> str:
     parts = [
-        narration,
         beat.beat,
         beat.source_quote,
         beat.subject,
         beat.action,
         beat.setting,
         " ".join(beat.objects),
+        profile_text,
     ]
     return " ".join(part for part in parts if part)
 
@@ -86,7 +108,26 @@ def extra_proper_names(prompt: str, allowed: str) -> List[str]:
     return extras
 
 
-def check_prompt(prompt: str, beat: VisualBeat, narration: str) -> GroundingResult:
+def extra_restricted_terms(prompt: str, allowed: str, pattern: re.Pattern) -> List[str]:
+    allowed_norm = normalize_text(allowed)
+    extras: List[str] = []
+    seen = set()
+    for match in pattern.finditer(prompt or ""):
+        term = match.group(0)
+        key = normalize_text(term)
+        if not key or key in seen or key in allowed_norm:
+            continue
+        seen.add(key)
+        extras.append(term.lower())
+    return extras
+
+
+def check_prompt(
+    prompt: str,
+    beat: VisualBeat,
+    narration: str = "",
+    profile_text: str = "",
+) -> GroundingResult:
     text = str(prompt or "").strip()
     if not text:
         return GroundingResult(ok=False, missing=["(empty prompt)"])
@@ -99,10 +140,19 @@ def check_prompt(prompt: str, beat: VisualBeat, narration: str) -> GroundingResu
     missing = [token for token in required if token not in prompt_tokens]
     if required:
         hits = len(required) - len(missing)
-        if hits >= max(1, (len(required) + 1) // 2):
+        needed = max(1, (len(required) * 2 + 2) // 3)
+        if hits >= needed:
             missing = []
-    allowed = _allowed_text(beat, narration)
-    extras = extra_numbers(text, allowed) + extra_proper_names(text, allowed)
+        else:
+            missing = [token for token in required if token not in prompt_tokens]
+    allowed = _allowed_text(beat, profile_text)
+    extras = (
+        extra_numbers(text, allowed)
+        + extra_proper_names(text, allowed)
+        + extra_restricted_terms(text, allowed, _PEOPLE_RE)
+        + extra_restricted_terms(text, allowed, _GARMENT_RE)
+        + extra_restricted_terms(text, allowed, _ARCHITECTURE_RE)
+    )
     return GroundingResult(ok=not missing and not extras, missing=missing, extras=extras)
 
 
@@ -110,8 +160,9 @@ def retry_instruction(result: GroundingResult) -> str:
     return (
         "Your previous prompt drifted from the locked visual beat. "
         f"{result.summary()}. "
-        "Rewrite using only the locked visual beat and the original narration. "
-        "Do not add people, places, props, numbers, or names that are not there."
+        "Rewrite using only the locked visual beat. "
+        "Do not add people, places, garments, architecture, props, numbers, "
+        "or names that are not in the locked beat."
     )
 
 

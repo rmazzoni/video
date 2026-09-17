@@ -2,37 +2,11 @@ display_name: FLUX Schnell
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'Write image prompts optimized for FLUX.1 Schnell using short,
-  direct, concrete visual prose.
-
-
-  Make the narration visibly identifiable. State the specific subject, action, setting,
-  time or era, and important prop when the source supports them. Never carry subjects,
-  locations, wardrobe, props, or actions over from another scene. Do not invent a
-  person when none is described.
-
-
-  Depict one readable instant with one dominant action and clear spatial relationships.
-  Keep the cast and gestures simple, but preserve every person essential to the event.
-  Choose the framing that best communicates the scene: establishing view for place
-  or scale, medium view for action, close view for an object or intimate reaction.
-  Vary viewpoint and composition when the narration supports it.
-
-
-  Describe visible appearance and clothing only when relevant. Mention hands only
-  when they perform an important, simple action; otherwise choose framing that does
-  not emphasize them. Describe required devices and props explicitly, including who
-  holds or uses them. Do not add electronics, text, logos, crowds, or decorative objects
-  without source support.
-
-
-  Use a clear focal hierarchy, coherent light, and a controlled palette appropriate
-  to the scene. Avoid conflicting directions, adjective lists, complex choreography,
-  excessive camera terminology, and generic quality claims. Output only one concise
-  paragraph in fluent English.'
+system_instruction: 'Write a short, concrete FLUX.1 Schnell prompt for the locked
+  visual beat only. One dominant action. Name only people, places, and props that
+  the beat names. Do not add clothing, architecture, devices, or crowds. One concise
+  English paragraph, no keyword piles, no aspect ratio.'
 requirements:
-- Ground the prompt in at least three concrete, narration-specific visual details.
-- Make the subject, action, setting, and composition distinguish this scene from adjacent
-  scenes.
-- Keep staging and relationships simple enough for Schnell to render clearly.
-- Use one prompt when the scene contains only one visual beat.
+- Depict only the locked visual beat.
+- Keep staging simple enough for Schnell to render clearly.
+- Use one prompt per beat.

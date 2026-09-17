@@ -3,7 +3,7 @@
 import json
 import logging
 import os
-from typing import Any, Dict, List, Sequence, Union
+from typing import Any, Dict, List, Sequence, Tuple, Union
 
 import yaml
 
@@ -19,7 +19,6 @@ from prompts.visual_beats import (
 from prompts.visual_styles import (
     DEFAULT_VISUAL_STYLE,
     visual_style_fallback_preset,
-    visual_style_instruction,
     visual_style_prompt_anchor,
 )
 
@@ -46,27 +45,25 @@ PROMPT_ONLY_SCHEMA = {
 
 LOCKED_BEAT_INSTRUCTION = (
     "LOCKED VISUAL BEAT:\n"
-    "The locked visual beat is the image content. Preserve its subject, action, "
-    "setting, and objects. Do not add people, events, props, text, devices, "
-    "crowds, or places that are absent from the locked visual beat and the "
-    "original narration.\n\n"
+    "The locked visual beat is the only image content. Depict its subject, action, "
+    "setting, and objects. If a field is empty, it is absent from the image.\n\n"
+    "Do not add people, crowds, faces, furniture, buildings, garments, devices, "
+    "text, flags, or places that are not in the locked visual beat. If the beat "
+    "has no person, the image has no person.\n\n"
     "Do not copy the beat sentence verbatim and do not wrap it in quality tags "
-    "or photographic keyword lists. Write one staged image prompt: where people "
-    "sit or stand, what is visible in the space, materials, and lighting motivated "
-    "by the setting. Choose a viewpoint that shows the event clearly. Wardrobe "
-    "and architecture may come from the project profile only when the beat leaves "
-    "them unspecified.\n\n"
+    "or photographic keyword lists. Write one English photograph prompt using "
+    "camera distance, light, and materials of named things only.\n\n"
     "Do not mention aspect ratio, resolution, seed, sampler, or step count. A "
     "short model style prefix is added later, so start with the scene rather than "
     "a style slogan. Output one English paragraph."
 )
 
 PROJECT_PROFILE_WRAPPER = (
-    "PROJECT PROFILE — UNSPECIFIED DEFAULTS ONLY:\n"
-    "Use the following only to fill wardrobe, architecture, or regional appearance "
-    "when the locked visual beat does not specify them. They must not replace the "
-    "beat, add characters, or introduce objects or events that are not in the "
-    "locked beat and narration.\n\n"
+    "PROJECT PROFILE — UNSPECIFIED WARDROBE AND ARCHITECTURE ONLY:\n"
+    "Use the following only when the locked beat leaves clothing or place unnamed. "
+    "Never add a person, crowd, event, or prop. Never replace the beat. If the "
+    "beat has no person, ignore clothing rules. If the beat names a place, ignore "
+    "architecture rules.\n\n"
 )
 
 BeatInput = Union[str, Dict[str, Any], VisualBeat]
@@ -79,20 +76,25 @@ def wrap_project_profile(profile_text: str) -> str:
     return f"{PROJECT_PROFILE_WRAPPER}{text}"
 
 
+def beat_needs_profile_defaults(beat: VisualBeat) -> bool:
+    """Skip the project profile when the beat already names who and where."""
+    has_subject = bool(str(beat.subject or "").strip())
+    has_setting = bool(str(beat.setting or "").strip())
+    return not (has_subject and has_setting)
+
+
 def build_prompt_user_payload(scene: Dict[str, Any], beat: VisualBeat) -> Dict[str, Any]:
     return {
         "scene_id": int(scene.get("id") or 0),
-        "narration": scene.get("text", ""),
         "locked_visual_beat": beat.to_dict(),
         "source_fidelity": (
-            "Depict only the locked visual beat. Use the narration as supporting "
-            "context. Do not reuse generic content from other scenes or invent a "
-            "person, object, or place when none is described."
+            "Depict only the locked visual beat. Do not invent a person, object, "
+            "or place when the beat does not name one."
         ),
         "writing_rules": (
-            "Stage the locked beat as a photograph. Do not quote it verbatim. "
-            "Do not mention aspect ratio or generation parameters. Return JSON "
-            "with a single 'prompt' string."
+            "Write one English photograph prompt of the locked beat. "
+            "Do not quote it verbatim. Do not mention aspect ratio or generation "
+            "parameters. Return JSON with a single 'prompt' string."
         ),
     }
 
@@ -120,18 +122,30 @@ class ModelPromptService:
         if self.max_visual_beats is not None:
             profile["max_prompts_per_scene"] = int(self.max_visual_beats)
         profile["style_preset"] = visual_style_fallback_preset(self.visual_style_key)
-        system_parts = [LOCKED_BEAT_INSTRUCTION]
-        base_instruction = str(profile.get("system_instruction", "")).strip()
-        if base_instruction:
-            system_parts.append(base_instruction)
-        style_instruction = visual_style_instruction(self.visual_style_key, model_key)
-        if style_instruction:
-            system_parts.append(f"GLOBAL VISUAL STYLE:\n{style_instruction}")
-        wrapped_profile = wrap_project_profile(self.project_profile_text)
-        if wrapped_profile:
-            system_parts.append(wrapped_profile)
-        profile["system_instruction"] = "\n\n".join(system_parts)
+        profile["model_instruction"] = str(profile.get("system_instruction", "")).strip()
         return profile
+
+    def _system_instruction_for_beat(
+        self,
+        profile: Dict[str, Any],
+        beat: VisualBeat,
+    ) -> str:
+        parts = [LOCKED_BEAT_INSTRUCTION]
+        model_instruction = str(
+            profile.get("model_instruction") or profile.get("system_instruction") or ""
+        ).strip()
+        if model_instruction:
+            parts.append(model_instruction)
+        if beat_needs_profile_defaults(beat):
+            wrapped = wrap_project_profile(self.project_profile_text)
+            if wrapped:
+                parts.append(wrapped)
+        return "\n\n".join(parts)
+
+    def _profile_text_for_grounding(self, beat: VisualBeat) -> str:
+        if not beat_needs_profile_defaults(beat):
+            return ""
+        return self.project_profile_text
 
     def generate(self, scene: Dict[str, Any], model_key: str) -> List[Dict[str, Any]]:
         beats = self.extract_structured_beats(scene)
@@ -173,23 +187,33 @@ class ModelPromptService:
         beat_index: int,
     ) -> Dict[str, Any]:
         beat = VisualBeat.from_stored(visual_beat) or fallback_beat(str(scene.get("text") or ""))
-        prompt = self.regenerate_prompt(scene, model_key, beat)
-        return {
+        prompt, source, error = self._generate_prompt_for_beat(
+            scene, self.load_profile(model_key), beat
+        )
+        row = {
             "id": f"scene_{int(scene['id']):03d}_beat_{int(beat_index):02d}_{model_key}",
             "beat": int(beat_index),
             "visual_beat": beat.beat,
             "text": prompt,
-            "generated_prompt": prompt,
-            "source": "generated",
+            "source": source,
         }
+        if source == "generated":
+            row["generated_prompt"] = prompt
+        if error:
+            row["grounding_error"] = error
+        return row
 
     def regenerate_prompt(
         self,
         scene: Dict[str, Any],
         model_key: str,
         visual_beat: BeatInput,
-    ) -> str:
-        """Generate one replacement prompt while keeping the selected visual beat fixed."""
+    ) -> Tuple[str, str, str]:
+        """Generate one replacement prompt while keeping the selected visual beat fixed.
+
+        Returns (prompt_text, source, grounding_error). source is generated,
+        ungrounded, or fallback.
+        """
         profile = self.load_profile(model_key)
         beat = VisualBeat.from_stored(visual_beat)
         if beat is None:
@@ -207,8 +231,8 @@ class ModelPromptService:
                 {"role": "user", "content": user_content},
             ],
             options={
-                "temperature": 0.35,
-                "top_p": 0.85,
+                "temperature": 0.0,
+                "top_p": 0.8,
                 "stop": ["\nScript Segment", "\nNarration:", "\nUser:"],
             },
             allow_prose=True,
@@ -228,45 +252,36 @@ class ModelPromptService:
         scene: Dict[str, Any],
         profile: Dict[str, Any],
         beat: VisualBeat,
-    ) -> str:
-        narration = str(scene.get("text") or "")
+    ) -> Tuple[str, str, str]:
         model_key = str(profile.get("model_key", ""))
         user_payload = json.dumps(build_prompt_user_payload(scene, beat), ensure_ascii=False)
-        system_instruction = str(profile.get("system_instruction", ""))
+        system_instruction = self._system_instruction_for_beat(profile, beat)
+        profile_text = self._profile_text_for_grounding(beat)
+        style_anchor = visual_style_prompt_anchor(self.visual_style_key, model_key)
 
-        prompt = ""
         try:
             prompt = self._chat_prompt(system_instruction, user_payload)
-            result = check_prompt(prompt, beat, narration)
-            if prompt and not result.ok:
-                logger.info("Prompt failed grounding (%s); retrying once", result.summary())
-                retry_payload = json.dumps({
-                    **build_prompt_user_payload(scene, beat),
-                    "correction": retry_instruction(result),
-                    "previous_prompt": prompt,
-                }, ensure_ascii=False)
-                retry_prompt = self._chat_prompt(system_instruction, retry_payload)
-                retry_result = check_prompt(retry_prompt, beat, narration)
-                if retry_prompt and retry_result.ok:
-                    prompt = retry_prompt
-                else:
-                    logger.warning(
-                        "Prompt still ungrounded after retry (%s); using template",
-                        retry_result.summary() if retry_prompt else "empty retry",
-                    )
-                    prompt = ""
+            result = check_prompt(prompt, beat, profile_text=profile_text)
+            if prompt and result.ok:
+                return join_prompt_parts(style_anchor, prompt), "generated", ""
+            logger.info("Prompt failed grounding (%s); retrying once", result.summary())
+            retry_payload = json.dumps({
+                **build_prompt_user_payload(scene, beat),
+                "correction": retry_instruction(result),
+                "previous_prompt": prompt,
+            }, ensure_ascii=False)
+            retry_prompt = self._chat_prompt(system_instruction, retry_payload)
+            retry_result = check_prompt(retry_prompt, beat, profile_text=profile_text)
+            if retry_prompt and retry_result.ok:
+                return join_prompt_parts(style_anchor, retry_prompt), "generated", ""
+            error = (
+                retry_result.summary() if retry_prompt else result.summary()
+            ) or "empty retry"
+            logger.warning("Prompt still ungrounded after retry (%s); keeping locked beat", error)
+            return str(beat.beat or "").strip(), "ungrounded", error
         except Exception:
-            logger.exception("Locked prompt generation failed; using template fallback")
-            prompt = ""
-
-        if not prompt:
-            prompt = self._template_prompt(scene, profile, beat)
-        else:
-            prompt = join_prompt_parts(
-                visual_style_prompt_anchor(self.visual_style_key, model_key),
-                prompt,
-            )
-        return prompt
+            logger.exception("Locked prompt generation failed; using beat template")
+            return self._template_prompt(scene, profile, beat), "fallback", ""
 
     def _template_prompt(
         self,
@@ -304,8 +319,10 @@ class ModelPromptService:
 
 def effective_prompt(entry: Dict[str, Any]) -> str:
     """Return the first usable manual or generated prompt from a model entry."""
+    from prompts.visual_beats import prompt_row_is_ready
+
     prompts = entry.get("prompts", []) if isinstance(entry, dict) else []
     for prompt in prompts:
-        if isinstance(prompt, dict) and str(prompt.get("text", "")).strip():
+        if prompt_row_is_ready(prompt):
             return str(prompt["text"]).strip()
     return ""

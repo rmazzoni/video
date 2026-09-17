@@ -455,20 +455,28 @@ class PipelineWorker(QObject):
                     visual_beats = normalize_stored_beats(
                         scene_entry.get("visual_beats", []) if isinstance(scene_entry, dict) else []
                     )
-                    beat_source = str(scene_entry.get("visual_beats_source", "")) if isinstance(scene_entry, dict) else ""
-                    if not visual_beats or beat_source != str(scene.get("text", "")):
+                    extracted_now = False
+                    if not visual_beats:
                         self._emit_progress(
                             25 + int(((index - 1) / max(total_scenes, 1)) * 70),
                             f"Extracting visual beats for scene {scene_id}",
                         )
                         visual_beats = service.extract_structured_beats(scene)
+                        extracted_now = True
                         self.log.emit(
                             f"Scene {scene_id}: identified {len(visual_beats)} shared visual beat(s)."
                         )
+                    stored_source = ""
+                    if isinstance(scene_entry, dict):
+                        stored_source = str(scene_entry.get("visual_beats_source") or "")
                     updated_entry = {
                         "scene_id": scene_id,
                         "visual_beats": beats_as_dicts(visual_beats),
-                        "visual_beats_source": str(scene.get("text", "")),
+                        "visual_beats_source": (
+                            str(scene.get("text", ""))
+                            if extracted_now
+                            else (stored_source or str(scene.get("text", "")))
+                        ),
                         "models": {},
                     }
                     existing_models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}

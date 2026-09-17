@@ -56,10 +56,11 @@ EXTRACT_SYSTEM_PROMPT = (
     "have a formal army' are explanations, not shots. Do not illustrate the "
     "thing being denied.\n\n"
     "Return one beat per distinct visual moment, at most the requested maximum. "
-    "A scene that names several visible things (a strike, a convoy, a place, "
-    "a group of people) must return several beats. Returning fewer than the "
-    "maximum is required when there are fewer visual moments. Never invent "
-    "extra shots to fill the quota. Never pad with commentary.\n\n"
+    "Any photographable subject counts: a person, animal, object, room, landscape, "
+    "vehicle, or weather event. Do not limit beats to military or news imagery. "
+    "A scene that names several visible things must return several beats. "
+    "Returning fewer than the maximum is required when there are fewer visual "
+    "moments. Never invent extra shots to fill the quota. Never pad with commentary.\n\n"
     "source_quote must be copied verbatim from the narration. Use one sentence "
     "or a short clause, never the whole paragraph, when the paragraph contains "
     "more than one visual moment. subject, action, setting, and objects must "
@@ -102,7 +103,9 @@ _ABSTRACT_RE = re.compile(
     r"specific\s+context|represents\s+the|political identity|domestic standing|"
     r"strategic independence|first choice|second choice|higher costs?|"
     r"neutrality|diplomatic|institutional|qualitative|quantitative|"
-    r"consolidation|observer|public information|financial competition)\b",
+    r"consolidation|observer|public information|financial competition|"
+    r"dynamics|rivalry|threshold|broader pattern|period of stress|"
+    r"political dynamics|internal competition)\b",
     re.IGNORECASE,
 )
 _EVALUATIVE_RE = re.compile(
@@ -117,20 +120,41 @@ _EVALUATIVE_RE = re.compile(
     r"|\bread it as the specific message\b",
     re.IGNORECASE,
 )
-_VISUAL_VERB_RE = re.compile(
-    r"\b(hit|hits|hitting|struck|strike|striking|moving|walk|walks|walking|"
-    r"fly|flies|flying|drive|driving|stands|stood|standing (?:in|on|near|at|beside)|"
-    r"sit|sitting|burn|burning|load|loading|targeted|targeting|"
-    r"cross|crossing|enter|entering|carry|carrying|firing|launch|launching|"
-    r"cammina|stese|asciugare)\b",
-    re.IGNORECASE,
+_VISIBLE_NOUNS = (
+    # people and roles
+    "man", "woman", "men", "women", "person", "people", "child", "children",
+    "boy", "girl", "worker", "workers", "executive", "executives", "official",
+    "officials", "officer", "officers", "president", "minister", "king", "queen",
+    "soldier", "soldiers", "fighter", "fighters", "police", "doctor", "nurse",
+    "teacher", "student", "engineer", "technician", "driver", "pilot", "farmer",
+    "fisherman", "pescatore", "crowd", "audience", "crew", "staff", "leader",
+    "leaders", "employee", "customer", "patient", "civilian", "troops",
+    "commander", "commanders", "militia", "delegate", "delegates",
+    # body
+    "face", "faces", "hand", "hands", "head",
+    # places
+    "room", "office", "hall", "building", "buildings", "street", "road", "bridge",
+    "city", "town", "village", "port", "pier", "molo", "harbor", "airport",
+    "station", "factory", "plant", "farm", "farmland", "field", "desert",
+    "forest", "river", "sea", "ocean", "beach", "mountain", "base", "bases",
+    "camp", "hospital", "school", "church", "mosque", "temple", "market",
+    "kitchen", "studio", "lab", "laboratory", "cleanroom", "warehouse", "dock",
+    "corridor", "parliament", "court", "embassy", "palace", "stadium", "park",
+    "garden", "boardroom", "classroom", "bedroom", "shop",
+    # objects and vehicles
+    "table", "desk", "chair", "computer", "laptop", "monitor", "screen", "phone",
+    "car", "truck", "trucks", "vehicle", "vehicles", "bus", "train", "plane",
+    "aircraft", "drone", "ship", "ships", "boat", "convoy", "tank", "gun",
+    "weapon", "weapons", "missile", "missiles", "camera", "microphone", "podium",
+    "book", "machine", "robot", "server", "chip", "wafer", "tool", "net", "reti",
+    "uniform", "helmet", "rifle", "flag",
+    # nature and time of day
+    "tree", "trees", "animal", "bird", "fish", "horse", "water", "fire", "smoke",
+    "cloud", "rain", "snow", "sun", "moon", "dawn", "sunrise", "alba", "night",
+    "sky",
 )
 _VISIBLE_NOUN_RE = re.compile(
-    r"\b(drone|convoy|vehicle|vehicles|truck|trucks|fighter|fighters|soldier|"
-    r"soldiers|militia|port|pier|molo|farm|farmland|corridor|ship|ships|"
-    r"missile|missiles|uniform|building|buildings|crowd|road|bridge|desert|"
-    r"city|aircraft|weapon|weapons|pescatore|reti|dawn|sunrise|alba|"
-    r"base|bases|troops|commanders?|night)\b",
+    r"\b(" + "|".join(_VISIBLE_NOUNS) + r")\b",
     re.IGNORECASE,
 )
 _ANALYSIS_TAIL_RE = re.compile(
@@ -235,7 +259,8 @@ def slot_is_grounded(slot: str, quote: str) -> bool:
         return True
     quote_tokens = set(content_tokens(quote))
     hits = sum(1 for token in tokens if token in quote_tokens)
-    return hits >= max(1, (len(tokens) + 1) // 2)
+    needed = len(tokens) if len(tokens) <= 2 else (len(tokens) * 2 + 2) // 3
+    return hits >= needed
 
 
 def split_sentences(text: str) -> List[str]:
@@ -341,7 +366,7 @@ def is_visual_moment(text: str) -> bool:
     if visible_nouns == 0:
         return False
     abstract = len(_ABSTRACT_RE.findall(blob))
-    if abstract >= visible_nouns:
+    if abstract > visible_nouns:
         return False
     return True
 
@@ -367,7 +392,8 @@ def beats_as_dicts(beats: Sequence[VisualBeat]) -> List[Dict[str, Any]]:
     return [beat.to_dict() for beat in beats]
 
 
-PENDING_PROMPT_SOURCES = {"pending", "user_added"}
+PENDING_PROMPT_SOURCES = {"pending", "user_added", "ungrounded"}
+PROTECTED_PROMPT_SOURCES = {"manually_edited"}
 
 
 def coerce_beat_index(value: Any, default: int = 0) -> int:
@@ -474,17 +500,27 @@ def _refresh_prompt_row(
     update_pending_text: bool,
 ) -> Dict[str, Any]:
     updated = dict(previous)
+    source = str(updated.get("source") or "").strip()
+    old_lock = normalize_text(str(previous.get("visual_beat") or ""))
+    new_lock = normalize_text(beat.beat)
+    lock_changed = bool(old_lock) and old_lock != new_lock
     updated["beat"] = index
     updated["visual_beat"] = beat.beat
     updated["id"] = (
         str(updated.get("id") or "").strip()
         or f"scene_{int(scene_id):03d}_beat_{index:02d}_{model_key}"
     )
-    if update_pending_text:
-        source = str(updated.get("source") or "").strip()
-        if source in PENDING_PROMPT_SOURCES or not source:
-            updated["text"] = beat.beat
-            updated["source"] = "pending"
+    if source in PROTECTED_PROMPT_SOURCES:
+        return updated
+    if lock_changed:
+        updated["text"] = beat.beat
+        updated["source"] = "pending"
+        updated.pop("generated_prompt", None)
+        updated.pop("grounding_error", None)
+        return updated
+    if update_pending_text and (source in PENDING_PROMPT_SOURCES or not source):
+        updated["text"] = beat.beat
+        updated["source"] = "pending"
     return updated
 
 
@@ -793,7 +829,7 @@ def extract_structured_beats(
             host=ollama_host,
             model=ollama_model,
             messages=build_extraction_messages(scene, limit, extra_system),
-            options={"temperature": 0.1, "top_p": 0.8},
+            options={"temperature": 0.0, "top_p": 0.8},
         )
         raw_items = payload.get("visual_beats") or []
         if not isinstance(raw_items, list):

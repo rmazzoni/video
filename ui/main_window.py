@@ -4383,12 +4383,31 @@ class MainWindow(QMainWindow):
             layout.setSpacing(4)
 
             manual = any(row.get("source") == "manually_edited" for row in rows if isinstance(row, dict))
-            title = QLabel(f"Scene {sid} | {len(rows)} visual beat(s)" + (" | manual" if manual else ""))
+            ungrounded = any(row.get("source") == "ungrounded" for row in rows if isinstance(row, dict))
+            pending = any(
+                str(row.get("source") or "") in {"pending", "user_added"}
+                for row in rows if isinstance(row, dict)
+            )
+            title_extra = ""
+            if manual:
+                title_extra = " | manual"
+            elif ungrounded:
+                title_extra = " | ungrounded"
+            elif pending:
+                title_extra = " | pending"
+            title = QLabel(f"Scene {sid} | {len(rows)} visual beat(s)" + title_extra)
             title.setStyleSheet("color:#96BDE2; font-weight:bold; font-size:11px; border:none;")
             title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             layout.addWidget(title)
             for index, row in enumerate(rows, 1):
                 text = str(row.get("text", "")) if isinstance(row, dict) else str(row)
+                row_source = str(row.get("source") or "") if isinstance(row, dict) else ""
+                if row_source in {"pending", "user_added"}:
+                    text = f"{text}  ·  pending"
+                elif row_source == "ungrounded":
+                    text = f"{text}  ·  ungrounded"
+                elif row_source == "fallback":
+                    text = f"{text}  ·  fallback"
                 beat_index = coerce_beat_index(row.get("beat"), index) if isinstance(row, dict) else index
                 has_preview = (
                     model_key in ("schnell", "zimage")
@@ -4737,6 +4756,13 @@ class MainWindow(QMainWindow):
                     f"No stored {model_key} prompt for beat {beat_index}. "
                     "Loaded the visual beat as a placeholder. Save or Regenerate with Qwen."
                 )
+        elif str(row.get("source") or "") == "ungrounded":
+            status.setText(
+                "Qwen's last prompt drifted from the locked beat and was discarded. "
+                + str(row.get("grounding_error") or "Regenerate or edit.")
+            )
+        elif str(row.get("source") or "") in {"pending", "user_added"}:
+            status.setText("This beat has no generated prompt yet. Save or Regenerate with Qwen.")
         layout.addWidget(status)
         progress = QProgressBar()
         progress.setRange(0, 100)
@@ -4790,11 +4816,23 @@ class MainWindow(QMainWindow):
             regenerate.setEnabled(False)
             status.setText("Regenerating this prompt...")
             try:
-                replacement = service.regenerate_prompt(scene, model_key, visual_beat)
+                replacement, source, error = service.regenerate_prompt(
+                    scene, model_key, stored_beat or visual_beat
+                )
                 prompt_editor.setPlainText(replacement)
                 # Do NOT touch row["generated_prompt"] here — it must keep recording
                 # Qwen's true original output, not the latest regeneration.
-                status.setText("New Qwen prompt ready. Save to keep it.")
+                if source == "ungrounded":
+                    status.setText(
+                        "Qwen drifted from the locked beat and was discarded. "
+                        + (error or "Edit or try again.")
+                    )
+                elif source == "fallback":
+                    status.setText(
+                        "Qwen was unavailable. Using the locked beat as the prompt."
+                    )
+                else:
+                    status.setText("New Qwen prompt ready. Save to keep it.")
             except Exception as exc:
                 QMessageBox.warning(dialog, "Llama regeneration failed", str(exc))
                 status.clear()

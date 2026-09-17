@@ -1,8 +1,7 @@
-"""Project-specific aesthetic/cultural steering profiles for Qwen prompt generation.
+"""Project-specific fill-in defaults for unspecified wardrobe and architecture.
 
-Each profile is free-form guidance text (geographic, historical, or stylistic
-constraints) that gets appended to the end of the model-specific Qwen system
-instructions, uniformly across the Schnell/Dev/FLUX.2 sub-tabs.
+Each profile is short guidance used only when a locked beat leaves clothing or
+place unnamed. It must never add people or replace the beat.
 """
 
 import os
@@ -15,24 +14,23 @@ NONE_LABEL = "None"
 
 DEFAULT_PROJECT_PROFILES: Dict[str, str] = {
     "middle_east_modern": (
-        "PROJECT GEOGRAPHIC & CULTURAL CONSTRAINTS:\n"
-        "- Preserve explicit identity, nationality, role, location, period, and attire; source details override "
-        "regional defaults.\n"
-        "- Choose contemporary clothing from the specific person, role, activity, and occasion. Do not add "
-        "traditional or religious garments merely because a scene is set in the Middle East.\n"
-        "- Use Arabian garments only when explicitly stated or clearly appropriate; business suits, smart-casual "
-        "clothing, workwear, and uniforms remain valid where context supports them.\n"
-        "- Keep foreign participants' identity and attire distinct, and match architecture to the stated location."
+        "PROJECT PROFILE: MODERN MIDDLE EAST\n"
+        "Fill only unspecified clothing or place. Never add people, crowds, flags, or events.\n"
+        "- Clothing, only if the beat already has a person and names no garments: contemporary "
+        "role-appropriate wear. No thobe, ghutra, shemagh, agal, abaya, or headscarf unless the beat names them.\n"
+        "- Place, only if unnamed: maintained contemporary concrete, glass, or steel. Not ancient, rustic, or ruined."
     ),
     "corporate_global": (
-        "PROJECT GEOGRAPHIC & CULTURAL CONSTRAINTS:\n"
-        "- All characters must be in sharp, modern business attire (charcoal gray suits, crisp ties).\n"
-        "- Architecture must feature minimalist glass skyscrapers and modern steel boardrooms."
+        "PROJECT PROFILE: CORPORATE GLOBAL\n"
+        "Fill only unspecified clothing or place. Never add people, logos, or events.\n"
+        "- Clothing, only if the beat already has a person and names no garments: restrained professional "
+        "or smart-casual wear.\n"
+        "- Place, only if unnamed: a used contemporary office, meeting room, lab, or factory."
     ),
     "nature_documentary": (
-        "PROJECT GEOGRAPHIC & CULTURAL CONSTRAINTS:\n"
-        "- Focus entirely on organic wilderness, dense vegetation, or pristine natural landscapes.\n"
-        "- No human structures, roads, vehicles, or clothing should ever be visible."
+        "PROJECT PROFILE: NATURE DOCUMENTARY\n"
+        "Fill only unspecified habitat. Never add people, clothing, buildings, roads, vehicles, or signs.\n"
+        "- Place, only if unnamed: organic wilderness matching the named species or climate."
     ),
 }
 
