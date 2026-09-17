@@ -117,6 +117,8 @@ class ComfyImageGenerator:
         # Clear any stuck/leftover job from a previous (cancelled or timed-out) generation
         # so it can't block this one from ever showing up in /history.
         self.client.reset_stale_state()
+        from prompts.prompt_builder import structure_prompt_for_model
+        prompt = structure_prompt_for_model(prompt, self.model_type)
         active_seed = self.seed if seed_override is None else seed_override
         prefix = f"vid/{self.model_type}/scene_{scene_id:03d}{filename_suffix}"
         params: Dict[str, object] = {

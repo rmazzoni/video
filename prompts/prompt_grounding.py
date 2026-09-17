@@ -76,6 +76,8 @@ def required_beat_tokens(beat: VisualBeat) -> List[str]:
 
 
 def _allowed_text(beat: VisualBeat, profile_text: str = "") -> str:
+    from prompts.visual_identity import identity_allowed_text
+
     parts = [
         beat.beat,
         beat.source_quote,
@@ -84,6 +86,7 @@ def _allowed_text(beat: VisualBeat, profile_text: str = "") -> str:
         beat.setting,
         " ".join(beat.objects),
         profile_text,
+        identity_allowed_text(" ".join(part for part in (beat.beat, beat.subject) if part)),
     ]
     return " ".join(part for part in parts if part)
 
@@ -106,6 +109,17 @@ def extra_proper_names(prompt: str, allowed: str) -> List[str]:
             continue
         extras.append(match)
     return extras
+
+
+_NAMED_PERSON_GENDER = {"man", "woman", "person", "adult", "male", "female"}
+
+
+def beat_names_person(beat: VisualBeat) -> bool:
+    """True when the locked beat already has someone on camera."""
+    for part in (beat.subject, beat.beat, beat.source_quote):
+        if part and _PEOPLE_RE.search(part):
+            return True
+    return False
 
 
 def extra_restricted_terms(prompt: str, allowed: str, pattern: re.Pattern) -> List[str]:
@@ -146,11 +160,20 @@ def check_prompt(
         else:
             missing = [token for token in required if token not in prompt_tokens]
     allowed = _allowed_text(beat, profile_text)
+    people_extras = extra_restricted_terms(text, allowed, _PEOPLE_RE)
+    if beat_names_person(beat):
+        people_extras = [
+            term for term in people_extras
+            if normalize_text(term) not in _NAMED_PERSON_GENDER
+        ]
+        garment_extras: List[str] = []
+    else:
+        garment_extras = extra_restricted_terms(text, allowed, _GARMENT_RE)
     extras = (
         extra_numbers(text, allowed)
         + extra_proper_names(text, allowed)
-        + extra_restricted_terms(text, allowed, _PEOPLE_RE)
-        + extra_restricted_terms(text, allowed, _GARMENT_RE)
+        + people_extras
+        + garment_extras
         + extra_restricted_terms(text, allowed, _ARCHITECTURE_RE)
     )
     return GroundingResult(ok=not missing and not extras, missing=missing, extras=extras)
@@ -161,7 +184,9 @@ def retry_instruction(result: GroundingResult) -> str:
         "Your previous prompt drifted from the locked visual beat. "
         f"{result.summary()}. "
         "Rewrite using only the locked visual beat. "
-        "Do not add people, places, garments, architecture, props, numbers, "
+        "Visible ethnicity and clothing of a person already named in the beat "
+        "are required, not extras. "
+        "Do not add people, places, architecture, props, numbers, "
         "or names that are not in the locked beat."
     )
 

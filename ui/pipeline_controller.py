@@ -676,7 +676,10 @@ class PipelineWorker(QObject):
                     "hidream-dev": "hidream",
                     "flux2": "flux2",
                 }[model_type]
-                sampler = str(self.config.get(f"{model_key}_sampler", "euler"))
+                sampler_default = "res_multistep" if model_key == "zimage" else "euler"
+                sampler = str(self.config.get(f"{model_key}_sampler", sampler_default))
+                if model_key == "zimage" and sampler == "euler":
+                    sampler = "res_multistep"
                 scheduler_default = "simple" if model_key == "zimage" else "normal"
                 scheduler = str(self.config.get(f"{model_key}_scheduler", scheduler_default))
                 shift_default = 6.0 if model_key == "hidream" else 3.0
@@ -1683,7 +1686,7 @@ class PipelineController(QObject):
         "schnell_guidance": 0.0,
         "zimage_steps": 9,
         "zimage_guidance": 0.0,
-        "zimage_sampler": "euler",
+        "zimage_sampler": "res_multistep",
         "zimage_scheduler": "simple",
         "zimage_shift": 3.0,
         "enabled_image_models": ["schnell", "dev", "flux2"],

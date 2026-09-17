@@ -3,9 +3,10 @@ style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
 system_instruction: 'Write a fluent FLUX.1 Dev prompt for the locked visual beat only.
-  One decisive moment. Describe named subjects, actions, and places; do not invent
-  wardrobe, crowds, devices, or architecture. No verbatim beat copy, no aspect ratio,
-  no lighting-tag lists. One English paragraph.'
+  One decisive moment. Describe named subjects, actions, and places. If a nationality
+  is named, state visible appearance of that person. If motion has a direction, state
+  body orientation. Do not invent extra people, crowds, devices, or architecture. No
+  verbatim beat copy, no aspect ratio, no lighting-tag lists. One English paragraph.'
 requirements:
 - Depict only the locked visual beat.
 - Do not default to a portrait when the beat is not a portrait.

@@ -10,6 +10,7 @@ import yaml
 from prompts.prompt_builder import join_prompt_parts
 from prompts.prompt_grounding import check_prompt, retry_instruction
 from prompts.response_sanitizer import sanitize_generated_prompt
+from prompts.visual_identity import apply_visual_identity
 from prompts.visual_beats import (
     VisualBeat,
     extract_structured_beats,
@@ -47,15 +48,24 @@ LOCKED_BEAT_INSTRUCTION = (
     "LOCKED VISUAL BEAT:\n"
     "The locked visual beat is the only image content. Depict its subject, action, "
     "setting, and objects. If a field is empty, it is absent from the image.\n\n"
-    "Do not add people, crowds, faces, furniture, buildings, garments, devices, "
-    "text, flags, or places that are not in the locked visual beat. If the beat "
-    "has no person, the image has no person.\n\n"
+    "Do not add people, crowds, extra faces, unnamed buildings, devices, text, "
+    "flags, or places that are not in the locked visual beat. If the beat has "
+    "no person, the image has no person and no clothing.\n\n"
+    "If the beat names a nationality, ethnicity, or country of origin, describe "
+    "the visible face and complexion of that named person. Do not leave identity "
+    "as a caption such as 'from the UAE'. Clothing of a named person should match "
+    "that country and role; this depicts the named subject, not a new person.\n\n"
+    "If the beat names a direction of travel, write camera-readable blocking: "
+    "where the body faces, and whether the person is receding, approaching, or "
+    "crossing. Toward an exit means moving to a doorway, not walking into the room.\n\n"
     "Do not copy the beat sentence verbatim and do not wrap it in quality tags "
     "or photographic keyword lists. Write one English photograph prompt using "
-    "camera distance, light, and materials of named things only.\n\n"
+    "camera distance, light, and materials of named things only. Do not add "
+    "haze, fog, bloom, bokeh, volumetric light, or soft focus unless the beat "
+    "names weather.\n\n"
     "Do not mention aspect ratio, resolution, seed, sampler, or step count. A "
-    "short model style prefix is added later, so start with the scene rather than "
-    "a style slogan. Output one English paragraph."
+    "short model style phrase is appended after the scene. Start with the "
+    "subject, not a style slogan. Output one English paragraph."
 )
 
 PROJECT_PROFILE_WRAPPER = (
@@ -93,8 +103,10 @@ def build_prompt_user_payload(scene: Dict[str, Any], beat: VisualBeat) -> Dict[s
         ),
         "writing_rules": (
             "Write one English photograph prompt of the locked beat. "
-            "Do not quote it verbatim. Do not mention aspect ratio or generation "
-            "parameters. Return JSON with a single 'prompt' string."
+            "If a nationality is named, state visible appearance of that person. "
+            "If motion has a direction, state body orientation and destination. "
+            "Do not quote the beat verbatim. Do not mention aspect ratio or "
+            "generation parameters. Return JSON with a single 'prompt' string."
         ),
     }
 
@@ -263,7 +275,7 @@ class ModelPromptService:
             prompt = self._chat_prompt(system_instruction, user_payload)
             result = check_prompt(prompt, beat, profile_text=profile_text)
             if prompt and result.ok:
-                return join_prompt_parts(style_anchor, prompt), "generated", ""
+                return self._finalize_prompt(prompt, beat, style_anchor), "generated", ""
             logger.info("Prompt failed grounding (%s); retrying once", result.summary())
             retry_payload = json.dumps({
                 **build_prompt_user_payload(scene, beat),
@@ -273,7 +285,7 @@ class ModelPromptService:
             retry_prompt = self._chat_prompt(system_instruction, retry_payload)
             retry_result = check_prompt(retry_prompt, beat, profile_text=profile_text)
             if retry_prompt and retry_result.ok:
-                return join_prompt_parts(style_anchor, retry_prompt), "generated", ""
+                return self._finalize_prompt(retry_prompt, beat, style_anchor), "generated", ""
             error = (
                 retry_result.summary() if retry_prompt else result.summary()
             ) or "empty retry"
@@ -289,17 +301,24 @@ class ModelPromptService:
         profile: Dict[str, Any],
         beat: VisualBeat,
     ) -> str:
-        """Fallback when Qwen is unavailable: style prefix plus a staged beat.
+        """Fallback when Qwen is unavailable: staged beat, then a short style phrase.
 
         Do not append aspect ratio or a second cinematic keyword list. Canvas
         size is already set in application settings.
         """
-        return join_prompt_parts(
+        return self._finalize_prompt(
+            self._staged_beat_text(scene, beat),
+            beat,
             visual_style_prompt_anchor(
                 self.visual_style_key, str(profile.get("model_key", ""))
             ),
-            self._staged_beat_text(scene, beat),
         )
+
+    @staticmethod
+    def _finalize_prompt(prompt: str, beat: VisualBeat, style_anchor: str) -> str:
+        """Scene and visible identity first; style slogan last."""
+        scene = apply_visual_identity(prompt, beat.beat)
+        return join_prompt_parts(scene, style_anchor)
 
     @staticmethod
     def _staged_beat_text(scene: Dict[str, Any], beat: VisualBeat) -> str:

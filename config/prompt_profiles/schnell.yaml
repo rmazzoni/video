@@ -4,8 +4,10 @@ aspect_ratio: '16:9'
 max_prompts_per_scene: 3
 system_instruction: 'Write a short, concrete FLUX.1 Schnell prompt for the locked
   visual beat only. One dominant action. Name only people, places, and props that
-  the beat names. Do not add clothing, architecture, devices, or crowds. One concise
-  English paragraph, no keyword piles, no aspect ratio.'
+  the beat names. If a nationality is named, state visible appearance of that person.
+  If motion has a direction, state where the body faces. Do not add extra people,
+  architecture, devices, or crowds. One concise English paragraph, no keyword piles,
+  no aspect ratio.'
 requirements:
 - Depict only the locked visual beat.
 - Keep staging simple enough for Schnell to render clearly.

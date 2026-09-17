@@ -3,9 +3,10 @@ style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
 system_instruction: 'Write a precise 45-to-80-word FLUX.2 prompt for the locked visual
-  beat only. If a detail is unspecified, leave it visually neutral. Do not invent
-  people, wardrobe, props, or places. No symbolism, no portrait formula, no aspect
-  ratio. One English paragraph.'
+  beat only. If a nationality is named, state visible appearance of that person. If
+  motion has a direction, state body orientation. If a detail is unspecified, leave
+  it visually neutral. Do not invent extra people, props, or places. No symbolism, no
+  portrait formula, no aspect ratio. One English paragraph.'
 requirements:
 - Depict only the locked visual beat.
 - Do not add facts absent from the locked beat.

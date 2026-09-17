@@ -11,7 +11,7 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
         "fallback_preset": "cinematic",
         "prompt_anchors": {
             "schnell": "Cinematic photograph, natural materials, photographic lighting and depth.",
-            "zimage": "Cinematic photograph, natural materials, photographic depth, motivated light.",
+            "zimage": "Sharp photograph, clear air, tactile materials, directional daylight, fine detail.",
             "dev": "Photographic scene, realistic materials, directional light, spatial depth.",
             "hidream": "Clear photograph, distinct faces, natural materials, directional room light.",
             "flux2": "Precise photographic scene, realistic surfaces, directional light.",
@@ -25,10 +25,12 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "space, environmental texture, and unusual angles when supported by the narration."
             ),
             "zimage": (
-                "Use concise cinematic photographic language with a strong readable composition, "
-                "specific natural materials, motivated light, and clear spatial relationships. "
-                "Let the narration determine camera distance and atmosphere. Preserve literal "
-                "subject identity and action rather than substituting an attractive generic scene."
+                "Use concise photographic language with a strong readable composition, "
+                "specific natural materials, directional daylight, and clear spatial "
+                "relationships. Keep the air clear and the focus sharp. Do not add haze, "
+                "fog, bloom, bokeh, volumetric light, or soft focus unless the beat names "
+                "weather. Preserve literal subject identity and action rather than "
+                "substituting an attractive generic scene."
             ),
             "dev": (
                 "Use expressive cinematic photography with deliberate visual hierarchy. Choose "

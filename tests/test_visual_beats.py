@@ -21,7 +21,12 @@ from prompts.model_prompt_service import (
     build_prompt_user_payload,
     wrap_project_profile,
 )
-from prompts.prompt_builder import PromptBuilder, join_prompt_parts
+from prompts.prompt_builder import (
+    PromptBuilder,
+    join_prompt_parts,
+    structure_prompt_for_model,
+)
+from prompts.visual_identity import apply_visual_identity
 from prompts.project_profiles import load_project_profiles
 from prompts.prompt_grounding import check_prompt
 from prompts.visual_beats import (
@@ -579,6 +584,34 @@ class PromptGroundingTests(unittest.TestCase):
         )
         self.assertTrue(grounded.ok, grounded.summary())
 
+    def test_allows_appearance_and_uniform_of_named_officer(self):
+        beat = VisualBeat(
+            beat=(
+                "A high-ranking officer from the United Arab Emirates strides "
+                "toward the exit of a modern glass-walled meeting room."
+            ),
+            subject="a high-ranking officer from the United Arab Emirates",
+            action="strides toward the exit",
+            setting="a modern glass-walled meeting room",
+        )
+        result = check_prompt(
+            "A high-ranking officer from the United Arab Emirates, an adult "
+            "Emirati man with Gulf Arab features and olive-brown complexion, "
+            "wears a UAE military dress uniform and strides toward the exit of "
+            "a modern glass-walled meeting room.",
+            beat,
+        )
+        self.assertTrue(result.ok, result.summary())
+        drifted = check_prompt(
+            "An Emirati officer and an aide stand in a marble atrium.",
+            beat,
+        )
+        self.assertFalse(drifted.ok)
+        self.assertTrue(
+            any(term in drifted.extras for term in ("aide", "atrium", "marble")),
+            drifted.extras,
+        )
+
 
 class PromptPayloadTests(unittest.TestCase):
     def test_prompt_schema_does_not_ask_for_visual_beat(self):
@@ -612,6 +645,9 @@ class PromptPayloadTests(unittest.TestCase):
     def test_locked_instruction_asks_for_a_staged_scene(self):
         self.assertIn("Do not copy the beat sentence verbatim", LOCKED_BEAT_INSTRUCTION)
         self.assertIn("Do not mention aspect ratio", LOCKED_BEAT_INSTRUCTION)
+        self.assertIn("visible face and complexion", LOCKED_BEAT_INSTRUCTION.lower())
+        self.assertIn("direction of travel", LOCKED_BEAT_INSTRUCTION.lower())
+        self.assertIn("haze", LOCKED_BEAT_INSTRUCTION.lower())
 
     def test_user_payload_forbids_aspect_ratio(self):
         beat = VisualBeat(beat="A fisherman walks along the pier.")
@@ -653,12 +689,36 @@ class PromptAssemblyTests(unittest.TestCase):
             {"model_key": "schnell", "style_preset": "cinematic"},
             beat,
         )
-        self.assertTrue(prompt.startswith("Cinematic photograph"))
+        self.assertIn("Cinematic photograph", prompt)
         self.assertIn("Arab leaders", prompt)
+        self.assertLess(
+            prompt.lower().index("arab leaders"),
+            prompt.lower().index("cinematic photograph"),
+        )
         self.assertNotIn("Aspect ratio", prompt)
         self.assertNotIn("volumetric light", prompt)
         self.assertNotIn("characters facing the camera", prompt)
         self.assertNotIn("..", prompt)
+
+    def test_zimage_template_uses_sharp_not_hazy_style(self):
+        profiles_dir = os.path.join(
+            os.path.dirname(__file__), "..", "config", "prompt_profiles"
+        )
+        service = ModelPromptService(profiles_dir, "qwen3:8b", "http://127.0.0.1:11434")
+        beat = VisualBeat(
+            beat="A meeting of Arab leaders in a conference room of the Gulf Cooperation Council.",
+            source="user_added",
+        )
+        prompt = service._template_prompt(
+            {"id": 1, "text": NARRATION},
+            {"model_key": "zimage", "style_preset": "cinematic"},
+            beat,
+        )
+        self.assertIn("Sharp photograph", prompt)
+        self.assertIn("clear air", prompt)
+        self.assertNotIn("photographic depth", prompt.lower())
+        self.assertNotIn("motivated light", prompt.lower())
+        self.assertNotIn("volumetric", prompt.lower())
 
     def test_system_instruction_skips_style_essay_and_complete_beats(self):
         profiles_dir = os.path.join(
@@ -794,6 +854,69 @@ class ProjectProfileYamlTests(unittest.TestCase):
         self.assertNotIn("charcoal gray suits", profiles["corporate_global"])
         self.assertIn("PROJECT PROFILE: NATURE DOCUMENTARY", profiles["nature_documentary"])
         self.assertIn("organic wilderness", profiles["nature_documentary"])
+        self.assertIn("Gulf or Arab nationality", middle_east)
+
+
+class VisualIdentityTests(unittest.TestCase):
+    UAE_PROMPT = (
+        "Cinematic photograph, natural materials, photographic depth, motivated light. "
+        "A high-ranking officer from the United Arab Emirates strides toward the exit "
+        "of a modern, glass-walled meeting room within the Gulf Cooperation Council. "
+        "The space is illuminated by natural light, reflecting off sleek surfaces and "
+        "contemporary architecture."
+    )
+
+    def test_weaves_emirati_appearance_into_uae_officer_prompt(self):
+        scene = (
+            "A high-ranking officer from the United Arab Emirates strides toward "
+            "the exit of a modern, glass-walled meeting room."
+        )
+        result = apply_visual_identity(scene)
+        self.assertIn("Emirati", result)
+        self.assertIn("Gulf Arab", result)
+        self.assertIn("olive-brown complexion", result)
+        self.assertIn("United Arab Emirates, an adult Emirati", result)
+        self.assertIn("strides toward the exit", result)
+        self.assertIn("receding from the camera", result)
+
+    def test_does_not_duplicate_identity_or_blocking(self):
+        once = apply_visual_identity(
+            "A high-ranking officer from the United Arab Emirates strides toward the exit."
+        )
+        twice = apply_visual_identity(once)
+        self.assertEqual(once.lower().count("emirati"), twice.lower().count("emirati"))
+        self.assertEqual(once.lower().count("receding"), twice.lower().count("receding"))
+
+    def test_skips_western_default_scenes(self):
+        scene = "A fisherman walks along the pier at dawn."
+        self.assertEqual(apply_visual_identity(scene), scene)
+
+
+class RenderPromptTests(unittest.TestCase):
+    def test_zimage_moves_style_to_end_and_states_identity(self):
+        prompt = VisualIdentityTests.UAE_PROMPT
+        rendered = structure_prompt_for_model(prompt, "zimage-turbo")
+        lower = rendered.lower()
+        self.assertLess(lower.index("emirati"), lower.index("sharp photograph"))
+        self.assertLess(lower.index("officer"), lower.index("sharp photograph"))
+        self.assertIn("receding from the camera", lower)
+        self.assertIn("no extra people", lower)
+        self.assertIn("no watermark", lower)
+        self.assertIn("sharp focus", lower)
+        self.assertIn("clear air", lower)
+        self.assertNotIn("photographic depth", lower)
+        self.assertNotIn("motivated light", lower)
+        again = structure_prompt_for_model(rendered, "zimage-turbo")
+        self.assertEqual(again.lower().count("emirati"), rendered.lower().count("emirati"))
+        self.assertEqual(again.lower().count("no extra people"), 1)
+        self.assertEqual(again.lower().count("sharp photograph"), 1)
+
+    def test_schnell_gets_identity_without_turbo_constraints(self):
+        prompt = VisualIdentityTests.UAE_PROMPT
+        rendered = structure_prompt_for_model(prompt, "flux-schnell")
+        self.assertIn("Emirati", rendered)
+        self.assertNotIn("No extra people, no text, no watermark, no logos.", rendered)
+        self.assertNotIn("Sharp focus, clear air, crisp detail.", rendered)
 
 
 if __name__ == "__main__":

@@ -2,10 +2,14 @@ display_name: Z-Image Turbo
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'Write a compact, literal Z-Image Turbo prompt for the locked
-  visual beat only. 35 to 70 words. State who does what and where only if the beat
-  names them. Do not add people, clothing, devices, or places. No keyword piles,
-  quality tags, or generation parameters.'
+system_instruction: 'Write an 80-to-160-word Z-Image Turbo prompt for the locked visual
+  beat only. Order: shot and subject, visible appearance if a nationality is named,
+  clothing of that named person, camera-readable action and blocking, setting, directional
+  daylight. Keep the air clear and the focus sharp. Do not add haze, fog, bloom, bokeh,
+  volumetric light, or soft focus unless the beat names weather. Z-Image ignores negative
+  prompts, so put exclusions in this paragraph: no extra people, no text, no watermark.
+  Do not add people or places the beat does not name. No keyword piles or generation
+  parameters.'
 requirements:
 - Depict only the locked visual beat.
 - Keep one dominant action.

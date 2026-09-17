@@ -443,7 +443,8 @@ class MainWindow(QMainWindow):
         self.comfy_guidance_input.setSingleStep(0.25)
         self.comfy_sampler_input = QComboBox()
         self.comfy_sampler_input.addItems([
-            "euler", "lcm", "dpmpp_2m", "dpmpp_2m_sde", "heun", "uni_pc"
+            "euler", "res_multistep", "dpmpp_sde", "euler_ancestral",
+            "lcm", "dpmpp_2m", "dpmpp_2m_sde", "heun", "uni_pc",
         ])
         self.comfy_scheduler_input = QComboBox()
         self.comfy_scheduler_input.addItems([
@@ -582,7 +583,7 @@ class MainWindow(QMainWindow):
             self.comfy_guidance_input.setValue(
                 float(config.get(f"{model_key}_guidance", default_guidance))
             )
-            sampler_default = "euler"
+            sampler_default = "res_multistep" if model_key == "zimage" else "euler"
             scheduler_default = "simple" if model_key == "zimage" else "normal"
             shift_default = 6.0 if model_key == "hidream" else 3.0
             self.comfy_sampler_input.setCurrentText(
@@ -1304,9 +1305,13 @@ class MainWindow(QMainWindow):
         self.flux2_guidance_input.setToolTip("Guidance scale for FLUX.2 final image variants")
 
         self.image_resolution_input = QComboBox()
-        self.image_resolution_input.addItem("1024 × 576  (16:9 — fits 16 GiB GPU)", (1024, 576))
-        self.image_resolution_input.addItem("1344 × 768  (16:9 — requires 24 GiB GPU)", (1344, 768))
-        self.image_resolution_input.setToolTip("Output image resolution for FLUX / SDXL")
+        self.image_resolution_input.addItem("1024 × 576  (16:9 draft — looks soft)", (1024, 576))
+        self.image_resolution_input.addItem("1280 × 720  (16:9)", (1280, 720))
+        self.image_resolution_input.addItem("1344 × 768  (16:9 recommended)", (1344, 768))
+        self.image_resolution_input.setToolTip(
+            "Output image size. Z-Image Turbo is sharp at 1280×720 and above; "
+            "1024×576 is a low-detail draft. 1344×768 is the usual 16:9 canvas."
+        )
 
         self.num_frames_input = QSpinBox()
         self.num_frames_input.setRange(1, 120)
@@ -6936,7 +6941,7 @@ class MainWindow(QMainWindow):
             "flux2_guidance": self.flux2_guidance_input.value(),
             "zimage_steps": int(self.controller.config.get("zimage_steps", 9)),
             "zimage_guidance": float(self.controller.config.get("zimage_guidance", 0.0)),
-            "zimage_sampler": str(self.controller.config.get("zimage_sampler", "euler")),
+            "zimage_sampler": str(self.controller.config.get("zimage_sampler", "res_multistep")),
             "zimage_scheduler": str(self.controller.config.get("zimage_scheduler", "simple")),
             "zimage_shift": float(self.controller.config.get("zimage_shift", 3.0)),
             "hidream_steps": int(self.controller.config.get("hidream_steps", 28)),

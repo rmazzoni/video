@@ -16,8 +16,11 @@ DEFAULT_PROJECT_PROFILES: Dict[str, str] = {
     "middle_east_modern": (
         "PROJECT PROFILE: MODERN MIDDLE EAST\n"
         "Fill only unspecified clothing or place. Never add people, crowds, flags, or events.\n"
+        "- Appearance, if the beat names a Gulf or Arab nationality: show that ethnicity. "
+        "Do not default to a European face.\n"
         "- Clothing, only if the beat already has a person and names no garments: contemporary "
-        "role-appropriate wear. No thobe, ghutra, shemagh, agal, abaya, or headscarf unless the beat names them.\n"
+        "role-appropriate wear for that named country and role. No thobe, ghutra, shemagh, agal, "
+        "abaya, or headscarf unless the beat names them.\n"
         "- Place, only if unnamed: maintained contemporary concrete, glass, or steel. Not ancient, rustic, or ruined."
     ),
     "corporate_global": (

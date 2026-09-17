@@ -1,7 +1,8 @@
 middle_east_modern: |-
   PROJECT PROFILE: MODERN MIDDLE EAST
   Fill only unspecified clothing or place. Never add people, crowds, flags, or events.
-  - Clothing, only if the beat already has a person and names no garments: contemporary role-appropriate wear. No thobe, ghutra, shemagh, agal, abaya, or headscarf unless the beat names them.
+  - Appearance, if the beat names a Gulf or Arab nationality: show that ethnicity. Do not default to a European face.
+  - Clothing, only if the beat already has a person and names no garments: contemporary role-appropriate wear for that named country and role. No thobe, ghutra, shemagh, agal, abaya, or headscarf unless the beat names them.
   - Place, only if unnamed: maintained contemporary concrete, glass, or steel. Not ancient, rustic, or ruined.
 
 corporate_global: |-

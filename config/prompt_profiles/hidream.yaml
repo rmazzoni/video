@@ -5,7 +5,9 @@ max_prompts_per_scene: 3
 system_instruction: 'Write one fluent HiDream-I1 Dev paragraph for the locked visual
   beat only. Clear air, one lighting direction, no volumetric haze, no 35mm-lens
   cliches, no aspect ratio. Name furniture or rooms only if the beat names them.
-  Do not add people, wardrobe, or crowds. Do not repeat color adjectives.'
+  If a nationality is named, state visible appearance of that person. If motion has
+  a direction, state body orientation. Do not add extra people or crowds. Do not
+  repeat color adjectives.'
 requirements:
 - Depict only the locked visual beat.
 - Avoid haze and repeated palette words.
