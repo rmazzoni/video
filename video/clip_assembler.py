@@ -1,7 +1,52 @@
 import os
 import subprocess
 import tempfile
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional, Tuple
+
+_PREVIEW_MODELS = ("schnell", "zimage", "dev", "hidream", "flux2")
+
+
+def scene_id_from_name(filename: str) -> int:
+    try:
+        return int(os.path.splitext(filename)[0].split("_")[1])
+    except Exception:
+        return 0
+
+
+def clip_sort_key(fname: str) -> tuple:
+    """
+    Order: scene, beat, model (schnell then zimage then others), variant.
+
+    Supports scene_001.mp4, scene_001_v00.mp4, and
+    scene_001_schnell_b02_v2.mp4.
+    """
+    name = os.path.splitext(os.path.basename(fname))[0]
+    parts = name.split("_")
+    try:
+        sid = int(parts[1])
+    except (IndexError, ValueError):
+        sid = 0
+    beat = 0
+    model_rank = 0
+    variant = 0
+    if len(parts) >= 4 and parts[2].lower() in _PREVIEW_MODELS:
+        model_rank = _PREVIEW_MODELS.index(parts[2].lower())
+        if parts[3].lower().startswith("b"):
+            try:
+                beat = int(parts[3][1:])
+            except ValueError:
+                beat = 0
+        if len(parts) > 4 and parts[4].lower().startswith("v"):
+            try:
+                variant = int(parts[4][1:])
+            except ValueError:
+                variant = 0
+    elif len(parts) > 2 and parts[2].lower().startswith("v"):
+        try:
+            variant = int(parts[2][1:])
+        except ValueError:
+            variant = 0
+    return (sid, beat, model_rank, variant)
 
 
 class ClipAssembler:
@@ -21,8 +66,9 @@ class ClipAssembler:
                  scene_timings: Optional[Dict] = None) -> str:
         """
         Concatenates all MP4 clips in a directory into a single video.
-        If scene_timings is provided ({scene_id: duration_seconds}), each clip
-        is padded with a freeze of its last frame to match that duration.
+        If scene_timings is provided ({scene_id: duration_seconds}), each
+        scene's clips together match that duration (the last clip of the
+        scene is freeze-padded for rounding).
         :param on_progress: optional callback(percent_0_100, 100) called
                             periodically while FFmpeg encodes the concatenated video.
         Returns the output file path.
@@ -34,23 +80,34 @@ class ClipAssembler:
         total = len(clip_files)
         print(f"Assembling {total} clips via FFmpeg concat…")
 
-        # Pad clips to match dubbed audio duration when timings are available
+        # Pad so each *scene* matches its dubbed audio duration. Multiple
+        # clips for one scene already share that duration; only the last
+        # clip of the group is freeze-padded for rounding.
         padded_files = []
         temp_files = []
-        for path in clip_files:
-            try:
-                scene_id = int(os.path.basename(path).split("_")[1].split(".")[0])
-            except Exception:
-                scene_id = None
-
-            target = (scene_timings or {}).get(scene_id) or (scene_timings or {}).get(str(scene_id))
-            if target:
-                padded = self._pad_clip(path, float(target))
-                if padded != path:
+        for sid, group in _clips_grouped_by_scene(clip_files):
+            target = None
+            if scene_timings and sid is not None:
+                target = scene_timings.get(sid) or scene_timings.get(str(sid))
+            if not target:
+                padded_files.extend(group)
+                continue
+            target = float(target)
+            if len(group) == 1:
+                padded = self._pad_clip(group[0], target)
+                if padded != group[0]:
                     temp_files.append(padded)
                 padded_files.append(padded)
-            else:
+                continue
+            used = 0.0
+            for path in group[:-1]:
+                used += self._clip_duration(path)
                 padded_files.append(path)
+            last_target = max(0.05, target - used)
+            padded = self._pad_clip(group[-1], last_target)
+            if padded != group[-1]:
+                temp_files.append(padded)
+            padded_files.append(padded)
 
         # Write FFmpeg concat list file
         with tempfile.NamedTemporaryFile(
@@ -143,20 +200,24 @@ class ClipAssembler:
             raise RuntimeError("FFmpeg failed:\n" + "\n".join(tail_lines[-100:]))
         on_progress(100, 100)
 
+    def _clip_duration(self, clip_path: str) -> float:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", clip_path],
+            capture_output=True, text=True,
+        )
+        try:
+            return float(probe.stdout.strip())
+        except ValueError:
+            return 0.0
+
     def _pad_clip(self, clip_path: str, target_duration: float) -> str:
         """
         Freeze-pad the clip's last frame so its duration equals target_duration.
         Returns the original path if no padding is needed, or a temp file path.
         """
-        # Get clip duration via ffprobe
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", clip_path],
-            capture_output=True, text=True
-        )
-        try:
-            clip_dur = float(probe.stdout.strip())
-        except ValueError:
+        clip_dur = self._clip_duration(clip_path)
+        if clip_dur <= 0:
             return clip_path
 
         pad = round(target_duration - clip_dur, 3)
@@ -182,24 +243,21 @@ class ClipAssembler:
             if f.lower().endswith(".mp4") and f.startswith("scene_")
         ]
 
-        def _sort_key(fname: str) -> tuple:
-            # Strip extension first so 'scene_001.mp4' and 'scene_001_v00.mp4'
-            # both parse correctly.
-            name = os.path.splitext(fname)[0]   # e.g. 'scene_001_v00'
-            parts = name.split("_")             # ['scene', '001', 'v00']
-            try:
-                sid = int(parts[1])
-            except (IndexError, ValueError):
-                sid = 0
-            vidx = 0
-            if len(parts) > 2:
-                v_part = parts[2]
-                if v_part.startswith("v"):
-                    try:
-                        vidx = int(v_part[1:])
-                    except ValueError:
-                        pass
-            return (sid, vidx)
-
-        files.sort(key=_sort_key)
+        files.sort(key=clip_sort_key)
         return [os.path.join(clips_dir, f) for f in files]
+
+
+def _clips_grouped_by_scene(clip_files: List[str]) -> List[Tuple[int, List[str]]]:
+    groups: List[Tuple[int, List[str]]] = []
+    current_sid: Optional[int] = None
+    current: List[str] = []
+    for path in clip_files:
+        sid = scene_id_from_name(os.path.basename(path))
+        if current_sid is not None and sid != current_sid:
+            groups.append((current_sid, current))
+            current = []
+        current_sid = sid
+        current.append(path)
+    if current:
+        groups.append((current_sid if current_sid is not None else 0, current))
+    return groups

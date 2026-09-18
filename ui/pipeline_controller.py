@@ -14,6 +14,60 @@ from utilis.logger import Logger
 from utilis.project_paths import ProjectLayout
 
 
+def preview_v2_filename(scene_id: int, model_key: str, beat_idx: int) -> str:
+    return f"scene_{int(scene_id):03d}_{model_key}_b{int(beat_idx):02d}_v2.png"
+
+
+def copy_preview_to_lightbox(
+    preview_dir: str,
+    lightbox_dir: str,
+    scene_id: int,
+    model_key: str,
+    beat_idx: int,
+) -> bool:
+    """Copy a Preview Images v2 still into the matching Lightbox slot."""
+    name = preview_v2_filename(scene_id, model_key, beat_idx)
+    src = os.path.join(preview_dir, name)
+    if not os.path.isfile(src):
+        return False
+    os.makedirs(lightbox_dir, exist_ok=True)
+    shutil.copy2(src, os.path.join(lightbox_dir, name))
+    return True
+
+
+def recover_preview_still(
+    preview_dir: str,
+    lightbox_dir: str,
+    scene_id: int,
+    model_key: str,
+    beat_idx: int,
+    extra_dirs: Optional[List[str]] = None,
+) -> bool:
+    """
+    If preview_images is missing a v2 still but Lightbox (or a leftover
+    folder) already has it, copy it back and treat it as already generated.
+    """
+    name = preview_v2_filename(scene_id, model_key, beat_idx)
+    dest = os.path.join(preview_dir, name)
+    if os.path.isfile(dest):
+        return True
+    candidates = [os.path.join(lightbox_dir, name)]
+    for folder in extra_dirs or []:
+        candidates.append(os.path.join(folder, name))
+    if str(model_key) == "schnell" and int(beat_idx) == 1:
+        legacy = f"scene_{int(scene_id):03d}.png"
+        candidates.append(os.path.join(preview_dir, legacy))
+        candidates.append(os.path.join(lightbox_dir, legacy))
+        for folder in extra_dirs or []:
+            candidates.append(os.path.join(folder, legacy))
+    for src in candidates:
+        if os.path.isfile(src):
+            os.makedirs(preview_dir, exist_ok=True)
+            shutil.copy2(src, dest)
+            return True
+    return False
+
+
 class PipelineWorker(QObject):
     progress = pyqtSignal(int, str)
     log = pyqtSignal(str)
@@ -89,6 +143,59 @@ class PipelineWorker(QObject):
         for ext in ("png", "jpg", "jpeg"):
             candidates.extend(glob.glob(os.path.join(images_dir, f"scene_*.{ext}")))
         return sorted(candidates, key=PipelineWorker._extract_scene_id)
+
+    @staticmethod
+    def _preview_still_parts(path: str) -> Tuple[int, str, int]:
+        """Return (scene_id, model_key, beat_index) from a preview still name."""
+        name = os.path.splitext(os.path.basename(path))[0]
+        parts = name.split("_")
+        try:
+            sid = int(parts[1])
+        except (IndexError, ValueError):
+            sid = 0
+        model = ""
+        beat = 1
+        if len(parts) >= 4 and parts[3].lower().startswith("b"):
+            model = parts[2].lower()
+            try:
+                beat = int(parts[3][1:])
+            except ValueError:
+                beat = 1
+        return sid, model, beat
+
+    @staticmethod
+    def _clip_suffix_from_still(path: str) -> str:
+        _sid, model, beat = PipelineWorker._preview_still_parts(path)
+        if model:
+            return f"_{model}_b{beat:02d}_v2"
+        return ""
+
+    @staticmethod
+    def _preview_still_candidates(images_dir: str) -> List[str]:
+        """One still per Schnell/Z-Image beat; skip leftover scene_NNN.png when named files exist."""
+        named: List[str] = []
+        legacy: List[str] = []
+        named_sids = set()
+        for ext in ("png", "jpg", "jpeg"):
+            for path in glob.glob(os.path.join(images_dir, f"scene_*.{ext}")):
+                sid, model, _beat = PipelineWorker._preview_still_parts(path)
+                if model in ("schnell", "zimage"):
+                    named.append(path)
+                    named_sids.add(sid)
+                elif not model:
+                    legacy.append(path)
+
+        extras = [
+            path for path in legacy
+            if PipelineWorker._extract_scene_id(path) not in named_sids
+        ]
+
+        def _key(path: str):
+            sid, model, beat = PipelineWorker._preview_still_parts(path)
+            rank = 0 if model == "schnell" else 1 if model == "zimage" else 2
+            return (sid, beat, rank, model)
+
+        return sorted(named + extras, key=_key)
 
     def _make_prompt_service(self):
         from prompts.beat_feedback import extract_guidance_text, load_beat_feedback
@@ -763,9 +870,41 @@ class PipelineWorker(QObject):
             # â”€â”€ Helper: generate clips from an image dir into a clip dir â”€â”€â”€â”€â”€â”€
             def _run_clips(src_images_dir: str, out_clips_dir: str, timings: dict):
                 os.makedirs(out_clips_dir, exist_ok=True)
-                image_paths = self._scene_image_candidates(src_images_dir)
+                image_paths = self._preview_still_candidates(src_images_dir)
                 if not image_paths:
                     raise FileNotFoundError(f"No scene images found in {src_images_dir}.")
+
+                # Drop leftover one-clip-per-scene files so they are not muxed
+                # alongside the new per-beat clips.
+                for fname in list(os.listdir(out_clips_dir)):
+                    stem = os.path.splitext(fname)[0]
+                    parts = stem.split("_")
+                    if (
+                        fname.lower().endswith(".mp4")
+                        and len(parts) == 2
+                        and parts[0] == "scene"
+                        and parts[1].isdigit()
+                    ):
+                        try:
+                            os.remove(os.path.join(out_clips_dir, fname))
+                        except Exception:
+                            pass
+
+                by_scene: Dict[int, List[str]] = {}
+                for img_path in image_paths:
+                    sid = self._extract_scene_id(img_path)
+                    by_scene.setdefault(sid, []).append(img_path)
+                all_work: List[Tuple[int, str, str, float]] = []
+                default_dur = float(self.config.get("ken_burns_duration", 5.0))
+                for sid in sorted(by_scene):
+                    imgs = by_scene[sid]
+                    n = len(imgs)
+                    total_dur = float(timings[sid]) if sid in timings else 0.0
+                    per_clip = (total_dur / n) if total_dur > 0 else default_dur
+                    for img_path in imgs:
+                        all_work.append(
+                            (sid, img_path, self._clip_suffix_from_still(img_path), per_clip)
+                        )
 
                 clip_engine = str(self.config.get("clip_engine", "ken_burns")).strip().lower()
 
@@ -775,18 +914,15 @@ class PipelineWorker(QObject):
                         motion_cache_key,
                         pan_direction,
                     )
-                    default_dur = float(self.config.get("ken_burns_duration", 5.0))
                     current_motion = str(self.config.get("ken_burns_motion", "static"))
                     current_fps    = 24  # Ken Burns always renders at 24fps for smooth motion
 
-                    # ── Parameter sidecar ────────────────────────────────────
-                    # Store the generation params used last time so that a
-                    # settings change (e.g. auto→static) or crop-math bump
-                    # forces a full re-render even when source images are unchanged.
                     cur_params = motion_cache_key(current_motion, current_fps)
+                    cur_params["clip_layout"] = "per_preview_still"
                     params_changed = self._ken_burns_params_changed(out_clips_dir, cur_params)
                     self.log.emit(
                         f"Ken Burns clip engine — motion_style={current_motion!r}  fps={current_fps}"
+                        f"  {len(all_work)} still(s)"
                         + ("  ⚠ params changed, all clips will be regenerated" if params_changed else "")
                     )
 
@@ -797,32 +933,36 @@ class PipelineWorker(QObject):
                         seed=int(self.config.get("seed", 42)),
                         motion_style=current_motion,
                     )
-                    total = len(image_paths)
+                    total = len(all_work)
                     failed_kb: list = []
-                    for idx, img_path in enumerate(image_paths, 1):
+                    for idx, (sid, img_path, clip_suffix, per_clip) in enumerate(all_work, 1):
                         self._check_cancel()
-                        sid = self._extract_scene_id(img_path)
-                        existing = os.path.join(out_clips_dir, f"scene_{sid:03d}.mp4")
+                        existing = os.path.join(out_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
                         up_to_date = (
                             os.path.exists(existing)
                             and os.path.getmtime(existing) >= os.path.getmtime(img_path)
                             and not params_changed
                         )
+                        label = f"{sid}{clip_suffix}" if clip_suffix else str(sid)
                         if up_to_date:
-                            self.log.emit(f"Skipping clip {sid} (already exists and up to date).")
+                            self.log.emit(f"Skipping clip {label} (already exists and up to date).")
                         else:
-                            target_dur = float(timings[sid]) if sid in timings else default_dur
-                            gen_kb.duration = target_dur
+                            gen_kb.duration = per_clip
                             self.log.emit(
-                                f"Scene {sid}: Ken Burns clip [{current_motion}"
+                                f"Scene {label}: Ken Burns clip [{current_motion}"
                                 f"{'' if current_motion == 'static' else ', pan ' + pan_direction(idx - 1)}"
-                                f"], duration={target_dur:.1f}s"
+                                f"], duration={per_clip:.1f}s"
                             )
                             try:
-                                gen_kb.generate_clip(img_path, sid, motion_index=idx - 1)
+                                gen_kb.generate_clip(
+                                    img_path,
+                                    sid,
+                                    filename_suffix=clip_suffix,
+                                    motion_index=idx - 1,
+                                )
                             except Exception as _clip_err:
-                                self.log.emit(f"WARNING: clip {sid} failed — {_clip_err}")
-                                failed_kb.append(sid)
+                                self.log.emit(f"WARNING: clip {label} failed — {_clip_err}")
+                                failed_kb.append(label)
                         step = 10 + int((idx / total) * 80)
                         self._emit_progress(step, f"Clip {idx}/{total}")
                     if failed_kb:
@@ -846,29 +986,28 @@ class PipelineWorker(QObject):
                         with open(overrides_path, "r", encoding="utf-8") as fh:
                             scene_overrides = yaml.safe_load(fh) or {}
 
-                    total = len(image_paths)
+                    total = len(all_work)
                     failed: list = []
-                    for idx, img_path in enumerate(image_paths, 1):
+                    for idx, (sid, img_path, clip_suffix, per_clip) in enumerate(all_work, 1):
                         self._check_cancel()
-                        sid = self._extract_scene_id(img_path)
-                        existing = os.path.join(out_clips_dir, f"scene_{sid:03d}.mp4")
+                        existing = os.path.join(out_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
+                        label = f"{sid}{clip_suffix}" if clip_suffix else str(sid)
                         if os.path.exists(existing) and os.path.getmtime(existing) >= os.path.getmtime(img_path):
-                            self.log.emit(f"Skipping clip {sid} (already exists and up to date.).")
+                            self.log.emit(f"Skipping clip {label} (already exists and up to date).")
                         else:
-                            target_dur = float(timings[sid]) if sid in timings else None
-                            if target_dur:
-                                self.log.emit(f"Scene {sid}: target duration = {target_dur:.1f}s")
+                            self.log.emit(f"Scene {label}: target duration = {per_clip:.1f}s")
                             ov = scene_overrides.get(sid, scene_overrides.get(str(sid), {}))
                             try:
                                 gen.generate_clip(
                                     img_path, sid,
                                     motion_bucket_id=ov.get("motion_bucket_id") if ov else None,
                                     noise_aug_strength=ov.get("noise_aug_strength") if ov else None,
-                                    target_duration=target_dur,
+                                    target_duration=per_clip,
+                                    filename_suffix=clip_suffix,
                                 )
                             except Exception as _clip_err:
-                                self.log.emit(f"WARNING: clip {sid} failed — {_clip_err}")
-                                failed.append(sid)
+                                self.log.emit(f"WARNING: clip {label} failed — {_clip_err}")
+                                failed.append(label)
                         step = 10 + int((idx / total) * 80)
                         self._emit_progress(step, f"Clip {idx}/{total}")
                     if failed:
@@ -1143,6 +1282,10 @@ class PipelineWorker(QObject):
                 target_beat = int(self.config.get("preview_beat_index", 0))
                 target_model = str(self.config.get("preview_model_key", "")).strip().lower()
                 force_target_update = bool(self.config.get("force_preview_update", False))
+                # Full-stage runs must never wipe existing stills. Force-replace
+                # is only for a targeted Redo from the preview zoom dialog.
+                if force_target_update and not (target_scene or target_beat):
+                    force_target_update = False
                 if target_model:
                     preview_models = [item for item in preview_models if item[1] == target_model]
                 if not preview_models:
@@ -1150,93 +1293,18 @@ class PipelineWorker(QObject):
                         "Enable Schnell or Z-Image Turbo in Prompts > Configure Models."
                     )
 
-                from prompts.visual_beats import (
-                    beats_as_dicts,
-                    coerce_beat_index,
-                    ensure_prompt_rows_for_beats,
-                    find_prompt_row,
-                    normalize_stored_beats,
-                    prompt_row_can_render,
-                    upsert_prompt_row,
-                )
+                from prompts.visual_beats import coerce_beat_index
 
-                missing_prompt_models = []
-                for scene in scenes:
-                    sid = int(scene["id"])
-                    scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
-                    visual_beats = normalize_stored_beats(
-                        scene_entry.get("visual_beats", [])
-                        if isinstance(scene_entry, dict) else []
-                    )
-                    models = scene_entry.get("models", {}) if isinstance(scene_entry, dict) else {}
-                    for _model_type, model_key in preview_models:
-                        model_entry = models.get(model_key, {})
-                        rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
-                        beat_count = len(visual_beats) or 1
-                        missing = False
-                        for beat_index in range(1, beat_count + 1):
-                            row = find_prompt_row(rows, beat_index)
-                            if not prompt_row_can_render(row):
-                                missing = True
-                                break
-                        if missing:
-                            missing_prompt_models.append((scene, model_key))
-
-                if missing_prompt_models:
-                    service = self._make_prompt_service()
-                    for scene, model_key in missing_prompt_models:
-                        self._check_cancel()
-                        sid = int(scene["id"])
-                        scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
-                        visual_beats = normalize_stored_beats(
-                            scene_entry.get("visual_beats", [])
-                            if isinstance(scene_entry, dict) else []
-                        )
-                        if not visual_beats:
-                            visual_beats = service.extract_structured_beats(scene)
-                        models = dict(scene_entry.get("models", {})) if isinstance(scene_entry, dict) else {}
-                        existing = models.get(model_key, {}) if isinstance(models.get(model_key), dict) else {}
-                        existing_rows = existing.get("prompts", []) if isinstance(existing, dict) else []
-                        rows = ensure_prompt_rows_for_beats(
-                            existing_rows, visual_beats, sid, model_key
-                        )
-                        generated_any = False
-                        for beat_index, beat in enumerate(visual_beats, 1):
-                            row = find_prompt_row(rows, beat_index)
-                            if prompt_row_can_render(row):
-                                continue
-                            rows = upsert_prompt_row(
-                                rows,
-                                service.prompt_row_for_beat(scene, model_key, beat, beat_index),
-                            )
-                            generated_any = True
-                        profile = service.load_profile(model_key)
-                        models[model_key] = {
-                            "profile": existing.get("profile", f"{model_key}.yaml"),
-                            "prompts": rows,
-                            "max_prompts_per_scene": int(
-                                existing.get("max_prompts_per_scene")
-                                or profile.get("max_prompts_per_scene", 3)
-                            ),
-                        }
-                        model_prompts[sid] = {
-                            "scene_id": sid,
-                            "visual_beats": beats_as_dicts(visual_beats),
-                            "visual_beats_source": str(
-                                scene_entry.get("visual_beats_source", scene.get("text", ""))
-                                if isinstance(scene_entry, dict) else scene.get("text", "")
-                            ),
-                            "models": models,
-                        }
-                        model_prompts.pop(str(sid), None)
-                        if generated_any:
-                            self.log.emit(
-                                f"Scene {sid} [{model_key}]: generated missing preview prompts."
-                            )
-                    with open(model_prompts_path, "w", encoding="utf-8") as fh:
-                        yaml.safe_dump(model_prompts, fh, allow_unicode=True, sort_keys=False)
-
+                # Do not re-extract beats or rewrite prompts here. That used to
+                # invent extra beats on scenes with an empty visual_beats list
+                # and then regenerate stills that already existed.
                 preview_work = []
+                skipped_existing = 0
+                leftover_preview_dirs = [
+                    os.path.join(layout.output, name)
+                    for name in ("draft_video", "draft")
+                    if os.path.isdir(os.path.join(layout.output, name))
+                ]
                 for model_type, model_key in preview_models:
                     for scene in scenes:
                         sid = int(scene["id"])
@@ -1248,53 +1316,37 @@ class PipelineWorker(QObject):
                                 continue
                             output_path = os.path.join(
                                 draft_dir,
-                                f"scene_{sid:03d}_{model_key}_b{beat_idx:02d}_v2.png",
+                                preview_v2_filename(sid, model_key, beat_idx),
                             )
                             if force_target_update and os.path.exists(output_path):
                                 os.remove(output_path)
-                            legacy_path = os.path.join(draft_dir, f"scene_{sid:03d}.png")
-                            if (model_key == "schnell" and beat_idx == 1
-                                    and not os.path.exists(output_path)
-                                    and os.path.exists(legacy_path)):
-                                shutil.copy2(legacy_path, output_path)
-                                self.log.emit(f"Scene {sid} beat 1: migrated legacy preview image.")
+                            if not force_target_update and recover_preview_still(
+                                draft_dir,
+                                lightbox_dir,
+                                sid,
+                                model_key,
+                                beat_idx,
+                                extra_dirs=leftover_preview_dirs,
+                            ):
+                                skipped_existing += 1
+                                continue
                             if not os.path.exists(output_path):
                                 preview_work.append((
                                     model_type, model_key, sid, beat_idx,
                                     str(row["text"]).strip(),
                                 ))
 
+                if skipped_existing:
+                    self.log.emit(
+                        f"Skipping {skipped_existing} preview still(s) already on disk "
+                        f"(preview_images or Lightbox v2)."
+                    )
                 if not preview_work:
-                    self.log.emit("All preview images already exist â€” skipping.")
+                    self.log.emit("All preview images already exist — skipping generation.")
                     self._emit_progress(100, "Preview images up to date")
                     self.finished.emit(True, draft_dir)
                     return
-
-                # Generate missing prompts
-                scenes_no_prompt = [s for s in scenes
-                                    if int(s["id"]) not in cached_prompts]
-                if scenes_no_prompt:
-                    prompt_builder = PromptBuilder(
-                        style_preset=self.config.get("style_preset", "cinematic"),
-                        default_aspect_ratio=self.config.get("aspect_ratio", "16:9"),
-                        use_ollama=bool(self.config.get("use_ollama", False)),
-                        ollama_model=str(self.config.get("ollama_model", "qwen3:8b")),
-                        ollama_host=str(self.config.get("ollama_host", "http://localhost:11434")),
-                    )
-                    for s in scenes_no_prompt:
-                        cached_prompts[int(s["id"])] = prompt_builder.build_prompt(s)
-                    with open(prompts_path, "w", encoding="utf-8") as fh:
-                        yaml.safe_dump(cached_prompts, fh, allow_unicode=True, sort_keys=False)
-                    # Unload Ollama
-                    try:
-                        import urllib.request, json as _json
-                        _host = str(self.config.get("ollama_host", "http://localhost:11434"))
-                        _payload = _json.dumps({"model": str(self.config.get("ollama_model", "qwen3:8b")), "keep_alive": 0}).encode()
-                        req = urllib.request.Request(f"{_host}/api/generate", data=_payload,
-                                                     headers={"Content-Type": "application/json"}, method="POST")
-                        urllib.request.urlopen(req, timeout=10)
-                    except Exception as _e:
-                        self.log.emit(f"Ollama unload skipped ({_e})")
+                self.log.emit(f"Generating {len(preview_work)} missing preview still(s).")
 
                 total = len(preview_work)
                 done = 0
@@ -1316,6 +1368,13 @@ class PipelineWorker(QObject):
                                 filename_suffix=f"_{model_key}_b{beat_idx:02d}_v2",
                                 cancel_check=lambda: self._cancel_requested,
                             )
+                            if copy_preview_to_lightbox(
+                                draft_dir, lightbox_dir, sid, model_key, beat_idx
+                            ):
+                                self.log.emit(
+                                    f"Scene {sid} [{model_key} beat {beat_idx}]: "
+                                    "copied new preview into Lightbox v2."
+                                )
                             done += 1
                             self._emit_progress(
                                 10 + int((done / total) * 85), f"Preview image {done}/{total}"
@@ -1456,16 +1515,20 @@ class PipelineWorker(QObject):
                                 out = _variant_path(sid, model_key, beat_idx, v_idx)
                                 if force_target_update and os.path.exists(out):
                                     os.remove(out)
-                                if (model_key == "schnell" and v_idx == 2 and not target_scene
-                                    and not os.path.exists(out)):
+                                if (v_idx == 2 and not force_target_update and not target_scene):
                                     preview_path = os.path.join(
                                         draft_dir,
-                                        f"scene_{sid:03d}_schnell_b{beat_idx:02d}_v2.png",
+                                        preview_v2_filename(sid, model_key, beat_idx),
                                     )
-                                    if os.path.exists(preview_path):
+                                    if os.path.isfile(preview_path) and (
+                                        not os.path.exists(out)
+                                        or os.path.getmtime(preview_path) >= os.path.getmtime(out)
+                                    ):
                                         shutil.copy2(preview_path, out)
                                         self.log.emit(
-                                            f"Scene {sid} [schnell beat {beat_idx} v2]: reused saved preview.")
+                                            f"Scene {sid} [{model_key} beat {beat_idx} v2]: "
+                                            "reused saved preview."
+                                        )
                                 if not os.path.exists(out):
                                     work.append((sid, beat_idx, v_idx, base_seed + offset, row))
                     if not work:

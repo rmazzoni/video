@@ -29,7 +29,7 @@ A project is a folder. Typical outputs:
 | `output/preview_images/` | Preview stills (usually Schnell or Z-Image) |
 | `output/lightbox/` | Final stills (Dev, HiDream, FLUX.2, …) |
 | `output/audio/` | Spoken scene tracks (`scene_NNN.mp3`) |
-| `output/draft_clips/` | Preview motion clips |
+| `output/draft_clips/` | Preview motion clips — one Ken Burns clip per Schnell/Z-Image beat still |
 | `output/preview_video/` | `{project}_preview_video.mp4` and `{project}_preview_with_audio.mp4` |
 | `output/final_clips/` | Motion clips from selected stills |
 | `output/final_video/` | `{project}_final_video.mp4` and `{project}_final_with_audio.mp4` |
@@ -137,7 +137,11 @@ Negatives are zeroed on these graphs. Exclusions belong in the positive
 prompt. Canvas **1280×720 or 1344×768**; 1024×576 looks soft.
 
 Stills are named `scene_NNN_MODEL_bBB_vV.png` (scene, model, beat, seed
-variant).
+variant). Preview Images writes v2 into `output/preview_images/` and copies
+that same file into `output/lightbox/` so the Lightbox tab stays current.
+Final Images reuses a newer preview v2 instead of generating that slot again
+(v1 and v3 are still unique Lightbox seeds). "Update Lightbox" on a single
+beat still regenerates all three variants.
 
 ### 5. Stills → clips → video
 

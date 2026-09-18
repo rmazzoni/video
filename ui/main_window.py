@@ -2638,7 +2638,7 @@ class MainWindow(QMainWindow):
             # Regenerate the preview clip from the already-updated draft image.
             clip_path = os.path.join(
                 ProjectLayout(self.project_path_input.text().strip()).draft_clips,
-                f"scene_{scene_id:03d}.mp4",
+                f"scene_{scene_id:03d}_{preview_model_key}_b{beat_index:02d}_v2.mp4",
             )
             if os.path.exists(clip_path):
                 try:
@@ -6793,24 +6793,29 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._flush_cuda_background, daemon=True).start()
 
         # Auto-refresh the preview grid whenever preview_images or final_images completes.
-        if success and payload and os.path.isdir(payload) and (
-            os.path.basename(payload) in {
+        preview_payload = bool(
+            success and payload and os.path.isdir(payload)
+            and os.path.basename(payload) in {
                 DIR_PREVIEW_IMAGES, DIR_DRAFT, "draft", "draft_video", "images",
             }
-        ):
+        )
+        if preview_payload:
             # Defer so we never rebuild the grid inside a nested event-loop
             # (e.g. while a zoom dialog is still open).
             QTimer.singleShot(0, self._refresh_draft_grid)
 
-        # Auto-refresh the Lightbox tab when final_images completes. Use the
-        # single scene targeted by a Tweak Prompt / draft-zoom "Update Lightbox"
+        # Auto-refresh the Lightbox tab when final_images completes, and when
+        # Preview Images has copied v2 stills into lightbox/. Use the single
+        # scene targeted by a Tweak Prompt / draft-zoom "Update Lightbox"
         # click (if any) so this doesn't force a full project rebuild — a full
         # rebuild here is what froze whichever dialog was still open on top of it.
         target_scene_id = getattr(self, "_pending_lightbox_scene_id", None)
         target_model_key = getattr(self, "_pending_lightbox_model_key", None)
         self._pending_lightbox_scene_id = None
         self._pending_lightbox_model_key = None
-        if success and payload and os.path.isdir(payload) and "lightbox" in payload:
+        if success and payload and os.path.isdir(payload) and (
+            "lightbox" in os.path.basename(payload) or preview_payload
+        ):
             QTimer.singleShot(0, lambda sid=target_scene_id: self._refresh_lightbox(only_scene_id=sid))
 
         # After a sync-triggered prompts run, refresh the Dubbing tab
