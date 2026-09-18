@@ -13,7 +13,7 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
             "schnell": "Sharp photograph, clear air, simple staging.",
             "zimage": "Sharp photograph, clear air, tactile materials, directional daylight, fine detail.",
             "dev": "Sharp photograph, clear air, directional daylight, fine detail.",
-            "hidream": "Clear photograph, distinct faces, natural materials, directional room light.",
+            "hidream": "Sharp photograph, clear air, one lighting direction, fine detail.",
             "flux2": "Sharp photograph, clear air, directional daylight, fine detail.",
         },
         "models": {
@@ -41,12 +41,12 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "vehicle, drone, or landscape. A military convoy is armored military trucks."
             ),
             "hidream": (
-                "Use clear, spatially staged photography with natural anatomy, readable faces, "
-                "tactile materials, and distinct foreground, middle, and background planes. "
-                "HiDream muddies when prompts stack volumetric light, haze, bloom, or repeated "
-                "cinematic adjectives — prefer one lighting direction, clear air, and concrete "
-                "furniture or terrain. Describe the room and people; do not sandwich the beat "
-                "between style slogans."
+                "Use concrete photographic language with one decisive moment, one lighting "
+                "direction, and clear air. Do not add haze, fog, bloom, bokeh, volumetric light, "
+                "or soft focus unless the beat names weather. If a person is named, a medium-full "
+                "shot with a readable face; do not recede from camera. Do not invent a person for "
+                "a vehicle, drone, or landscape. A military convoy is armored military trucks. "
+                "A wall safe stays in the wall. Do not repeat color adjectives."
             ),
             "flux2": (
                 "Use concrete photographic language with one decisive moment, directional "

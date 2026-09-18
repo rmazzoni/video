@@ -809,9 +809,11 @@ class PromptAssemblyTests(unittest.TestCase):
             {"model_key": "hidream"},
             beat,
         )
-        self.assertIn("Clear photograph", prompt)
+        self.assertIn("Sharp photograph", prompt)
         self.assertIn("Arab leaders", prompt)
+        self.assertIn("one lighting direction", prompt.lower())
         self.assertNotIn("volumetric", prompt.lower())
+        self.assertNotIn("distinct faces", prompt.lower())
         self.assertNotIn("Aspect ratio", prompt)
 
 
@@ -1179,6 +1181,58 @@ class RenderPromptTests(unittest.TestCase):
         )
         self.assertFalse(drifted.ok)
         self.assertIn("retrieves", drifted.extras)
+
+    def test_hidream_officer_keeps_face_framing_without_schnell_portrait(self):
+        prompt = VisualIdentityTests.UAE_PROMPT
+        rendered = structure_prompt_for_model(prompt, "hidream-dev")
+        lower = rendered.lower()
+        self.assertIn("emirati", lower)
+        self.assertIn("medium-full shot", lower)
+        self.assertNotIn("facing the camera, medium shot", lower)
+        self.assertIn("sharp photograph", lower)
+        self.assertIn("one lighting direction", lower)
+        self.assertNotIn("distinct faces", lower)
+        self.assertNotIn("photographic depth", lower)
+
+    def test_hidream_convoy_strike_is_military_trucks_not_wreckage(self):
+        prompt = (
+            "Clear photograph, distinct faces, natural materials, directional room light. "
+            "A drone strike hits a Sudan Rapid Response Force military convoy "
+            "under dim morning light, revealing shattered vehicles and scattered "
+            "equipment on a dusty desert road."
+        )
+        rendered = structure_prompt_for_model(prompt, "hidream-dev")
+        lower = rendered.lower()
+        self.assertIn("armored military trucks", lower)
+        self.assertNotIn("shattered", lower)
+        self.assertNotIn("scattered equipment", lower)
+        self.assertNotIn("distinct faces", lower)
+        self.assertIn("sharp photograph", lower)
+
+    def test_hidream_drone_prompt_stays_a_drone(self):
+        wandered = (
+            "A military drone in flight glides over the Sudan, an adult Saudi "
+            "with Gulf Arab features, olive-brown complexion and a clearly detailed "
+            "face, facing toward a distant convoy."
+        )
+        rendered = structure_prompt_for_model(wandered, "hidream-dev")
+        lower = rendered.lower()
+        self.assertIn("drone", lower)
+        self.assertNotIn("adult saudi", lower)
+        self.assertNotIn("facing the camera", lower)
+        self.assertRegex(rendered, r"toward a distant convoy")
+
+    def test_hidream_wall_safe_stays_in_the_wall_and_hides_not_retrieves(self):
+        wandered = (
+            "A Saudi high officer stands in a corridor, reaching into a wall safe "
+            "to retrieve a document. Medium-full shot, three-quarter view, face "
+            "clearly visible and sharply detailed, eyes in focus, natural skin texture."
+        )
+        rendered = structure_prompt_for_model(wandered, "hidream-dev")
+        lower = rendered.lower()
+        self.assertIn("safe stays in the wall", lower)
+        self.assertNotIn("retrieve", lower)
+        self.assertNotIn("medium-full shot", lower)
 
 
 if __name__ == "__main__":

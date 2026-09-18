@@ -2,11 +2,16 @@ display_name: HiDream-I1 Dev
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'Write one fluent HiDream-I1 Dev paragraph for the locked visual
-  beat only. Clear air, one lighting direction, no volumetric haze, no 35mm-lens
-  cliches, no aspect ratio. Name furniture or rooms only if the beat names them.
-  If a nationality is named, state visible appearance of that person. If motion has
-  a direction, state body orientation. Do not add extra people or crowds. Do not
+system_instruction: 'Write a 40-to-80-word HiDream-I1 Dev prompt for the locked visual
+  beat only. One decisive moment. Use the beat''s nouns. Clear air, one lighting direction,
+  no volumetric haze, no 35mm-lens cliches, no aspect ratio. Name furniture or rooms
+  only if the beat names them. Do not add a person unless the beat names one. A nationality
+  on a drone, vehicle, army, or desert is not a person. If the beat names a person,
+  a medium-full three-quarter shot with the face clearly visible unless the action
+  is putting an object into a wall fixture. Hide is not retrieve. A safe in the wall
+  is built flush into the wall; the person does not hold the safe. A military convoy
+  is armored military trucks, not civilian or race cars. Do not add shattered vehicles
+  or wreckage unless the beat names them. Do not add extra people or crowds. Do not
   repeat color adjectives.'
 requirements:
 - Depict only the locked visual beat.

@@ -136,6 +136,7 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     from prompts.visual_identity import (
         DEV_RENDER_CONSTRAINTS,
         FLUX2_RENDER_CONSTRAINTS,
+        HIDREAM_RENDER_CONSTRAINTS,
         SCHNELL_RENDER_CONSTRAINTS,
         ZIMAGE_FACE_CONSTRAINTS,
         ZIMAGE_RENDER_CONSTRAINTS,
@@ -152,11 +153,12 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     is_zimage = model in {"zimage-turbo", "zimage"}
     is_dev = model in {"flux-dev", "dev"}
     is_flux2 = model in {"flux2"}
+    is_hidream = model in {"hidream-dev", "hidream"}
     scene, illustration = strip_known_style_anchors(prompt_text)
     scene = apply_visual_identity(scene, model_key=model_key)
-    if is_schnell or is_zimage or is_dev or is_flux2:
+    if is_schnell or is_zimage or is_dev or is_flux2 or is_hidream:
         scene = strip_haze_phrases(scene)
-    if (is_schnell or is_dev or is_flux2) and not prompt_has_person(scene):
+    if (is_schnell or is_dev or is_flux2 or is_hidream) and not prompt_has_person(scene):
         scene = re.sub(r"\bfacing toward\b", "toward", scene, flags=re.IGNORECASE)
     style = _style_for_render(illustration, model_type)
     parts = [scene]
@@ -177,6 +179,8 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
         parts.append(DEV_RENDER_CONSTRAINTS)
     elif is_flux2 and "sharp focus, clear air" not in scene.lower():
         parts.append(FLUX2_RENDER_CONSTRAINTS)
+    elif is_hidream and "sharp focus, clear air" not in scene.lower():
+        parts.append(HIDREAM_RENDER_CONSTRAINTS)
     return join_prompt_parts(*parts)
 
 

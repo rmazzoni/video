@@ -63,12 +63,14 @@ These apply to every model.
 | Z-Image Turbo | 80–160 words, structured | Medium-full, three-quarter, face large and sharp | Sharp photograph, clear air, directional daylight | 9 steps, CFG 1, **res_multistep**/simple, shift 3 |
 | FLUX Dev | 40–80 words, one moment | Medium-full, three-quarter, face readable | Sharp photograph, clear air, directional daylight | 20 steps, FluxGuidance **3.5**, euler/simple (graph) |
 | FLUX.2 Klein 4B | 40–80 words, one moment | Medium-full, three-quarter, face readable | Sharp photograph, clear air, directional daylight | 4 steps, FluxGuidance **1.0**, euler/simple (graph), Qwen 3 4B encoder |
+| HiDream-I1 Dev | 40–80 words, one moment | Medium-full, three-quarter, face readable | Sharp photograph, clear air, one lighting direction | 28 steps, CFG **1.5**, euler/normal, shift 6; no volumetric haze, no repeated color adjectives |
 
-Schnell cannot carry a long essay. Dev, FLUX.2, and Z-Image can take more
-concrete detail, but not haze or extra people.
+Schnell cannot carry a long essay. Dev, FLUX.2, HiDream, and Z-Image can take
+more concrete detail, but not haze or extra people.
 
-Z-Image Turbo ignores negative prompts (KSampler CFG 1). Schnell, Dev, and
-FLUX.2 also zero the negative branch; put exclusions in the **positive** prompt.
+Z-Image Turbo ignores negative prompts (KSampler CFG 1). Schnell, Dev, FLUX.2,
+and HiDream also zero the negative branch; put exclusions in the **positive**
+prompt.
 
 Canvas: **1280×720 or 1344×768**. 1024×576 looks soft, especially faces.
 
@@ -99,7 +101,7 @@ the stored text to match.
 | `prompts/visual_beats.py` | Extraction, quote lock, beat validation |
 | `prompts/model_prompt_service.py` | Locked-beat system instruction, per-model YAML, fail-closed generate |
 | `prompts/prompt_grounding.py` | Required tokens; extras: people, garments, architecture, wreckage, race cars |
-| `prompts/visual_identity.py` | Person nationality → appearance; Schnell vs Dev/Z-Image/FLUX.2 face framing |
+| `prompts/visual_identity.py` | Person nationality → appearance; Schnell vs other models' face framing |
 | `prompts/visual_kit.py` | Military convoy → armored trucks; strip invented wreckage |
 | `prompts/prompt_builder.py` | `structure_prompt_for_model`, haze/style strip |
 | `prompts/visual_styles.py` | Short per-model style suffixes (no cinematic essays in the live stack) |
@@ -109,6 +111,7 @@ the stored text to match.
 | `workflows/zimage_turbo_image.json` | Z-Image graph (`@sampler` / `@shift`) |
 | `workflows/flux1_dev_image.json` | Dev graph (euler + FluxGuidance) |
 | `workflows/flux2_image.json` | FLUX.2 Klein graph (euler + FluxGuidance 1.0, Qwen encoder) |
+| `workflows/hidream_i1_dev_image.json` | HiDream graph (`@guidance` CFG, `@shift`, no volumetric haze) |
 | `tests/test_visual_beats.py` | Contract tests; run with `f:\VID\venv\Scripts\python.exe -m unittest tests.test_visual_beats` |
 
 ## What we already learned not to do
@@ -133,8 +136,6 @@ the stored text to match.
 Preview (Schnell / Z-Image) and lightbox (Dev / HiDream / FLUX.2) both go
 through `structure_prompt_for_model`.
 
-## Not fully treated yet
-
-HiDream still uses the older style suffix (`Clear photograph, distinct faces…`).
-It already gets identity and kit lock via `apply_visual_identity`. Apply the
-same sharp-style / haze-strip pass if it shows the same fog or race-car failures.
+All five image models (Schnell, Z-Image Turbo, Dev, FLUX.2, HiDream) now share
+this lock: sharp style last, no invented people on kit, military trucks on
+convoy beats, wall safes stay in the wall, hide is not retrieve.
