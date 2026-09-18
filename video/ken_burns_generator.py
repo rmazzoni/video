@@ -7,7 +7,6 @@ pan and/or zoom, with a configurable duration.
 
 import concurrent.futures
 import os
-import random
 import subprocess
 import tempfile as _tf
 from typing import Optional
@@ -39,24 +38,70 @@ def _enc_args(nvenc: bool) -> list:
             "-video_track_timescale", "12288"]
 
 
-# Available motion styles.
-# Pan values are fractions of image width/height to shift over the FULL clip.
-# Rule: pan_x * img_w / (N_frames - 1) must be ≥ 1 px for the longest likely
-# clip (6 s × 24 fps = 143 inter-frame steps, img_w ≈ 1024).
-# Minimum safe pan_x = 143/1024 ≈ 0.14.  Values below that produce
-# sub-pixel-per-frame motion which aliases into visible jitter.
-_MOTIONS = [
-    {"name": "zoom_in",        "zoom_start": 1.0,   "zoom_end": 1.40,  "pan_x": 0.0,   "pan_y": 0.0},
-    {"name": "zoom_out",       "zoom_start": 1.40,  "zoom_end": 1.0,   "pan_x": 0.0,   "pan_y": 0.0},
-    {"name": "zoom_in_right",  "zoom_start": 1.0,   "zoom_end": 1.40,  "pan_x": 0.10,  "pan_y": 0.0},
-    {"name": "zoom_in_left",   "zoom_start": 1.0,   "zoom_end": 1.40,  "pan_x":-0.10,  "pan_y": 0.0},
-    {"name": "zoom_out_right", "zoom_start": 1.40,  "zoom_end": 1.0,   "pan_x": 0.10,  "pan_y": 0.0},
-    {"name": "zoom_out_left",  "zoom_start": 1.40,  "zoom_end": 1.0,   "pan_x":-0.10,  "pan_y": 0.0},
-]
+# Bump when crop math changes so clip sidecars force a re-render.
+MOTION_VERSION = 2
+
+# Stay above 1.0 for the whole clip. Zoom 1.0 has zero horizontal slack, so
+# the window can only shrink from one side and the center reverses (wobble).
+ZOOM_START = 1.12
+ZOOM_END = 1.38
 
 
-def _pan_x_for_clip(clip_index: int) -> float:
-    return 0.10 if clip_index % 2 == 0 else -0.10
+def pan_direction(clip_index: int) -> str:
+    """Even clips pan right; the next clip pans left."""
+    return "right" if int(clip_index) % 2 == 0 else "left"
+
+
+def motion_cache_key(motion_style: str, fps: int = 24) -> dict:
+    """Sidecar payload so a math/settings change regenerates existing clips."""
+    return {
+        "motion_style": str(motion_style),
+        "fps": int(fps),
+        "engine": "ken_burns",
+        "motion_version": MOTION_VERSION,
+    }
+
+
+def _pan_aligns(clip_index: int) -> tuple:
+    """Crop x origin as a 0=left … 1=right fraction at start and end."""
+    if pan_direction(clip_index) == "right":
+        return 0.0, 1.0
+    return 1.0, 0.0
+
+
+def crop_window(
+    img_w: float,
+    img_h: float,
+    zoom: float,
+    pan_align: float,
+    v_align: float = 0.5,
+) -> tuple:
+    """Return (src_w, src_h, x0, y0) for a zoomed window on the source image."""
+    src_w = img_w / zoom
+    src_h = img_h / zoom
+    x0 = max(0.0, img_w - src_w) * pan_align
+    y0 = max(0.0, img_h - src_h) * v_align
+    return src_w, src_h, x0, y0
+
+
+def interpolated_crop(
+    img_w: float,
+    img_h: float,
+    t: float,
+    clip_index: int,
+    zoom_start: float = ZOOM_START,
+    zoom_end: float = ZOOM_END,
+) -> tuple:
+    """
+    Linearly interpolate the crop rectangle from the start window to the end
+    window. Interpolating the rectangle (not slack × progress) keeps the
+    frame center moving in one direction for the whole clip.
+    """
+    t = max(0.0, min(1.0, float(t)))
+    start_align, end_align = _pan_aligns(clip_index)
+    start = crop_window(img_w, img_h, zoom_start, start_align)
+    end = crop_window(img_w, img_h, zoom_end, end_align)
+    return tuple(a + (b - a) * t for a, b in zip(start, end))
 
 
 class KenBurnsGenerator:
@@ -74,8 +119,8 @@ class KenBurnsGenerator:
         :param output_dir: where to save generated clips
         :param fps: frames per second
         :param duration: clip length in seconds
-        :param seed: random seed for motion selection (None = random each time)
-        :param motion_style: "auto" = random pan/zoom, "static" = no motion
+        :param seed: kept for caller compatibility; auto motion is deterministic
+        :param motion_style: "auto" = one-way pan + slight zoom-in, "static" = no motion
         """
         self.output_dir = output_dir
         self.fps = fps
@@ -103,8 +148,8 @@ class KenBurnsGenerator:
         """
         Generate a clip from a still image.
         Static mode: holds the image still for the full duration.
-        Auto mode: applies a random pan/zoom Ken Burns motion via ffmpeg zoompan filter
-        (no Python frame loop — all rendering done natively in ffmpeg).
+        Auto mode: slight zoom-in with a single left-or-right pan. Even
+        ``motion_index`` (or ``scene_id``) pans right; the next clip pans left.
         Returns the output video file path.
         """
         image = Image.open(image_path)
@@ -130,26 +175,9 @@ class KenBurnsGenerator:
 
         # ── Animated (auto) mode ──────────────────────────────────────────────
         # Frames are rendered in parallel (ThreadPoolExecutor) using PIL
-        # crop + LANCZOS — floating-point crop boxes give smooth sub-pixel
-        # accuracy; LANCZOS gives high-quality downsample.  Parallel rendering
-        # keeps all CPU cores busy so the pipe-write to ffmpeg becomes the
-        # wall-clock limit rather than PIL.
+        # affine + BICUBIC. The crop rectangle is interpolated from a start
+        # window to an end window so the pan never reverses mid-clip.
         pan_number = scene_id if motion_index is None else motion_index
-        rng = random.Random(
-            (self.seed if self.seed is not None else 0)
-            ^ (scene_id * 2654435761)
-            ^ (pan_number * 2246822519)
-        )
-        zooming_in = pan_number % 2 == 0
-        motion = rng.choice([
-            candidate for candidate in _MOTIONS
-            if (candidate["zoom_end"] > candidate["zoom_start"]) == zooming_in
-        ])
-
-        zoom_start = motion["zoom_start"]
-        zoom_end   = motion["zoom_end"]
-        pan_x      = _pan_x_for_clip(pan_number)
-        pan_y      = motion["pan_y"]
 
         MOTION_CAP = 6.0
         motion_dur = min(self.duration, MOTION_CAP)
@@ -161,14 +189,7 @@ class KenBurnsGenerator:
 
         def _render(i: int) -> bytes:
             t = i / max(N - 1, 1)
-            zoom  = zoom_start + (zoom_end - zoom_start) * t
-            src_w = img_w / zoom
-            src_h = img_h / zoom
-            x_travel = min(abs(pan_x) * 10.0, 1.0)
-            y_travel = min(abs(pan_y) * 10.0, 1.0)
-            travel_progress = t if zooming_in else 1.0 - t
-            x0 = max(0.0, img_w - src_w) * x_travel * travel_progress
-            y0 = max(0.0, img_h - src_h) * y_travel * travel_progress
+            src_w, src_h, x0, y0 = interpolated_crop(img_w, img_h, t, pan_number)
             return (
                 image.transform(
                     (out_w, out_h),
@@ -219,14 +240,11 @@ class KenBurnsGenerator:
         finally:
             image.close()
 
-        # Hold segment: crop source image at final zoom/pan position, no piping.
+        # Hold segment: freeze the end crop (last motion frame), no piping.
         if hold_dur > 0.05 and motion_tmp:
-            final_z  = zoom_end
-            crop_w   = img_w / final_z
-            crop_h   = img_h / final_z
-            final_progress = 1.0 if zooming_in else 0.0
-            crop_x   = max(0.0, img_w - crop_w) * x_travel * final_progress
-            crop_y   = max(0.0, img_h - crop_h) * y_travel * final_progress
+            crop_w, crop_h, crop_x, crop_y = interpolated_crop(
+                img_w, img_h, 1.0, pan_number
+            )
             hold_vf  = (
                 f"crop={crop_w:.2f}:{crop_h:.2f}:{crop_x:.2f}:{crop_y:.2f}"
                 f",scale={out_w}:{out_h},setsar=1"

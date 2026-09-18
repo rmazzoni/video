@@ -1254,7 +1254,8 @@ class MainWindow(QMainWindow):
         self.ken_burns_motion_input.addItems(["static", "auto"])
         self.ken_burns_motion_input.setToolTip(
             "static: image is held perfectly still (no zoom or pan)\n"
-            "auto: random cinematic pan/zoom applied to each clip"
+            "auto: each clip pans only left or only right (adjacent clips\n"
+            "alternate direction) with a slight zoom-in"
         )
 
         self.decode_chunk_size_input = QSpinBox()

@@ -1,6 +1,7 @@
 # Visual beats, prompts, and image models
 
-This is the working contract for the beats-to-image path. It exists so later
+How the whole app fits together is in `docs/how_it_works.md`. This file is
+the working contract for the beats-to-image path. It exists so later
 changes do not recreate the failure modes that made output unpredictable:
 profile-written scenes, European default faces, cinematic haze, invented
 people on equipment, and Schnell turning a military convoy into a race car.

@@ -58,6 +58,31 @@ class PipelineWorker(QObject):
             return 0
 
     @staticmethod
+    def _ken_burns_sidecar_path(clips_dir: str) -> str:
+        return os.path.join(clips_dir, ".kb_params.yaml")
+
+    @staticmethod
+    def _ken_burns_params_changed(clips_dir: str, cur_params: dict) -> bool:
+        sidecar_path = PipelineWorker._ken_burns_sidecar_path(clips_dir)
+        prev_params: dict = {}
+        if os.path.exists(sidecar_path):
+            try:
+                with open(sidecar_path, "r", encoding="utf-8") as handle:
+                    prev_params = yaml.safe_load(handle) or {}
+            except Exception:
+                pass
+        return prev_params != cur_params
+
+    @staticmethod
+    def _write_ken_burns_params(clips_dir: str, cur_params: dict) -> None:
+        try:
+            os.makedirs(clips_dir, exist_ok=True)
+            with open(PipelineWorker._ken_burns_sidecar_path(clips_dir), "w", encoding="utf-8") as handle:
+                yaml.safe_dump(cur_params, handle)
+        except Exception:
+            pass
+
+    @staticmethod
     def _scene_image_candidates(images_dir: str) -> List[str]:
         candidates: List[str] = []
         for ext in ("png", "jpg", "jpeg"):
@@ -750,26 +775,21 @@ class PipelineWorker(QObject):
                 clip_engine = str(self.config.get("clip_engine", "ken_burns")).strip().lower()
 
                 if clip_engine == "ken_burns":
-                    from video.ken_burns_generator import KenBurnsGenerator
+                    from video.ken_burns_generator import (
+                        KenBurnsGenerator,
+                        motion_cache_key,
+                        pan_direction,
+                    )
                     default_dur = float(self.config.get("ken_burns_duration", 5.0))
                     current_motion = str(self.config.get("ken_burns_motion", "static"))
                     current_fps    = 24  # Ken Burns always renders at 24fps for smooth motion
 
                     # ── Parameter sidecar ────────────────────────────────────
                     # Store the generation params used last time so that a
-                    # settings change (e.g. auto→static) forces a full re-render
-                    # even when source images haven't been touched.
-                    sidecar_path = os.path.join(out_clips_dir, ".kb_params.yaml")
-                    prev_params: dict = {}
-                    if os.path.exists(sidecar_path):
-                        try:
-                            with open(sidecar_path, "r", encoding="utf-8") as _f:
-                                prev_params = yaml.safe_load(_f) or {}
-                        except Exception:
-                            pass
-                    cur_params = {"motion_style": current_motion, "fps": current_fps,
-                                  "engine": "ken_burns"}
-                    params_changed = (prev_params != cur_params)
+                    # settings change (e.g. auto→static) or crop-math bump
+                    # forces a full re-render even when source images are unchanged.
+                    cur_params = motion_cache_key(current_motion, current_fps)
+                    params_changed = self._ken_burns_params_changed(out_clips_dir, cur_params)
                     self.log.emit(
                         f"Ken Burns clip engine — motion_style={current_motion!r}  fps={current_fps}"
                         + ("  ⚠ params changed, all clips will be regenerated" if params_changed else "")
@@ -798,7 +818,11 @@ class PipelineWorker(QObject):
                         else:
                             target_dur = float(timings[sid]) if sid in timings else default_dur
                             gen_kb.duration = target_dur
-                            self.log.emit(f"Scene {sid}: Ken Burns clip [{current_motion}], duration={target_dur:.1f}s")
+                            self.log.emit(
+                                f"Scene {sid}: Ken Burns clip [{current_motion}"
+                                f"{'' if current_motion == 'static' else ', pan ' + pan_direction(idx - 1)}"
+                                f"], duration={target_dur:.1f}s"
+                            )
                             try:
                                 gen_kb.generate_clip(img_path, sid, motion_index=idx - 1)
                             except Exception as _clip_err:
@@ -808,13 +832,7 @@ class PipelineWorker(QObject):
                         self._emit_progress(step, f"Clip {idx}/{total}")
                     if failed_kb:
                         self.log.emit(f"Ken Burns: {len(failed_kb)} clip(s) failed and were skipped: {failed_kb}")
-                    # Persist current params so the next run can detect changes
-                    try:
-                        os.makedirs(out_clips_dir, exist_ok=True)
-                        with open(sidecar_path, "w", encoding="utf-8") as _f:
-                            yaml.safe_dump(cur_params, _f)
-                    except Exception:
-                        pass
+                    self._write_ken_burns_params(out_clips_dir, cur_params)
                 else:
                     from video.video_generator import VideoGenerator
                     gen = VideoGenerator(
@@ -1532,25 +1550,45 @@ class PipelineWorker(QObject):
                 failed_fc: list = []
 
                 if clip_engine == "ken_burns":
-                    from video.ken_burns_generator import KenBurnsGenerator
+                    from video.ken_burns_generator import (
+                        KenBurnsGenerator,
+                        motion_cache_key,
+                        pan_direction,
+                    )
                     default_dur = float(self.config.get("ken_burns_duration", 5.0))
+                    current_motion = str(self.config.get("ken_burns_motion", "auto"))
+                    current_fps = 24  # Ken Burns always renders at 24 fps; config "fps" is the SVD model rate
+                    cur_params = motion_cache_key(current_motion, current_fps)
+                    params_changed = self._ken_burns_params_changed(clips_dir, cur_params)
+                    self.log.emit(
+                        f"Ken Burns final clips — motion_style={current_motion!r}  fps={current_fps}"
+                        + ("  ⚠ params changed, all clips will be regenerated" if params_changed else "")
+                    )
                     gen_kb = KenBurnsGenerator(
                         output_dir=clips_dir,
-                        fps=24,   # Ken Burns always renders at 24 fps; config "fps" is the SVD model rate
+                        fps=current_fps,
                         duration=default_dur,
                         seed=int(self.config.get("seed", 42)),
-                        motion_style=str(self.config.get("ken_burns_motion", "auto")),
+                        motion_style=current_motion,
                     )
                     for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
                         self._check_cancel()
                         clip_suffix = f"_v{v_idx:02d}"
                         existing = os.path.join(clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
-                        if os.path.exists(existing) and os.path.getmtime(existing) >= os.path.getmtime(img_path):
+                        up_to_date = (
+                            os.path.exists(existing)
+                            and os.path.getmtime(existing) >= os.path.getmtime(img_path)
+                            and not params_changed
+                        )
+                        if up_to_date:
                             self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (up to date).")
                         else:
                             dur = per_clip_dur if per_clip_dur else default_dur
                             gen_kb.duration = dur
-                            self.log.emit(f"Scene {sid} v{v_idx}: Ken Burns clip, duration={dur:.1f}s")
+                            pan = "" if current_motion == "static" else f", pan {pan_direction(idx - 1)}"
+                            self.log.emit(
+                                f"Scene {sid} v{v_idx}: Ken Burns clip{pan}, duration={dur:.1f}s"
+                            )
                             try:
                                 gen_kb.generate_clip(
                                     img_path,
@@ -1565,6 +1603,7 @@ class PipelineWorker(QObject):
                         self._emit_progress(step, f"Clip {idx}/{total}")
                     if failed_fc:
                         self.log.emit(f"Ken Burns final: {len(failed_fc)} clip(s) failed: {failed_fc}")
+                    self._write_ken_burns_params(clips_dir, cur_params)
                 else:
                     from video.video_generator import VideoGenerator
                     gen = VideoGenerator(
