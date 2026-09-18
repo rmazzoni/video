@@ -10,6 +10,14 @@ from pathlib import Path
 
 import yaml
 
+from utilis.project_paths import (
+    DIR_DRAFT,
+    DIR_DRAFT_CLIPS,
+    DIR_FINAL_CLIPS,
+    DIR_IMAGES,
+    ProjectLayout,
+)
+
 from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -363,10 +371,10 @@ class MainWindow(QMainWindow):
 
         extras_row = QHBoxLayout()
         btn_clear_clips = QPushButton("🗑 Clear Final Clips")
-        btn_clear_clips.setToolTip("Delete all files in output/clips/")
+        btn_clear_clips.setToolTip("Delete all files in output/final_clips/")
         btn_clear_clips.clicked.connect(self._clear_clips)
         btn_clear_draft = QPushButton("🗑 Clear Preview Images")
-        btn_clear_draft.setToolTip("Delete draft images so they are regenerated")
+        btn_clear_draft.setToolTip("Delete images in output/draft_video/ so they are regenerated")
         btn_clear_draft.clicked.connect(self._clear_draft)
         btn_clear_preview_clips = QPushButton("🗑 Clear Preview Clips")
         btn_clear_preview_clips.setToolTip("Delete all files in output/draft_clips/")
@@ -2629,8 +2637,8 @@ class MainWindow(QMainWindow):
         def _redo_clip():
             # Regenerate the preview clip from the already-updated draft image.
             clip_path = os.path.join(
-                self.project_path_input.text().strip(),
-                "output", "draft_clips", f"scene_{scene_id:03d}.mp4"
+                ProjectLayout(self.project_path_input.text().strip()).draft_clips,
+                f"scene_{scene_id:03d}.mp4",
             )
             if os.path.exists(clip_path):
                 try:
@@ -2695,8 +2703,9 @@ class MainWindow(QMainWindow):
             self._draft_grid_refresh_pending = True
             return
         project = self.project_path_input.text().strip()
-        draft_dir   = os.path.join(project, "output", "draft")  if project else ""
-        images_dir  = os.path.join(project, "output", "images") if project else ""
+        layout = ProjectLayout(project) if project else None
+        draft_dir   = layout.draft if layout else ""
+        images_dir  = layout.images if layout else ""
 
         # Prefer full-res images when they exist; fall back to draft folder
         def _images_from(folder: str):
@@ -4337,7 +4346,7 @@ class MainWindow(QMainWindow):
             model_prompts = {}
 
         saved_preview_beats = set()
-        draft_dir = os.path.join(project, "output", "draft")
+        draft_dir = ProjectLayout(project).draft
         if os.path.isdir(draft_dir):
             for filename in os.listdir(draft_dir):
                 match = re.match(
@@ -4644,7 +4653,7 @@ class MainWindow(QMainWindow):
         lightbox_dir = os.path.join(project, "output", "lightbox")
         is_preview_model = model_key in ("schnell", "zimage")
         preview_dir = (
-            os.path.join(project, "output", "draft")
+            ProjectLayout(project).draft
             if is_preview_model else lightbox_dir
         )
         preview_candidates = [
@@ -5037,7 +5046,7 @@ class MainWindow(QMainWindow):
             if not _save(close_dialog=False):
                 return
             if is_preview_model:
-                destination_dir = os.path.join(project, "output", "draft")
+                destination_dir = ProjectLayout(project).draft
             else:
                 destination_dir = lightbox_dir
             os.makedirs(destination_dir, exist_ok=True)
@@ -5109,7 +5118,7 @@ class MainWindow(QMainWindow):
         working_prompt = overrides.get(scene_id) or overrides.get(str(scene_id)) or llama_prompt
 
         project = self.project_path_input.text().strip()
-        image_path = os.path.join(project, "output", "draft", f"scene_{scene_id:03d}.png")
+        image_path = os.path.join(ProjectLayout(project).draft, f"scene_{scene_id:03d}.png")
         backup_path = image_path + ".prompt_backup"
         overrides_path = os.path.join(project, "output", "prompt_overrides.yaml")
 
@@ -6805,7 +6814,7 @@ class MainWindow(QMainWindow):
 
         # Auto-refresh the preview grid whenever preview_images or final_images completes.
         if success and payload and os.path.isdir(payload) and (
-            "draft" in payload or "images" in payload
+            os.path.basename(payload) in {DIR_DRAFT, DIR_IMAGES, "draft"}
         ):
             # Defer so we never rebuild the grid inside a nested event-loop
             # (e.g. while a zoom dialog is still open).
@@ -7178,13 +7187,13 @@ class MainWindow(QMainWindow):
         if not project:
             QMessageBox.warning(self, "No project", "Load a project first.")
             return
-        clips_dir = os.path.join(project, "output", "draft_clips")
+        clips_dir = ProjectLayout(project).draft_clips
         if not os.path.isdir(clips_dir):
-            QMessageBox.information(self, "No clips", "No draft_clips folder found.")
+            QMessageBox.information(self, "No clips", f"No {DIR_DRAFT_CLIPS} folder found.")
             return
         files = [f for f in os.listdir(clips_dir) if f.lower().endswith(".mp4")]
         if not files:
-            QMessageBox.information(self, "No clips", "draft_clips folder is already empty.")
+            QMessageBox.information(self, "No clips", f"{DIR_DRAFT_CLIPS} folder is already empty.")
             return
         reply = QMessageBox.question(
             self, "Clear Preview Clips",
@@ -7202,7 +7211,7 @@ class MainWindow(QMainWindow):
         if errors:
             QMessageBox.warning(self, "Some files not deleted", "\n".join(errors))
         else:
-            self._append_log(f"Cleared {len(files)} preview clip(s) from output/draft_clips/.")
+            self._append_log(f"Cleared {len(files)} preview clip(s) from output/{DIR_DRAFT_CLIPS}/.")
 
     def _clear_lightbox(self) -> None:
         project = self.project_path_input.text().strip()
@@ -7250,13 +7259,13 @@ class MainWindow(QMainWindow):
         if not project:
             QMessageBox.warning(self, "No project", "Load a project first.")
             return
-        draft_dir = os.path.join(project, "output", "draft")
+        draft_dir = ProjectLayout(project).draft
         if not os.path.isdir(draft_dir):
-            QMessageBox.information(self, "No draft", "No draft folder found.")
+            QMessageBox.information(self, "No draft", f"No {DIR_DRAFT} folder found.")
             return
         files = [f for f in os.listdir(draft_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
         if not files:
-            QMessageBox.information(self, "No draft", "Draft folder is already empty.")
+            QMessageBox.information(self, "No draft", f"{DIR_DRAFT} folder is already empty.")
             return
         reply = QMessageBox.question(
             self, "Clear Draft Images",
@@ -7278,17 +7287,17 @@ class MainWindow(QMainWindow):
         if not project:
             QMessageBox.warning(self, "No project", "Load a project first.")
             return
-        clips_dir = os.path.join(project, "output", "clips")
+        clips_dir = ProjectLayout(project).final_clips
         if not os.path.isdir(clips_dir):
-            QMessageBox.information(self, "No clips", "No clips folder found.")
+            QMessageBox.information(self, "No clips", f"No {DIR_FINAL_CLIPS} folder found.")
             return
         files = [f for f in os.listdir(clips_dir) if f.lower().endswith(".mp4")]
         if not files:
-            QMessageBox.information(self, "No clips", "Clips folder is already empty.")
+            QMessageBox.information(self, "No clips", f"{DIR_FINAL_CLIPS} folder is already empty.")
             return
         reply = QMessageBox.question(
             self, "Clear Clips",
-            f"Delete {len(files)} clip(s) from output/clips/?\nThey will be regenerated on the next run.",
+            f"Delete {len(files)} clip(s) from output/{DIR_FINAL_CLIPS}/?\nThey will be regenerated on the next run.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -7302,7 +7311,7 @@ class MainWindow(QMainWindow):
         if errors:
             QMessageBox.warning(self, "Some files not deleted", "\n".join(errors))
         else:
-            self._append_log(f"Cleared {len(files)} clip(s) from output/clips/.")
+            self._append_log(f"Cleared {len(files)} clip(s) from output/{DIR_FINAL_CLIPS}/.")
 
     def cancel_pipeline(self):
         self.controller.cancel_pipeline()

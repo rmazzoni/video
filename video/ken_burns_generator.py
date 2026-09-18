@@ -2,7 +2,8 @@
 Ken Burns effect clip generator.
 
 Produces a video clip from a still image by applying a slow cinematic
-pan and/or zoom, with a configurable duration.
+zoom-in and a single left-or-right pan. Consecutive clips alternate
+direction so the cut does not reverse mid-shot.
 """
 
 import concurrent.futures

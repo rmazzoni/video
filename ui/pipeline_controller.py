@@ -11,6 +11,7 @@ from narration.scene_splitter import SceneSplitter
 from prompts.prompt_builder import PromptBuilder, structure_prompt_for_model
 from utilis.config_loader import ConfigLoader
 from utilis.logger import Logger
+from utilis.project_paths import ProjectLayout
 
 
 class PipelineWorker(QObject):
@@ -349,28 +350,21 @@ class PipelineWorker(QObject):
 
             input_text = os.path.join(self.project_path, "input", "narration.txt")
             input_audio = os.path.join(self.project_path, "input", "audio.wav")
-            tts_dir = os.path.join(self.project_path, "output", "audio")
+            layout = ProjectLayout(self.project_path)
+            for note in layout.migrate_legacy():
+                self.log.emit(note)
+            layout.ensure_dirs()
+            tts_dir = layout.audio
             timings_path = os.path.join(tts_dir, "timings.yaml")
-            draft_dir = os.path.join(self.project_path, "output", "draft")
-            draft_clips_dir = os.path.join(self.project_path, "output", "draft_clips")
-            preview_dir = os.path.join(self.project_path, "output", "preview")
-            images_dir = os.path.join(self.project_path, "output", "images")
-            lightbox_dir = os.path.join(self.project_path, "output", "lightbox")
-            clips_dir = os.path.join(self.project_path, "output", "clips")
-            final_dir = os.path.join(self.project_path, "output", "final")
+            draft_dir = layout.draft
+            draft_clips_dir = layout.draft_clips
+            lightbox_dir = layout.lightbox
+            final_clips_dir = layout.final_clips
             scenes_path = os.path.join(self.project_path, "output", "scenes.yaml")
-            preview_video_path = os.path.join(preview_dir, "preview_video.mp4")
-            preview_with_audio_path = os.path.join(preview_dir, "preview_with_audio.mp4")
-            final_video_path = os.path.join(final_dir, "final_video.mp4")
-            final_with_audio_path = os.path.join(final_dir, "final_with_audio.mp4")
-
-            os.makedirs(draft_dir, exist_ok=True)
-            os.makedirs(draft_clips_dir, exist_ok=True)
-            os.makedirs(preview_dir, exist_ok=True)
-            os.makedirs(images_dir, exist_ok=True)
-            os.makedirs(lightbox_dir, exist_ok=True)
-            os.makedirs(clips_dir, exist_ok=True)
-            os.makedirs(final_dir, exist_ok=True)
+            preview_video_path = layout.preview_video
+            preview_with_audio_path = layout.preview_with_audio
+            final_video_path = layout.final_video
+            final_with_audio_path = layout.final_with_audio
 
             narration_text = ""
             scenes = []
@@ -583,17 +577,18 @@ class PipelineWorker(QObject):
                                 "scene_[0-9][0-9][0-9].jpg",
                                 "scene_[0-9][0-9][0-9].jpeg",
                             ])
+                        _remove_matching(layout.draft, draft_patterns)
+                        _remove_matching(layout.draft_clips, ["scene_*.mp4"])
                         _remove_matching(
-                            os.path.join(self.project_path, "output", "draft"),
-                            draft_patterns,
-                        )
-                        _remove_matching(
-                            os.path.join(self.project_path, "output", "draft_clips"),
-                            ["scene_*.mp4"],
-                        )
-                        _remove_matching(
-                            os.path.join(self.project_path, "output", "preview"),
-                            ["preview_video.mp4", "preview_with_audio.mp4"],
+                            layout.preview,
+                            [
+                                "*_preview_video.mp4",
+                                "*_preview_with_audio.mp4",
+                                "*_narration_combined.mp3",
+                                "preview_video.mp4",
+                                "preview_with_audio.mp4",
+                                "narration_combined.mp3",
+                            ],
                         )
 
                     selections_path = os.path.join(
@@ -963,7 +958,7 @@ class PipelineWorker(QObject):
                     # Use ffmpeg concat demuxer directly to avoid MoviePy's
                     # frame-iterator over-read bug on long audio files.
                     import subprocess, tempfile
-                    audio_name = "final_audio.mp3" if normalize_audio else "narration_combined.mp3"
+                    audio_name = layout.combined_audio_name(normalize_audio)
                     combined_path = os.path.join(os.path.dirname(audio_out), audio_name)
                     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
                                                     delete=False, encoding="utf-8") as flist:
@@ -982,7 +977,10 @@ class PipelineWorker(QObject):
                 elif os.path.exists(input_audio):
                     if normalize_audio:
                         extension = os.path.splitext(input_audio)[1]
-                        audio_src = os.path.join(os.path.dirname(audio_out), f"final_audio{extension}")
+                        audio_src = os.path.join(
+                            os.path.dirname(audio_out),
+                            layout.combined_audio_name(True, extension),
+                        )
                         shutil.copy2(input_audio, audio_src)
                     else:
                         audio_src = input_audio
@@ -1017,7 +1015,7 @@ class PipelineWorker(QObject):
                 )
 
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            # STAGE: preview_images  â€” FLUX schnell â†’ output/draft/
+            # STAGE: preview_images  — stills → output/draft_video/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if stage == "preview_scene":
                 self._check_cancel()
@@ -1331,7 +1329,7 @@ class PipelineWorker(QObject):
                 return
 
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            # STAGE: preview_clips  â€” SVD from draft images â†’ output/draft_clips/
+            # STAGE: preview_clips  — motion from draft stills → output/draft_clips/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if stage == "preview_clips":
                 self._check_cancel()
@@ -1343,7 +1341,7 @@ class PipelineWorker(QObject):
                 return
 
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            # STAGE: preview_video  â€” assemble draft clips at 1024Ã—576
+            # STAGE: preview_video  — assemble draft clips into output/preview_video/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if stage == "preview_video":
                 self._check_cancel()
@@ -1504,7 +1502,7 @@ class PipelineWorker(QObject):
                 return
 
             # ─────────────────────────────────────────────────────────────────
-            # STAGE: final_clips  – SVD from lightbox selections → output/clips/
+            # STAGE: final_clips  – motion from lightbox selections → output/final_clips/
             # ─────────────────────────────────────────────────────────────────
             if stage == "final_clips":
                 self._check_cancel()
@@ -1559,13 +1557,13 @@ class PipelineWorker(QObject):
                     current_motion = str(self.config.get("ken_burns_motion", "auto"))
                     current_fps = 24  # Ken Burns always renders at 24 fps; config "fps" is the SVD model rate
                     cur_params = motion_cache_key(current_motion, current_fps)
-                    params_changed = self._ken_burns_params_changed(clips_dir, cur_params)
+                    params_changed = self._ken_burns_params_changed(final_clips_dir, cur_params)
                     self.log.emit(
                         f"Ken Burns final clips — motion_style={current_motion!r}  fps={current_fps}"
                         + ("  ⚠ params changed, all clips will be regenerated" if params_changed else "")
                     )
                     gen_kb = KenBurnsGenerator(
-                        output_dir=clips_dir,
+                        output_dir=final_clips_dir,
                         fps=current_fps,
                         duration=default_dur,
                         seed=int(self.config.get("seed", 42)),
@@ -1574,7 +1572,7 @@ class PipelineWorker(QObject):
                     for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
                         self._check_cancel()
                         clip_suffix = f"_v{v_idx:02d}"
-                        existing = os.path.join(clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
+                        existing = os.path.join(final_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
                         up_to_date = (
                             os.path.exists(existing)
                             and os.path.getmtime(existing) >= os.path.getmtime(img_path)
@@ -1603,12 +1601,12 @@ class PipelineWorker(QObject):
                         self._emit_progress(step, f"Clip {idx}/{total}")
                     if failed_fc:
                         self.log.emit(f"Ken Burns final: {len(failed_fc)} clip(s) failed: {failed_fc}")
-                    self._write_ken_burns_params(clips_dir, cur_params)
+                    self._write_ken_burns_params(final_clips_dir, cur_params)
                 else:
                     from video.video_generator import VideoGenerator
                     gen = VideoGenerator(
                         model_path=self._resolve_path(self.config.get("svd", "models/svd")),
-                        output_dir=clips_dir,
+                        output_dir=final_clips_dir,
                         num_frames=int(self.config.get("num_frames", 25)),
                         motion_bucket_id=int(self.config.get("motion_bucket_id", 40)),
                         fps=int(self.config.get("fps", 8)),
@@ -1625,7 +1623,7 @@ class PipelineWorker(QObject):
                     for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
                         self._check_cancel()
                         clip_suffix = f"_v{v_idx:02d}"
-                        existing = os.path.join(clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
+                        existing = os.path.join(final_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
                         if os.path.exists(existing) and os.path.getmtime(existing) >= os.path.getmtime(img_path):
                             self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (up to date).")
                         else:
@@ -1659,17 +1657,17 @@ class PipelineWorker(QObject):
                         pass
                     _log_vram("after final clips unload")
                 self._emit_progress(100, "Final clips complete")
-                self.finished.emit(True, clips_dir)
+                self.finished.emit(True, final_clips_dir)
                 return
 
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            # STAGE: final_video  â€” assemble final clips at 1920Ã—1080
+            # STAGE: final_video  — assemble final clips into output/final_video/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if stage == "final_video":
                 self._check_cancel()
                 out_w = int(self.config.get("output_width", 1920))
                 out_h = int(self.config.get("output_height", 1080))
-                _run_assemble(clips_dir, final_video_path, final_with_audio_path,
+                _run_assemble(final_clips_dir, final_video_path, final_with_audio_path,
                               resolution=(out_w, out_h), normalize_audio=True)
                 self._emit_progress(100, "Final video complete")
                 self.finished.emit(True, final_with_audio_path)
@@ -1789,6 +1787,9 @@ class PipelineController(QObject):
             raise NotADirectoryError(f"Project folder does not exist: {normalized}")
         self._ensure_project_manifest(normalized)
         self.project_path = normalized
+        layout = ProjectLayout(normalized)
+        for note in layout.migrate_legacy():
+            self.log.info(note)
         self._add_recent_project(normalized)
         self.log.info(f"Project path set to: {normalized}")
         self.project_changed.emit(normalized)
@@ -1805,9 +1806,7 @@ class PipelineController(QObject):
             raise FileExistsError(f"Project already exists: {project_path}")
 
         os.makedirs(os.path.join(project_path, "input"), exist_ok=True)
-        os.makedirs(os.path.join(project_path, "output", "images"), exist_ok=True)
-        os.makedirs(os.path.join(project_path, "output", "clips"), exist_ok=True)
-        os.makedirs(os.path.join(project_path, "output", "final"), exist_ok=True)
+        ProjectLayout(project_path).ensure_dirs()
 
         narration_path = os.path.join(project_path, "input", "narration.txt")
         with open(narration_path, "w", encoding="utf-8") as handle:
