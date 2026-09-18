@@ -33,6 +33,14 @@ _GARMENT_RE = re.compile(
     r"tuxedo|gown)\b",
     re.IGNORECASE,
 )
+_RETRIEVE_RE = re.compile(
+    r"\b(retrieve|retrieves|retrieving|extract|extracts|extracting)\b",
+    re.IGNORECASE,
+)
+_HIDE_RE = re.compile(
+    r"\b(hide|hides|hiding|conceal|conceals|concealing)\b",
+    re.IGNORECASE,
+)
 _AFTERMATH_RE = re.compile(
     r"\b(shattered|wreckage|debris|scattered|race car|race cars|go-kart|go-karts)\b",
     re.IGNORECASE,
@@ -181,6 +189,8 @@ def check_prompt(
         + extra_restricted_terms(text, allowed, _ARCHITECTURE_RE)
         + extra_restricted_terms(text, allowed, _AFTERMATH_RE)
     )
+    if _HIDE_RE.search(beat.beat or "") and not _RETRIEVE_RE.search(allowed):
+        extras = extras + extra_restricted_terms(text, allowed, _RETRIEVE_RE)
     return GroundingResult(ok=not missing and not extras, missing=missing, extras=extras)
 
 

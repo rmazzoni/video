@@ -14,7 +14,7 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
             "zimage": "Sharp photograph, clear air, tactile materials, directional daylight, fine detail.",
             "dev": "Sharp photograph, clear air, directional daylight, fine detail.",
             "hidream": "Clear photograph, distinct faces, natural materials, directional room light.",
-            "flux2": "Precise photographic scene, realistic surfaces, directional light.",
+            "flux2": "Sharp photograph, clear air, directional daylight, fine detail.",
         },
         "models": {
             "schnell": (
@@ -49,10 +49,11 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "between style slogans."
             ),
             "flux2": (
-                "Use precise cinematic photography with purposeful composition, spatial "
-                "depth, material detail, and motivated light. Translate the beat into a "
-                "specific captured moment with explicit left-right and near-far placement. "
-                "Avoid polished stock-photo staging, portrait formulas, and keyword piles."
+                "Use concrete photographic language with one decisive moment, directional "
+                "daylight, and clear air. Do not add haze, fog, bloom, bokeh, or soft focus "
+                "unless the beat names weather. If a person is named, a medium-full shot with "
+                "a readable face; do not recede from camera. Do not invent a person for a "
+                "vehicle, drone, or landscape. A military convoy is armored military trucks."
             ),
         },
     },

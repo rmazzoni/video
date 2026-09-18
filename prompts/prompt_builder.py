@@ -135,12 +135,14 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     """
     from prompts.visual_identity import (
         DEV_RENDER_CONSTRAINTS,
+        FLUX2_RENDER_CONSTRAINTS,
         SCHNELL_RENDER_CONSTRAINTS,
         ZIMAGE_FACE_CONSTRAINTS,
         ZIMAGE_RENDER_CONSTRAINTS,
         apply_visual_identity,
         prompt_has_person,
     )
+    from prompts.visual_kit import is_fixture_interaction
 
     if not str(prompt_text or "").strip():
         return ""
@@ -149,11 +151,12 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     is_schnell = model in {"flux-schnell", "schnell"}
     is_zimage = model in {"zimage-turbo", "zimage"}
     is_dev = model in {"flux-dev", "dev"}
+    is_flux2 = model in {"flux2"}
     scene, illustration = strip_known_style_anchors(prompt_text)
     scene = apply_visual_identity(scene, model_key=model_key)
-    if is_schnell or is_zimage or is_dev:
+    if is_schnell or is_zimage or is_dev or is_flux2:
         scene = strip_haze_phrases(scene)
-    if (is_schnell or is_dev) and not prompt_has_person(scene):
+    if (is_schnell or is_dev or is_flux2) and not prompt_has_person(scene):
         scene = re.sub(r"\bfacing toward\b", "toward", scene, flags=re.IGNORECASE)
     style = _style_for_render(illustration, model_type)
     parts = [scene]
@@ -162,12 +165,18 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     if is_zimage:
         if "sharp focus, clear air" not in scene.lower():
             parts.append(ZIMAGE_RENDER_CONSTRAINTS)
-        if prompt_has_person(scene) and "natural skin texture" not in scene.lower():
+        if (
+            prompt_has_person(scene)
+            and not is_fixture_interaction(scene)
+            and "natural skin texture" not in scene.lower()
+        ):
             parts.append(ZIMAGE_FACE_CONSTRAINTS)
     elif is_schnell and "sharp focus, clear air" not in scene.lower():
         parts.append(SCHNELL_RENDER_CONSTRAINTS)
     elif is_dev and "sharp focus, clear air" not in scene.lower():
         parts.append(DEV_RENDER_CONSTRAINTS)
+    elif is_flux2 and "sharp focus, clear air" not in scene.lower():
+        parts.append(FLUX2_RENDER_CONSTRAINTS)
     return join_prompt_parts(*parts)
 
 

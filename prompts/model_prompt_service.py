@@ -60,6 +60,10 @@ LOCKED_BEAT_INSTRUCTION = (
     "Do not invent wreckage, debris, shattered vehicles, or scattered gear "
     "unless the beat names them. A named military convoy is armored military "
     "trucks, not civilian cars, toy cars, or race cars.\n\n"
+    "Keep the beat's verb: hide is not retrieve. A safe in the wall is built "
+    "flush into the wall; the person does not hold or carry the safe. One hand "
+    "places a document into the open safe door. Do not turn that action into a "
+    "portrait of someone holding a small box.\n\n"
     "Do not copy the beat sentence verbatim and do not wrap it in quality tags "
     "or photographic keyword lists. Write one English photograph prompt using "
     "camera distance, light, and materials of named things only. Do not add "
@@ -109,6 +113,7 @@ def build_prompt_user_payload(scene: Dict[str, Any], beat: VisualBeat) -> Dict[s
             "appearance. If the beat has no person, do not add one. "
             "If the beat names a military convoy, say armored military trucks. "
             "Do not add wreckage unless the beat names it. "
+            "Keep the beat verb. A wall safe stays in the wall. "
             "Do not quote the beat verbatim. Do not mention aspect ratio or "
             "generation parameters. Return JSON with a single 'prompt' string."
         ),

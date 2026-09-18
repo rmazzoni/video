@@ -12,7 +12,7 @@ import re
 from typing import List, Optional, Tuple
 
 from prompts.prompt_builder import join_prompt_parts
-from prompts.visual_kit import apply_kit_lock
+from prompts.visual_kit import apply_kit_lock, apply_prop_lock, is_fixture_interaction
 
 
 # phrase in source text, demonym, visible features.
@@ -151,6 +151,7 @@ ZIMAGE_FACE_CONSTRAINTS = (
 SCHNELL_RENDER_CONSTRAINTS = "Sharp focus, clear air."
 SCHNELL_FACE_CLAUSE = "Facing the camera, medium shot, face clearly visible"
 DEV_RENDER_CONSTRAINTS = "Sharp focus, clear air, crisp detail."
+FLUX2_RENDER_CONSTRAINTS = "Sharp focus, clear air, crisp detail."
 
 
 def _word_bound(text: str, start: int, end: int) -> bool:
@@ -245,6 +246,7 @@ def apply_visual_identity(prompt: str, beat_text: str = "", model_key: str = "")
     text = _cleanup_spaces(_INJECTED_IDENTITY_RE.sub(" ", text))
     source = f"{beat_text} {text}".strip() if beat_text else text
     schnell = str(model_key or "").lower() in {"schnell", "flux-schnell"}
+    fixture = is_fixture_interaction(source)
     match = _find_nationality(source)
     if match:
         _start, _end, demonym, appearance = match
@@ -262,11 +264,12 @@ def apply_visual_identity(prompt: str, beat_text: str = "", model_key: str = "")
                 text = text[:le] + insert + rest
             else:
                 text = join_prompt_parts(clause, text)
-    if not schnell:
-        if _TOWARD_EXIT_RE.search(source) and not _BLOCKING_PRESENT_RE.search(text):
-            text = join_prompt_parts(text, blocking_clause())
-        if prompt_has_person(source) and not _FACE_PRESENT_RE.search(text):
-            text = join_prompt_parts(text, face_clause())
-    elif prompt_has_person(source) and "facing the camera" not in text.lower():
-        text = join_prompt_parts(text, SCHNELL_FACE_CLAUSE)
-    return apply_kit_lock(text, beat_text)
+    if not fixture:
+        if not schnell:
+            if _TOWARD_EXIT_RE.search(source) and not _BLOCKING_PRESENT_RE.search(text):
+                text = join_prompt_parts(text, blocking_clause())
+            if prompt_has_person(source) and not _FACE_PRESENT_RE.search(text):
+                text = join_prompt_parts(text, face_clause())
+        elif prompt_has_person(source) and "facing the camera" not in text.lower():
+            text = join_prompt_parts(text, SCHNELL_FACE_CLAUSE)
+    return apply_kit_lock(apply_prop_lock(text, beat_text), beat_text)

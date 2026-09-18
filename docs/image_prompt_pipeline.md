@@ -49,6 +49,11 @@ These apply to every model.
 8. **Project profiles are fill-in only** for unnamed clothing or place. They
    are skipped when the beat already names subject and setting. They must never
    add people or replace the beat.
+9. **Keep the beat verb.** Hide is not retrieve. A safe in the wall is built
+   flush into the wall; the person does not hold the safe. Do not turn that
+   action into a portrait of someone holding a small box (hands fuse to metal
+   on distilled models). Skip face-hero framing when the shot is a fixture
+   interaction (`prompts/visual_kit.py` `apply_prop_lock`).
 
 ## Per model
 
@@ -57,12 +62,13 @@ These apply to every model.
 | FLUX Schnell | 12–30 words, one subject | Medium shot, facing the camera | Sharp photograph, clear air, simple staging | 4 steps, FluxGuidance 0, euler/simple (graph) |
 | Z-Image Turbo | 80–160 words, structured | Medium-full, three-quarter, face large and sharp | Sharp photograph, clear air, directional daylight | 9 steps, CFG 1, **res_multistep**/simple, shift 3 |
 | FLUX Dev | 40–80 words, one moment | Medium-full, three-quarter, face readable | Sharp photograph, clear air, directional daylight | 20 steps, FluxGuidance **3.5**, euler/simple (graph) |
+| FLUX.2 Klein 4B | 40–80 words, one moment | Medium-full, three-quarter, face readable | Sharp photograph, clear air, directional daylight | 4 steps, FluxGuidance **1.0**, euler/simple (graph), Qwen 3 4B encoder |
 
-Schnell cannot carry a long essay. Dev and Z-Image can take more concrete
-detail, but not haze or extra people.
+Schnell cannot carry a long essay. Dev, FLUX.2, and Z-Image can take more
+concrete detail, but not haze or extra people.
 
-Z-Image Turbo ignores negative prompts (KSampler CFG 1). Schnell and Dev also
-zero the negative branch; put exclusions in the **positive** prompt.
+Z-Image Turbo ignores negative prompts (KSampler CFG 1). Schnell, Dev, and
+FLUX.2 also zero the negative branch; put exclusions in the **positive** prompt.
 
 Canvas: **1280×720 or 1344×768**. 1024×576 looks soft, especially faces.
 
@@ -93,7 +99,7 @@ the stored text to match.
 | `prompts/visual_beats.py` | Extraction, quote lock, beat validation |
 | `prompts/model_prompt_service.py` | Locked-beat system instruction, per-model YAML, fail-closed generate |
 | `prompts/prompt_grounding.py` | Required tokens; extras: people, garments, architecture, wreckage, race cars |
-| `prompts/visual_identity.py` | Person nationality → appearance; Schnell vs Dev/Z-Image face framing |
+| `prompts/visual_identity.py` | Person nationality → appearance; Schnell vs Dev/Z-Image/FLUX.2 face framing |
 | `prompts/visual_kit.py` | Military convoy → armored trucks; strip invented wreckage |
 | `prompts/prompt_builder.py` | `structure_prompt_for_model`, haze/style strip |
 | `prompts/visual_styles.py` | Short per-model style suffixes (no cinematic essays in the live stack) |
@@ -102,6 +108,7 @@ the stored text to match.
 | `workflows/flux1_schnell_image.json` | Schnell graph |
 | `workflows/zimage_turbo_image.json` | Z-Image graph (`@sampler` / `@shift`) |
 | `workflows/flux1_dev_image.json` | Dev graph (euler + FluxGuidance) |
+| `workflows/flux2_image.json` | FLUX.2 Klein graph (euler + FluxGuidance 1.0, Qwen encoder) |
 | `tests/test_visual_beats.py` | Contract tests; run with `f:\VID\venv\Scripts\python.exe -m unittest tests.test_visual_beats` |
 
 ## What we already learned not to do
@@ -112,6 +119,7 @@ the stored text to match.
 - Do not treat a failed prompt as "generated" after a silent template swap.
 - Do not inject a face for `from the UAE` on a **drone** or **convoy**.
 - Do not describe a convoy strike as "shattered vehicles".
+- Do not turn "hides a document in a wall safe" into retrieving a handheld safe.
 - Do not leave Z-Image on euler; use `res_multistep`.
 - Do not default the canvas to 1024×576 for final stills.
 - Keep the misspelled profile key `software_delevopment` for compatibility.
@@ -127,7 +135,6 @@ through `structure_prompt_for_model`.
 
 ## Not fully treated yet
 
-HiDream and FLUX.2 still use older style suffixes (`Clear photograph…`,
-`Precise photographic scene…`). They already get identity and kit lock via
-`apply_visual_identity`. Apply the same sharp-style / haze-strip pass if they
-show the same fog or race-car failures.
+HiDream still uses the older style suffix (`Clear photograph, distinct faces…`).
+It already gets identity and kit lock via `apply_visual_identity`. Apply the
+same sharp-style / haze-strip pass if it shows the same fog or race-car failures.

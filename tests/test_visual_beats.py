@@ -752,6 +752,26 @@ class PromptAssemblyTests(unittest.TestCase):
         self.assertNotIn("Photographic scene, realistic materials", prompt)
         self.assertIn("medium-full shot", prompt.lower())
 
+    def test_flux2_template_uses_sharp_not_hazy_style(self):
+        profiles_dir = os.path.join(
+            os.path.dirname(__file__), "..", "config", "prompt_profiles"
+        )
+        service = ModelPromptService(profiles_dir, "qwen3:8b", "http://127.0.0.1:11434")
+        beat = VisualBeat(
+            beat="A meeting of Arab leaders in a conference room of the Gulf Cooperation Council.",
+            source="user_added",
+        )
+        prompt = service._template_prompt(
+            {"id": 1, "text": NARRATION},
+            {"model_key": "flux2", "style_preset": "cinematic"},
+            beat,
+        )
+        self.assertIn("Sharp photograph", prompt)
+        self.assertIn("clear air", prompt)
+        self.assertNotIn("Precise photographic scene", prompt)
+        self.assertNotIn("motivated light", prompt.lower())
+        self.assertIn("medium-full shot", prompt.lower())
+
     def test_system_instruction_skips_style_essay_and_complete_beats(self):
         profiles_dir = os.path.join(
             os.path.dirname(__file__), "..", "config", "prompt_profiles"
@@ -1081,6 +1101,84 @@ class RenderPromptTests(unittest.TestCase):
         self.assertNotIn("adult saudi", lower)
         self.assertNotIn("facing the camera", lower)
         self.assertRegex(rendered, r"toward a distant convoy")
+
+    def test_flux2_officer_keeps_face_framing_without_schnell_portrait(self):
+        prompt = VisualIdentityTests.UAE_PROMPT
+        rendered = structure_prompt_for_model(prompt, "flux2")
+        lower = rendered.lower()
+        self.assertIn("emirati", lower)
+        self.assertIn("medium-full shot", lower)
+        self.assertNotIn("facing the camera, medium shot", lower)
+        self.assertIn("sharp photograph", lower)
+        self.assertIn("crisp detail", lower)
+        self.assertNotIn("precise photographic scene", lower)
+        self.assertNotIn("photographic depth", lower)
+
+    def test_flux2_convoy_strike_is_military_trucks_not_wreckage(self):
+        prompt = (
+            "Precise photographic scene, realistic surfaces, directional light. "
+            "A drone strike hits a Sudan Rapid Response Force military convoy "
+            "under dim morning light, revealing shattered vehicles and scattered "
+            "equipment on a dusty desert road."
+        )
+        rendered = structure_prompt_for_model(prompt, "flux2")
+        lower = rendered.lower()
+        self.assertIn("armored military trucks", lower)
+        self.assertNotIn("shattered", lower)
+        self.assertNotIn("scattered equipment", lower)
+        self.assertNotIn("precise photographic scene", lower)
+        self.assertIn("sharp photograph", lower)
+
+    def test_flux2_drone_prompt_stays_a_drone(self):
+        wandered = (
+            "A military drone in flight glides over the Sudan, an adult Saudi "
+            "with Gulf Arab features, olive-brown complexion and a clearly detailed "
+            "face, facing toward a distant convoy."
+        )
+        rendered = structure_prompt_for_model(wandered, "flux2")
+        lower = rendered.lower()
+        self.assertIn("drone", lower)
+        self.assertNotIn("adult saudi", lower)
+        self.assertNotIn("facing the camera", lower)
+        self.assertRegex(rendered, r"toward a distant convoy")
+
+    def test_flux2_wall_safe_stays_in_the_wall_and_hides_not_retrieves(self):
+        beat = (
+            "A Saudi high officer who hides a document inside a safe in the wall."
+        )
+        wandered = (
+            "A Saudi high officer, with a sharp, angular face and dark complexion, "
+            "stands in a dimly lit corridor, reaching into a wall safe to retrieve "
+            "a document. The safe is embedded in the concrete wall, and the officer's "
+            "uniform is contemporary military-style. Medium-full shot, three-quarter "
+            "view, face clearly visible and sharply detailed, eyes in focus, natural "
+            "skin texture."
+        )
+        rendered = structure_prompt_for_model(wandered, "flux2")
+        lower = rendered.lower()
+        self.assertIn("wall", lower)
+        self.assertIn("safe stays in the wall", lower)
+        self.assertIn("does not hold or carry it", lower)
+        self.assertNotIn("retrieve", lower)
+        self.assertNotIn("medium-full shot", lower)
+        self.assertNotIn("facing the camera, medium shot", lower)
+        from prompts.visual_identity import apply_visual_identity
+        locked = apply_visual_identity(wandered, beat, model_key="flux2")
+        self.assertNotIn("retrieve", locked.lower())
+        self.assertIn("safe stays in the wall", locked.lower())
+
+    def test_hide_beat_rejects_retrieve_prompt(self):
+        beat = VisualBeat(
+            beat="A Saudi high officer who hides a document inside a safe in the wall.",
+            subject="a Saudi high officer",
+            action="hides a document inside a safe in the wall",
+        )
+        drifted = check_prompt(
+            "A Saudi officer retrieves a document from a wall safe.",
+            beat,
+        )
+        self.assertFalse(drifted.ok)
+        self.assertIn("retrieves", drifted.extras)
 
 
 if __name__ == "__main__":

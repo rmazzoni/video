@@ -37,6 +37,37 @@ _STRIKE_RE = re.compile(
     r"\b(drone strike|airstrike|air strike|missile strike|hits?|hit by)\b",
     re.IGNORECASE,
 )
+_WALL_SAFE_RE = re.compile(
+    r"\b(wall[- ]safe|safe in(?:side)? the wall|safe (?:built |set |embedded )?"
+    r"in(?:to)?(?: the)? wall|wall-mounted safe)\b",
+    re.IGNORECASE,
+)
+_SAFE_RE = re.compile(r"\b(safe|vault)\b", re.IGNORECASE)
+_WALL_RE = re.compile(r"\bwall\b", re.IGNORECASE)
+_HIDE_RE = re.compile(
+    r"\b(hide[s]?|hiding|conceal[s]?|concealing|stashing|insert[s]?|"
+    r"puts?|putting|places?|placing)\b",
+    re.IGNORECASE,
+)
+_RETRIEVE_PHRASE_RE = re.compile(
+    r"reaching into (?:a |the )?wall[- ]safe to retrieve a document|"
+    r"to retrieve a document|"
+    r"\bretrieve(?:s|ing)? a document\b",
+    re.IGNORECASE,
+)
+_RETRIEVE_VERB_RE = re.compile(r"\b(retrieve[s]?|retrieving|extract[s]?|extracting)\b", re.IGNORECASE)
+_PORTRAIT_CLAUSE_RE = re.compile(
+    r"(?:Medium-full shot, three-quarter view, face clearly visible and "
+    r"sharply detailed, eyes in focus, natural skin texture|"
+    r"Facing the camera, medium shot, face clearly visible|"
+    r"Face sharply detailed, eyes in focus, natural skin texture)[,.]?",
+    re.IGNORECASE,
+)
+WALL_SAFE_CLAUSE = (
+    "The steel safe is built flush into the wall; only the open safe door "
+    "shows in the wall. One hand slides a folded paper document into the "
+    "wall safe. The safe stays in the wall; he does not hold or carry it"
+)
 
 
 def _cleanup(text: str) -> str:
@@ -83,3 +114,36 @@ def apply_kit_lock(prompt: str, beat_text: str = "") -> str:
             text = join_prompt_parts(text, "armored military trucks")
         text = _cleanup(text)
     return text
+
+
+def is_fixture_interaction(text: str) -> bool:
+    """True when the shot is putting something into a wall safe, not a portrait."""
+    blob = str(text or "")
+    if _WALL_SAFE_RE.search(blob):
+        return True
+    return bool(_SAFE_RE.search(blob) and _WALL_RE.search(blob))
+
+
+def apply_prop_lock(prompt: str, beat_text: str = "") -> str:
+    """Keep a wall safe in the wall and keep hide from becoming retrieve."""
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    source = f"{beat_text} {text}".strip()
+    if not is_fixture_interaction(source):
+        return text
+    beat_hides = bool(_HIDE_RE.search(beat_text or ""))
+    beat_retrieves = bool(_RETRIEVE_VERB_RE.search(beat_text or ""))
+    hide = beat_hides or (
+        not beat_retrieves
+        and bool(_RETRIEVE_VERB_RE.search(source))
+    )
+    text = _PORTRAIT_CLAUSE_RE.sub("", text)
+    if hide:
+        text = _RETRIEVE_PHRASE_RE.sub(
+            "sliding a folded document into the open wall safe", text
+        )
+        text = _RETRIEVE_VERB_RE.sub("hides", text)
+    if "flush into the wall" not in text.lower() and "safe stays in the wall" not in text.lower():
+        text = join_prompt_parts(text, WALL_SAFE_CLAUSE)
+    return _cleanup(text)
