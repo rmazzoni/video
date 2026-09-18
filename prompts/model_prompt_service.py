@@ -352,11 +352,12 @@ class ModelPromptService:
 
 
 def effective_prompt(entry: Dict[str, Any]) -> str:
-    """Return the first usable manual or generated prompt from a model entry."""
-    from prompts.visual_beats import prompt_row_is_ready
+    """Return the first paint-able prompt from a model entry."""
+    from prompts.visual_beats import prompt_row_render_text
 
     prompts = entry.get("prompts", []) if isinstance(entry, dict) else []
     for prompt in prompts:
-        if prompt_row_is_ready(prompt):
-            return str(prompt["text"]).strip()
+        text = prompt_row_render_text(prompt)
+        if text:
+            return text
     return ""

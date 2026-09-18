@@ -406,13 +406,45 @@ def coerce_beat_index(value: Any, default: int = 0) -> int:
 
 
 def prompt_row_is_ready(row: Any) -> bool:
-    """True when a prompt row is usable for image generation."""
+    """True when a prompt row is a finished Build Prompts result.
+
+    Ungrounded/pending rows still have beat text and can be rendered; they
+    are not 'ready' in the Prompts tab sense.
+    """
     if not isinstance(row, dict):
         return False
-    if not str(row.get("text") or "").strip():
+    if not prompt_row_render_text(row):
         return False
     source = str(row.get("source") or "").strip()
     return source not in PENDING_PROMPT_SOURCES
+
+
+def prompt_row_render_text(row: Any) -> str:
+    """Text Comfy should paint: stored prompt, else generated_prompt."""
+    if not isinstance(row, dict):
+        return ""
+    text = str(row.get("text") or "").strip()
+    if text:
+        return text
+    return str(row.get("generated_prompt") or "").strip()
+
+
+def prompt_row_can_render(row: Any) -> bool:
+    """True when image stages should use this row instead of re-running Qwen."""
+    return bool(prompt_row_render_text(row))
+
+
+def prompt_rows_for_render(rows: Sequence[Any]) -> List[Dict[str, Any]]:
+    """Copy prompt rows that have paint-able text, with ``text`` filled in."""
+    rendered: List[Dict[str, Any]] = []
+    for row in rows or []:
+        text = prompt_row_render_text(row)
+        if not text:
+            continue
+        item = dict(row)
+        item["text"] = text
+        rendered.append(item)
+    return rendered
 
 
 def find_prompt_row(rows: Sequence[Any], beat_index: int) -> Optional[Dict[str, Any]]:

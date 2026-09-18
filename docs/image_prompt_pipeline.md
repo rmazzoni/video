@@ -49,7 +49,8 @@ These apply to every model.
    start of the prompt.
 7. **Fail closed.** If a generated prompt fails grounding after one retry, keep
    the locked beat text (`source: ungrounded`) instead of swapping in a template
-   and calling it generated.
+   and calling it generated. Preview Images and Final Images **paint that stored
+   text**. They do not re-run Qwen unless the row has no text at all.
 8. **Project profiles are fill-in only** for unnamed clothing or place. They
    are skipped when the beat already names subject and setting. They must never
    add people or replace the beat.

@@ -397,10 +397,23 @@ class PersistenceTests(unittest.TestCase):
         appended = upsert_prompt_row(rows, {"beat": 2, "text": "two"})
         self.assertEqual([row["beat"] for row in appended], [1, 2, 3])
 
-    def test_pending_prompt_rows_are_not_ready_for_images(self):
-        self.assertFalse(prompt_row_is_ready({"beat": 3, "text": "shot", "source": "pending"}))
-        self.assertFalse(prompt_row_is_ready({"beat": 3, "text": "shot", "source": "ungrounded"}))
-        self.assertTrue(prompt_row_is_ready({"beat": 3, "text": "shot", "source": "generated"}))
+    def test_pending_prompt_rows_are_not_ready_but_can_render(self):
+        from prompts.visual_beats import prompt_row_can_render, prompt_rows_for_render
+
+        pending = {"beat": 3, "text": "shot", "source": "pending"}
+        ungrounded = {"beat": 3, "text": "shot", "source": "ungrounded"}
+        generated = {"beat": 3, "text": "shot", "source": "generated"}
+        empty = {"beat": 3, "text": "", "source": "ungrounded"}
+        generated_only = {"beat": 1, "generated_prompt": "paint this", "source": "ungrounded"}
+        self.assertFalse(prompt_row_is_ready(pending))
+        self.assertFalse(prompt_row_is_ready(ungrounded))
+        self.assertTrue(prompt_row_is_ready(generated))
+        self.assertTrue(prompt_row_can_render(pending))
+        self.assertTrue(prompt_row_can_render(ungrounded))
+        self.assertFalse(prompt_row_can_render(empty))
+        self.assertTrue(prompt_row_can_render(generated_only))
+        rendered = prompt_rows_for_render([ungrounded, empty, generated_only])
+        self.assertEqual([row["text"] for row in rendered], ["shot", "paint this"])
 
     def test_ensure_prompt_rows_maps_unnumbered_rows_by_position(self):
         beats = [

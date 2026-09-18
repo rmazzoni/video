@@ -1117,13 +1117,13 @@ class PipelineWorker(QObject):
                         model_prompts = yaml.safe_load(fh) or {}
 
                 def _preview_rows(scene, model_key):
-                    from prompts.visual_beats import prompt_row_is_ready
+                    from prompts.visual_beats import prompt_rows_for_render
 
                     sid = int(scene["id"])
                     scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
                     model_entry = scene_entry.get("models", {}).get(model_key, {})
                     rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
-                    usable = [row for row in rows if prompt_row_is_ready(row)]
+                    usable = prompt_rows_for_render(rows)
                     if usable:
                         return usable
                     fallback = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
@@ -1156,7 +1156,7 @@ class PipelineWorker(QObject):
                     ensure_prompt_rows_for_beats,
                     find_prompt_row,
                     normalize_stored_beats,
-                    prompt_row_is_ready,
+                    prompt_row_can_render,
                     upsert_prompt_row,
                 )
 
@@ -1176,7 +1176,7 @@ class PipelineWorker(QObject):
                         missing = False
                         for beat_index in range(1, beat_count + 1):
                             row = find_prompt_row(rows, beat_index)
-                            if not prompt_row_is_ready(row):
+                            if not prompt_row_can_render(row):
                                 missing = True
                                 break
                         if missing:
@@ -1203,7 +1203,7 @@ class PipelineWorker(QObject):
                         generated_any = False
                         for beat_index, beat in enumerate(visual_beats, 1):
                             row = find_prompt_row(rows, beat_index)
-                            if prompt_row_is_ready(row):
+                            if prompt_row_can_render(row):
                                 continue
                             rows = upsert_prompt_row(
                                 rows,
@@ -1411,14 +1411,14 @@ class PipelineWorker(QObject):
                             "Enable an image model in Prompts > Configure Models for Final Images."
                         )
 
-                from prompts.visual_beats import coerce_beat_index, prompt_row_is_ready
+                from prompts.visual_beats import coerce_beat_index, prompt_rows_for_render
 
                 def _model_prompt_rows(scene, model_key):
                     sid = int(scene["id"])
                     scene_entry = model_prompts.get(sid) or model_prompts.get(str(sid)) or {}
                     model_entry = scene_entry.get("models", {}).get(model_key, {})
                     rows = model_entry.get("prompts", []) if isinstance(model_entry, dict) else []
-                    usable = [row for row in rows if prompt_row_is_ready(row)]
+                    usable = prompt_rows_for_render(rows)
                     if usable:
                         return usable
                     fallback = (prompt_overrides.get(sid) or prompt_overrides.get(str(sid))
