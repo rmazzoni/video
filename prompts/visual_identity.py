@@ -12,6 +12,7 @@ import re
 from typing import List, Optional, Tuple
 
 from prompts.prompt_builder import join_prompt_parts
+from prompts.visual_kit import apply_kit_lock
 
 
 # phrase in source text, demonym, visible features.
@@ -86,13 +87,26 @@ _NATIONALITIES: Tuple[Tuple[str, str, str], ...] = (
 _NATIONALITIES = tuple(sorted(_NATIONALITIES, key=lambda item: len(item[0]), reverse=True))
 
 _ROLE_RE = re.compile(
-    r"\b(officer|official|diplomat|minister|president|soldier|commander|"
-    r"leader|delegate|king|queen|sheikh|emir|man|woman|person|worker|"
+    r"\b(officer|officers|official|officials|diplomat|diplomats|"
+    r"minister|president|soldier|soldiers|commander|"
+    r"leader|leaders|delegate|delegates|king|queen|sheikh|emir|"
+    r"man|woman|person|worker|"
     r"engineer|doctor|teacher|student|fisherman|farmer|guard|aide|"
     r"executive|employee|civilian|pilot|driver|police)\b",
     re.IGNORECASE,
 )
 _FROM_RE = re.compile(r"\bfrom\s+(?:the\s+)?$", re.IGNORECASE)
+_NON_PERSON_FOLLOW_RE = re.compile(
+    r"^\s*(military|army|navy|air\s*force|armed\s+forces|forces?|"
+    r"government|ministry|regime|coalition|convoy|drone|drones|"
+    r"vehicle|vehicles|aircraft|jet|tank|border|desert|airspace|"
+    r"territory|region|rapid\s+response|response\s+force)\b",
+    re.IGNORECASE,
+)
+_INJECTED_IDENTITY_RE = re.compile(
+    r",?\s*an adult [A-Za-z]+ with .{8,120}? and a clearly detailed face,?",
+    re.IGNORECASE,
+)
 _TOWARD_EXIT_RE = re.compile(
     r"\b(?:toward|towards|to)\s+(?:the\s+)?(exit|door|doorway|entrance|gate)\b",
     re.IGNORECASE,
@@ -134,6 +148,8 @@ ZIMAGE_RENDER_CONSTRAINTS = (
 ZIMAGE_FACE_CONSTRAINTS = (
     "Face sharply detailed, eyes in focus, natural skin texture."
 )
+SCHNELL_RENDER_CONSTRAINTS = "Sharp focus, clear air."
+SCHNELL_FACE_CLAUSE = "Facing the camera, medium shot, face clearly visible"
 
 
 def _word_bound(text: str, start: int, end: int) -> bool:
@@ -144,9 +160,22 @@ def _word_bound(text: str, start: int, end: int) -> bool:
     return True
 
 
+def _nationality_attached_to_person(text: str, start: int, end: int) -> bool:
+    """True only when the country/demonym belongs to a named person, not to kit or a place."""
+    after = text[end:end + 40]
+    if _NON_PERSON_FOLLOW_RE.search(after):
+        return False
+    before = text[max(0, start - 56):start]
+    if _FROM_RE.search(before[-24:]) and _ROLE_RE.search(before):
+        return True
+    if _ROLE_RE.search(after[:28]):
+        return True
+    return False
+
+
 def _find_nationality(text: str) -> Optional[Tuple[int, int, str, str]]:
     lower = text.lower()
-    found: List[Tuple[int, int, int, str, str]] = []
+    found: List[Tuple[int, int, str, str]] = []
     for phrase, demonym, appearance in _NATIONALITIES:
         start = 0
         while True:
@@ -154,17 +183,13 @@ def _find_nationality(text: str) -> Optional[Tuple[int, int, str, str]]:
             if idx < 0:
                 break
             end = idx + len(phrase)
-            if _word_bound(lower, idx, end):
-                prefix = text[:idx]
-                from_hit = 2 if _FROM_RE.search(prefix[-24:]) else 0
-                role_hit = 1 if _ROLE_RE.search(text[max(0, idx - 48):end + 24]) else 0
-                found.append((from_hit + role_hit, idx, end, demonym, appearance))
+            if _word_bound(lower, idx, end) and _nationality_attached_to_person(text, idx, end):
+                found.append((idx, end, demonym, appearance))
             start = idx + 1
     if not found:
         return None
-    found.sort(key=lambda item: (-item[0], item[1]))
-    _score, start, end, demonym, appearance = found[0]
-    return start, end, demonym, appearance
+    found.sort(key=lambda item: item[0])
+    return found[0]
 
 
 def _has_matching_appearance(prompt: str, demonym: str) -> bool:
@@ -207,24 +232,25 @@ def prompt_has_person(text: str) -> bool:
 def _cleanup_spaces(text: str) -> str:
     text = re.sub(r"\s{2,}", " ", text)
     text = re.sub(r"\s+([,.;])", r"\1", text)
-    return text.strip(" ,.")
+    return text.strip(" ,")
 
 
-def apply_visual_identity(prompt: str, beat_text: str = "") -> str:
-    """Insert visible nationality, a readable face, and exit-blocking."""
+def apply_visual_identity(prompt: str, beat_text: str = "", model_key: str = "") -> str:
+    """Insert visible nationality and face framing only when the beat names a person."""
     text = str(prompt or "").strip()
     if not text:
         return ""
     text = _cleanup_spaces(_LEGACY_BLOCKING_RE.sub(" ", text))
+    text = _cleanup_spaces(_INJECTED_IDENTITY_RE.sub(" ", text))
     source = f"{beat_text} {text}".strip() if beat_text else text
+    schnell = str(model_key or "").lower() in {"schnell", "flux-schnell"}
     match = _find_nationality(source)
     if match:
         _start, _end, demonym, appearance = match
         if not _has_matching_appearance(text, demonym):
             clause = identity_clause(demonym, appearance)
-            # Prefer weaving after the nationality span inside the prompt.
             local = _find_nationality(text)
-            if local:
+            if local and local[2] == demonym:
                 _ls, le, _d, _a = local
                 rest = text[le:]
                 insert = f", {clause}"
@@ -235,8 +261,11 @@ def apply_visual_identity(prompt: str, beat_text: str = "") -> str:
                 text = text[:le] + insert + rest
             else:
                 text = join_prompt_parts(clause, text)
-    if _TOWARD_EXIT_RE.search(source) and not _BLOCKING_PRESENT_RE.search(text):
-        text = join_prompt_parts(text, blocking_clause())
-    if prompt_has_person(source) and not _FACE_PRESENT_RE.search(text):
-        text = join_prompt_parts(text, face_clause())
-    return text
+    if not schnell:
+        if _TOWARD_EXIT_RE.search(source) and not _BLOCKING_PRESENT_RE.search(text):
+            text = join_prompt_parts(text, blocking_clause())
+        if prompt_has_person(source) and not _FACE_PRESENT_RE.search(text):
+            text = join_prompt_parts(text, face_clause())
+    elif prompt_has_person(source) and "facing the camera" not in text.lower():
+        text = join_prompt_parts(text, SCHNELL_FACE_CLAUSE)
+    return apply_kit_lock(text, beat_text)

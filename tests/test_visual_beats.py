@@ -583,6 +583,15 @@ class PromptGroundingTests(unittest.TestCase):
             beat,
         )
         self.assertTrue(grounded.ok, grounded.summary())
+        wreckage = check_prompt(
+            "A drone strike hits a convoy, revealing shattered vehicles and scattered equipment.",
+            beat,
+        )
+        self.assertFalse(wreckage.ok)
+        self.assertTrue(
+            any(term in wreckage.extras for term in ("shattered", "scattered")),
+            wreckage.extras,
+        )
 
     def test_allows_appearance_and_uniform_of_named_officer(self):
         beat = VisualBeat(
@@ -646,9 +655,9 @@ class PromptPayloadTests(unittest.TestCase):
         self.assertIn("Do not copy the beat sentence verbatim", LOCKED_BEAT_INSTRUCTION)
         self.assertIn("Do not mention aspect ratio", LOCKED_BEAT_INSTRUCTION)
         self.assertIn("visible face and complexion", LOCKED_BEAT_INSTRUCTION.lower())
-        self.assertIn("direction of travel", LOCKED_BEAT_INSTRUCTION.lower())
-        self.assertIn("medium-full shot", LOCKED_BEAT_INSTRUCTION.lower())
+        self.assertIn("no person, no face", LOCKED_BEAT_INSTRUCTION.lower())
         self.assertIn("haze", LOCKED_BEAT_INSTRUCTION.lower())
+        self.assertNotIn("medium-full shot", LOCKED_BEAT_INSTRUCTION.lower())
 
     def test_user_payload_forbids_aspect_ratio(self):
         beat = VisualBeat(beat="A fisherman walks along the pier.")
@@ -690,15 +699,17 @@ class PromptAssemblyTests(unittest.TestCase):
             {"model_key": "schnell", "style_preset": "cinematic"},
             beat,
         )
-        self.assertIn("Cinematic photograph", prompt)
+        self.assertIn("Sharp photograph", prompt)
         self.assertIn("Arab leaders", prompt)
         self.assertLess(
             prompt.lower().index("arab leaders"),
-            prompt.lower().index("cinematic photograph"),
+            prompt.lower().index("sharp photograph"),
         )
+        self.assertIn("facing the camera", prompt.lower())
+        self.assertNotIn("Cinematic photograph", prompt)
         self.assertNotIn("Aspect ratio", prompt)
         self.assertNotIn("volumetric light", prompt)
-        self.assertNotIn("characters facing the camera", prompt)
+        self.assertNotIn("photographic lighting and depth", prompt.lower())
         self.assertNotIn("..", prompt)
 
     def test_zimage_template_uses_sharp_not_hazy_style(self):
@@ -900,6 +911,41 @@ class VisualIdentityTests(unittest.TestCase):
         self.assertIn("face clearly visible", result.lower())
         self.assertNotIn("Emirati", result)
 
+    def test_does_not_invent_a_person_for_saudi_military_drone(self):
+        beat = (
+            "A drone used by the Saudi military flying above the Sudan desert "
+            "toward the Sudan Rapid Response Force military convoy."
+        )
+        result = apply_visual_identity(beat, beat, model_key="schnell")
+        lower = result.lower()
+        self.assertNotIn("adult saudi", lower)
+        self.assertNotIn("gulf arab", lower)
+        self.assertNotIn("clearly detailed face", lower)
+        self.assertNotIn("facing the camera", lower)
+        self.assertIn("drone", lower)
+        self.assertIn("convoy", lower)
+
+    def test_strips_injected_saudi_person_from_drone_prompt(self):
+        wandered = (
+            "A military drone in flight, its undercarriage and sensor array visible, "
+            "glides low over the undulating sand dunes of the Sudan, an adult Saudi "
+            "with Gulf Arab features, olive-brown complexion and a clearly detailed "
+            "face, desert, facing toward a distant convoy of armored vehicles "
+            "identified as the Sudan Rapid Response Force."
+        )
+        result = apply_visual_identity(wandered, model_key="schnell")
+        lower = result.lower()
+        self.assertNotIn("adult saudi", lower)
+        self.assertNotIn("gulf arab", lower)
+        self.assertIn("drone", lower)
+        self.assertIn("convoy", lower)
+
+    def test_schnell_person_faces_the_camera(self):
+        scene = "A fisherman walks along the pier at dawn."
+        result = apply_visual_identity(scene, model_key="schnell")
+        self.assertIn("facing the camera", result.lower())
+        self.assertNotIn("medium-full shot", result.lower())
+
 
 class RenderPromptTests(unittest.TestCase):
     def test_zimage_moves_style_to_end_and_states_identity(self):
@@ -926,8 +972,55 @@ class RenderPromptTests(unittest.TestCase):
         prompt = VisualIdentityTests.UAE_PROMPT
         rendered = structure_prompt_for_model(prompt, "flux-schnell")
         self.assertIn("Emirati", rendered)
+        self.assertIn("facing the camera", rendered.lower())
+        self.assertNotIn("medium-full shot", rendered.lower())
         self.assertNotIn("No extra people, no text, no watermark, no logos.", rendered)
         self.assertNotIn("Sharp focus, clear air, crisp detail.", rendered)
+        self.assertNotIn("photographic lighting and depth", rendered.lower())
+        self.assertIn("Sharp photograph", rendered)
+
+    def test_schnell_convoy_strike_is_military_trucks_not_wreckage(self):
+        prompt = (
+            "A drone strike hits a Sudan Rapid Response Force military convoy "
+            "under dim morning light, revealing shattered vehicles and scattered "
+            "equipment on a dusty desert road. Sharp photograph, clear air, "
+            "simple staging."
+        )
+        rendered = structure_prompt_for_model(prompt, "flux-schnell")
+        lower = rendered.lower()
+        self.assertIn("armored military trucks", lower)
+        self.assertIn("drone strike", lower)
+        self.assertIn("military convoy", lower)
+        self.assertNotIn("shattered", lower)
+        self.assertNotIn("scattered equipment", lower)
+        self.assertNotIn("race car", lower)
+        again = structure_prompt_for_model(rendered, "flux-schnell")
+        self.assertEqual(
+            again.lower().count("armored military trucks"),
+            rendered.lower().count("armored military trucks"),
+        )
+
+    def test_schnell_drone_prompt_stays_a_drone(self):
+        wandered = (
+            "Cinematic photograph, natural materials, photographic lighting and depth. "
+            "A military drone in flight, its undercarriage and sensor array visible, "
+            "glides low over the undulating sand dunes of the Sudan, an adult Saudi "
+            "with Gulf Arab features, olive-brown complexion and a clearly detailed "
+            "face, desert, facing toward a distant convoy of armored vehicles "
+            "identified as the Sudan Rapid Response Force, their turrets and "
+            "camouflage visible in the midground, with the sun casting long shadows "
+            "across the terrain."
+        )
+        rendered = structure_prompt_for_model(wandered, "flux-schnell")
+        lower = rendered.lower()
+        self.assertIn("drone", lower)
+        self.assertIn("convoy", lower)
+        self.assertNotIn("adult saudi", lower)
+        self.assertNotIn("gulf arab", lower)
+        self.assertNotIn("facing the camera", lower)
+        self.assertNotIn("photographic lighting and depth", lower)
+        self.assertIn("sharp photograph", lower)
+        self.assertRegex(rendered, r"toward a distant convoy")
 
 
 if __name__ == "__main__":

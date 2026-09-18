@@ -10,7 +10,7 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
         "display_name": "Cinematic",
         "fallback_preset": "cinematic",
         "prompt_anchors": {
-            "schnell": "Cinematic photograph, natural materials, photographic lighting and depth.",
+            "schnell": "Sharp photograph, clear air, simple staging.",
             "zimage": "Sharp photograph, clear air, tactile materials, directional daylight, fine detail.",
             "dev": "Photographic scene, realistic materials, directional light, spatial depth.",
             "hidream": "Clear photograph, distinct faces, natural materials, directional room light.",
@@ -18,11 +18,10 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
         },
         "models": {
             "schnell": (
-                "Use a cinematic photographic language with concrete, economical detail. "
-                "Let the scene determine framing, perspective, palette, weather, atmosphere, "
-                "and lighting. Favor one readable action and a strong silhouette or focal point, "
-                "but do not reduce every scene to a centered portrait. Use dramatic light, deep "
-                "space, environmental texture, and unusual angles when supported by the narration."
+                "Use a short concrete photograph: one subject, one action, one place. "
+                "Keep the air clear and the focus sharp. Do not add haze, fog, bloom, "
+                "bokeh, or soft focus. If a person is named, a simple medium shot facing "
+                "the camera. Do not invent a person for a vehicle, drone, or landscape."
             ),
             "zimage": (
                 "Use concise photographic language with a strong readable composition, "

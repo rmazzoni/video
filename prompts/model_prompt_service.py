@@ -50,16 +50,16 @@ LOCKED_BEAT_INSTRUCTION = (
     "setting, and objects. If a field is empty, it is absent from the image.\n\n"
     "Do not add people, crowds, extra faces, unnamed buildings, devices, text, "
     "flags, or places that are not in the locked visual beat. If the beat has "
-    "no person, the image has no person and no clothing.\n\n"
-    "If the beat names a nationality, ethnicity, or country of origin, describe "
-    "the visible face and complexion of that named person. Do not leave identity "
-    "as a caption such as 'from the UAE'. Clothing of a named person should match "
-    "that country and role; this depicts the named subject, not a new person.\n\n"
-    "If the beat names a person, use a medium or medium-full shot with the face "
-    "clearly visible and detailed unless the beat is a distant figure in a "
-    "landscape. If the beat names a direction of travel, keep that destination "
-    "in the background or to the side. Toward an exit means walking to a doorway "
-    "with the face still readable, not receding from the camera as a small figure.\n\n"
+    "no person, the image has no person, no face, and no clothing. Do not turn "
+    "a nationality on a vehicle, drone, army, or place into a new person. "
+    "'A drone used by the Saudi military' is a drone, not a Saudi man.\n\n"
+    "If the beat names a person who has a nationality, describe that person's "
+    "visible face and complexion. Do not leave a named person as a caption such "
+    "as 'from the UAE'. Clothing of a named person should match that country "
+    "and role. A country on equipment or a landscape is not a person.\n\n"
+    "Do not invent wreckage, debris, shattered vehicles, or scattered gear "
+    "unless the beat names them. A named military convoy is armored military "
+    "trucks, not civilian cars, toy cars, or race cars.\n\n"
     "Do not copy the beat sentence verbatim and do not wrap it in quality tags "
     "or photographic keyword lists. Write one English photograph prompt using "
     "camera distance, light, and materials of named things only. Do not add "
@@ -105,8 +105,10 @@ def build_prompt_user_payload(scene: Dict[str, Any], beat: VisualBeat) -> Dict[s
         ),
         "writing_rules": (
             "Write one English photograph prompt of the locked beat. "
-            "If a nationality is named, state visible appearance of that person. "
-            "If motion has a direction, state body orientation and destination. "
+            "If the beat names a person with a nationality, state that person's "
+            "appearance. If the beat has no person, do not add one. "
+            "If the beat names a military convoy, say armored military trucks. "
+            "Do not add wreckage unless the beat names it. "
             "Do not quote the beat verbatim. Do not mention aspect ratio or "
             "generation parameters. Return JSON with a single 'prompt' string."
         ),
@@ -277,7 +279,9 @@ class ModelPromptService:
             prompt = self._chat_prompt(system_instruction, user_payload)
             result = check_prompt(prompt, beat, profile_text=profile_text)
             if prompt and result.ok:
-                return self._finalize_prompt(prompt, beat, style_anchor), "generated", ""
+                return self._finalize_prompt(
+                    prompt, beat, style_anchor, model_key
+                ), "generated", ""
             logger.info("Prompt failed grounding (%s); retrying once", result.summary())
             retry_payload = json.dumps({
                 **build_prompt_user_payload(scene, beat),
@@ -287,7 +291,9 @@ class ModelPromptService:
             retry_prompt = self._chat_prompt(system_instruction, retry_payload)
             retry_result = check_prompt(retry_prompt, beat, profile_text=profile_text)
             if retry_prompt and retry_result.ok:
-                return self._finalize_prompt(retry_prompt, beat, style_anchor), "generated", ""
+                return self._finalize_prompt(
+                    retry_prompt, beat, style_anchor, model_key
+                ), "generated", ""
             error = (
                 retry_result.summary() if retry_prompt else result.summary()
             ) or "empty retry"
@@ -308,18 +314,20 @@ class ModelPromptService:
         Do not append aspect ratio or a second cinematic keyword list. Canvas
         size is already set in application settings.
         """
+        model_key = str(profile.get("model_key", ""))
         return self._finalize_prompt(
             self._staged_beat_text(scene, beat),
             beat,
-            visual_style_prompt_anchor(
-                self.visual_style_key, str(profile.get("model_key", ""))
-            ),
+            visual_style_prompt_anchor(self.visual_style_key, model_key),
+            model_key,
         )
 
     @staticmethod
-    def _finalize_prompt(prompt: str, beat: VisualBeat, style_anchor: str) -> str:
+    def _finalize_prompt(
+        prompt: str, beat: VisualBeat, style_anchor: str, model_key: str = ""
+    ) -> str:
         """Scene and visible identity first; style slogan last."""
-        scene = apply_visual_identity(prompt, beat.beat)
+        scene = apply_visual_identity(prompt, beat.beat, model_key=model_key)
         return join_prompt_parts(scene, style_anchor)
 
     @staticmethod

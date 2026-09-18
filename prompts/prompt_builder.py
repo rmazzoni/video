@@ -134,6 +134,7 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     then append a sharp style phrase and Turbo constraints. Idempotent.
     """
     from prompts.visual_identity import (
+        SCHNELL_RENDER_CONSTRAINTS,
         ZIMAGE_FACE_CONSTRAINTS,
         ZIMAGE_RENDER_CONSTRAINTS,
         apply_visual_identity,
@@ -142,19 +143,27 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
 
     if not str(prompt_text or "").strip():
         return ""
+    model = str(model_type or "").lower()
+    model_key = _MODEL_TYPE_KEYS.get(model, "")
+    is_schnell = model in {"flux-schnell", "schnell"}
+    is_zimage = model in {"zimage-turbo", "zimage"}
     scene, illustration = strip_known_style_anchors(prompt_text)
-    scene = apply_visual_identity(scene)
-    if str(model_type or "").lower() in {"zimage-turbo", "zimage"}:
+    scene = apply_visual_identity(scene, model_key=model_key)
+    if is_schnell or is_zimage:
         scene = strip_haze_phrases(scene)
+    if is_schnell and not prompt_has_person(scene):
+        scene = re.sub(r"\bfacing toward\b", "toward", scene, flags=re.IGNORECASE)
     style = _style_for_render(illustration, model_type)
     parts = [scene]
     if style and style.rstrip(".").lower() not in scene.lower():
         parts.append(style)
-    if str(model_type or "").lower() in {"zimage-turbo", "zimage"}:
+    if is_zimage:
         if "sharp focus, clear air" not in scene.lower():
             parts.append(ZIMAGE_RENDER_CONSTRAINTS)
         if prompt_has_person(scene) and "natural skin texture" not in scene.lower():
             parts.append(ZIMAGE_FACE_CONSTRAINTS)
+    elif is_schnell and "sharp focus, clear air" not in scene.lower():
+        parts.append(SCHNELL_RENDER_CONSTRAINTS)
     return join_prompt_parts(*parts)
 
 

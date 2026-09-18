@@ -33,6 +33,10 @@ _GARMENT_RE = re.compile(
     r"tuxedo|gown)\b",
     re.IGNORECASE,
 )
+_AFTERMATH_RE = re.compile(
+    r"\b(shattered|wreckage|debris|scattered|race car|race cars|go-kart|go-karts)\b",
+    re.IGNORECASE,
+)
 _ARCHITECTURE_RE = re.compile(
     r"\b(atrium|skyscraper|skyscrapers|boardroom|marble|limestone|"
     r"chrome|minaret|mosque|palace|colonnade|chandelier|hologram|"
@@ -175,6 +179,7 @@ def check_prompt(
         + people_extras
         + garment_extras
         + extra_restricted_terms(text, allowed, _ARCHITECTURE_RE)
+        + extra_restricted_terms(text, allowed, _AFTERMATH_RE)
     )
     return GroundingResult(ok=not missing and not extras, missing=missing, extras=extras)
 

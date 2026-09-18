@@ -2,12 +2,13 @@ display_name: FLUX Schnell
 style_preset: cinematic
 aspect_ratio: '16:9'
 max_prompts_per_scene: 3
-system_instruction: 'Write a short, concrete FLUX.1 Schnell prompt for the locked
-  visual beat only. One dominant action. Name only people, places, and props that
-  the beat names. If a nationality is named, state visible appearance of that person.
-  If motion has a direction, state where the body faces. Do not add extra people,
-  architecture, devices, or crowds. One concise English paragraph, no keyword piles,
-  no aspect ratio.'
+system_instruction: 'Write a 12-to-30-word FLUX.1 Schnell prompt for the locked visual
+  beat only. One subject, one action, one place. Use the beat''s nouns. Do not add
+  a person unless the beat names one. A nationality on a drone, vehicle, army, or
+  desert is not a person. If the beat names a person, a simple medium shot facing
+  the camera. A military convoy is armored military trucks, not civilian or race
+  cars. Do not add shattered vehicles or wreckage unless the beat names them. No
+  haze, depth-of-field, cinematic slogans, extra clauses, or aspect ratio.'
 requirements:
 - Depict only the locked visual beat.
 - Keep staging simple enough for Schnell to render clearly.
