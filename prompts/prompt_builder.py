@@ -134,8 +134,10 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     then append a sharp style phrase and Turbo constraints. Idempotent.
     """
     from prompts.visual_identity import (
+        ZIMAGE_FACE_CONSTRAINTS,
         ZIMAGE_RENDER_CONSTRAINTS,
         apply_visual_identity,
+        prompt_has_person,
     )
 
     if not str(prompt_text or "").strip():
@@ -151,6 +153,8 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     if str(model_type or "").lower() in {"zimage-turbo", "zimage"}:
         if "sharp focus, clear air" not in scene.lower():
             parts.append(ZIMAGE_RENDER_CONSTRAINTS)
+        if prompt_has_person(scene) and "natural skin texture" not in scene.lower():
+            parts.append(ZIMAGE_FACE_CONSTRAINTS)
     return join_prompt_parts(*parts)
 
 

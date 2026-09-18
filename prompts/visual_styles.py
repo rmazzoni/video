@@ -29,8 +29,10 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "specific natural materials, directional daylight, and clear spatial "
                 "relationships. Keep the air clear and the focus sharp. Do not add haze, "
                 "fog, bloom, bokeh, volumetric light, or soft focus unless the beat names "
-                "weather. Preserve literal subject identity and action rather than "
-                "substituting an attractive generic scene."
+                "weather. If a person is named, use a medium or medium-full shot with "
+                "a sharply detailed face; do not hide the face by receding from camera. "
+                "Preserve literal subject identity and action rather than substituting "
+                "an attractive generic scene."
             ),
             "dev": (
                 "Use expressive cinematic photography with deliberate visual hierarchy. Choose "

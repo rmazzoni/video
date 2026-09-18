@@ -98,9 +98,18 @@ _TOWARD_EXIT_RE = re.compile(
     re.IGNORECASE,
 )
 _BLOCKING_PRESENT_RE = re.compile(
-    r"\b(body\s+fac|receding|leaving\s+through|walking\s+out|"
-    r"toward\s+that\s+door|faces\s+the\s+(?:exit|door)|"
-    r"oriented\s+toward)\b",
+    r"\b(three-quarter view walking toward|door behind the person|"
+    r"medium-full shot, the door)\b",
+    re.IGNORECASE,
+)
+_FACE_PRESENT_RE = re.compile(
+    r"\b(face clearly visible|medium-full shot|eyes in focus)\b",
+    re.IGNORECASE,
+)
+_LEGACY_BLOCKING_RE = re.compile(
+    r"(?:body faces a glass exit doorway at the far side of the room and walks "
+    r"toward that door, receding from the camera, leaving the table behind|"
+    r"receding from the camera)[,.]?",
     re.IGNORECASE,
 )
 _WORD_RE = re.compile(r"[A-Za-z]+")
@@ -121,6 +130,9 @@ _APPEARANCE_RE = re.compile(
 ZIMAGE_RENDER_CONSTRAINTS = (
     "Sharp focus, clear air, crisp detail. "
     "No extra people, no text, no watermark, no logos."
+)
+ZIMAGE_FACE_CONSTRAINTS = (
+    "Face sharply detailed, eyes in focus, natural skin texture."
 )
 
 
@@ -162,7 +174,7 @@ def _has_matching_appearance(prompt: str, demonym: str) -> bool:
 
 
 def identity_clause(demonym: str, appearance: str) -> str:
-    return f"an adult {demonym} with {appearance}"
+    return f"an adult {demonym} with {appearance} and a clearly detailed face"
 
 
 def identity_allowed_text(source: str) -> str:
@@ -171,21 +183,39 @@ def identity_allowed_text(source: str) -> str:
     if not match:
         return ""
     _start, _end, demonym, appearance = match
-    return f"{demonym} {appearance} adult"
+    return f"{demonym} {appearance} adult clearly detailed face"
 
 
 def blocking_clause() -> str:
     return (
-        "Body faces a glass exit doorway at the far side of the room and walks "
-        "toward that door, receding from the camera, leaving the table behind"
+        "Three-quarter view walking toward a glass exit doorway, face still "
+        "clearly visible, medium-full shot, the door behind the person"
     )
 
 
+def face_clause() -> str:
+    return (
+        "Medium-full shot, three-quarter view, face clearly visible and "
+        "sharply detailed, eyes in focus, natural skin texture"
+    )
+
+
+def prompt_has_person(text: str) -> bool:
+    return bool(_ROLE_RE.search(text or ""))
+
+
+def _cleanup_spaces(text: str) -> str:
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\s+([,.;])", r"\1", text)
+    return text.strip(" ,.")
+
+
 def apply_visual_identity(prompt: str, beat_text: str = "") -> str:
-    """Insert visible nationality and exit-blocking when the source names them."""
+    """Insert visible nationality, a readable face, and exit-blocking."""
     text = str(prompt or "").strip()
     if not text:
         return ""
+    text = _cleanup_spaces(_LEGACY_BLOCKING_RE.sub(" ", text))
     source = f"{beat_text} {text}".strip() if beat_text else text
     match = _find_nationality(source)
     if match:
@@ -207,4 +237,6 @@ def apply_visual_identity(prompt: str, beat_text: str = "") -> str:
                 text = join_prompt_parts(clause, text)
     if _TOWARD_EXIT_RE.search(source) and not _BLOCKING_PRESENT_RE.search(text):
         text = join_prompt_parts(text, blocking_clause())
+    if prompt_has_person(source) and not _FACE_PRESENT_RE.search(text):
+        text = join_prompt_parts(text, face_clause())
     return text

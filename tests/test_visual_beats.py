@@ -647,6 +647,7 @@ class PromptPayloadTests(unittest.TestCase):
         self.assertIn("Do not mention aspect ratio", LOCKED_BEAT_INSTRUCTION)
         self.assertIn("visible face and complexion", LOCKED_BEAT_INSTRUCTION.lower())
         self.assertIn("direction of travel", LOCKED_BEAT_INSTRUCTION.lower())
+        self.assertIn("medium-full shot", LOCKED_BEAT_INSTRUCTION.lower())
         self.assertIn("haze", LOCKED_BEAT_INSTRUCTION.lower())
 
     def test_user_payload_forbids_aspect_ratio(self):
@@ -877,7 +878,9 @@ class VisualIdentityTests(unittest.TestCase):
         self.assertIn("olive-brown complexion", result)
         self.assertIn("United Arab Emirates, an adult Emirati", result)
         self.assertIn("strides toward the exit", result)
-        self.assertIn("receding from the camera", result)
+        self.assertIn("medium-full shot", result.lower())
+        self.assertIn("face still clearly visible", result.lower())
+        self.assertNotIn("receding from the camera", result.lower())
 
     def test_does_not_duplicate_identity_or_blocking(self):
         once = apply_visual_identity(
@@ -885,11 +888,17 @@ class VisualIdentityTests(unittest.TestCase):
         )
         twice = apply_visual_identity(once)
         self.assertEqual(once.lower().count("emirati"), twice.lower().count("emirati"))
-        self.assertEqual(once.lower().count("receding"), twice.lower().count("receding"))
+        self.assertEqual(
+            once.lower().count("medium-full shot"),
+            twice.lower().count("medium-full shot"),
+        )
 
-    def test_skips_western_default_scenes(self):
+    def test_adds_face_framing_for_named_people(self):
         scene = "A fisherman walks along the pier at dawn."
-        self.assertEqual(apply_visual_identity(scene), scene)
+        result = apply_visual_identity(scene)
+        self.assertIn("Medium-full shot", result)
+        self.assertIn("face clearly visible", result.lower())
+        self.assertNotIn("Emirati", result)
 
 
 class RenderPromptTests(unittest.TestCase):
@@ -899,11 +908,13 @@ class RenderPromptTests(unittest.TestCase):
         lower = rendered.lower()
         self.assertLess(lower.index("emirati"), lower.index("sharp photograph"))
         self.assertLess(lower.index("officer"), lower.index("sharp photograph"))
-        self.assertIn("receding from the camera", lower)
+        self.assertIn("medium-full shot", lower)
+        self.assertIn("face still clearly visible", lower)
         self.assertIn("no extra people", lower)
         self.assertIn("no watermark", lower)
         self.assertIn("sharp focus", lower)
         self.assertIn("clear air", lower)
+        self.assertNotIn("receding from the camera", lower)
         self.assertNotIn("photographic depth", lower)
         self.assertNotIn("motivated light", lower)
         again = structure_prompt_for_model(rendered, "zimage-turbo")

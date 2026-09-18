@@ -5,7 +5,9 @@ max_prompts_per_scene: 3
 system_instruction: 'Write an 80-to-160-word Z-Image Turbo prompt for the locked visual
   beat only. Order: shot and subject, visible appearance if a nationality is named,
   clothing of that named person, camera-readable action and blocking, setting, directional
-  daylight. Keep the air clear and the focus sharp. Do not add haze, fog, bloom, bokeh,
+  daylight. If a person is named, use a medium or medium-full three-quarter shot with
+  the face sharply detailed and eyes in focus. Keep the air clear and the focus sharp.
+  Do not add haze, fog, bloom, bokeh,
   volumetric light, or soft focus unless the beat names weather. Z-Image ignores negative
   prompts, so put exclusions in this paragraph: no extra people, no text, no watermark.
   Do not add people or places the beat does not name. No keyword piles or generation
