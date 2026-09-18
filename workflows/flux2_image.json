@@ -1,5 +1,5 @@
 {
-  "_meta_note": "FLUX.2 Klein-4B text-to-image. Params: @prompt, @seed.",
+  "_meta_note": "FLUX.2 Klein-4B product still. Params: @prompt, @seed, @width, @height, @steps, @guidance, @filename_prefix. Sampler is hardcoded euler/simple.",
   "1": {
     "class_type": "UNETLoader",
     "_meta": { "title": "Load Diffusion Model" },

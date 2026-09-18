@@ -684,9 +684,15 @@ class PipelineWorker(QObject):
                 scheduler = str(self.config.get(f"{model_key}_scheduler", scheduler_default))
                 shift_default = 6.0 if model_key == "hidream" else 3.0
                 shift = float(self.config.get(f"{model_key}_shift", shift_default))
+                from comfy_bridge.graphs import spec_for_model
+                spec = spec_for_model(model_type)
                 self.log.emit(
-                    f"ComfyUI image workflow: {model_type}  steps={steps}  guidance={guidance}  "
-                    f"sampler={sampler}  scheduler={scheduler}  shift={shift}")
+                    f"ComfyUI product still {spec.filename}: steps={steps} "
+                    f"guidance={guidance} size={self.config.get('image_width', 1344)}x"
+                    f"{self.config.get('image_height', 768)}"
+                    + (f" sampler={sampler} scheduler={scheduler} shift={shift}"
+                       if "sampler" in spec.params else "")
+                )
                 from images.comfy_image_generator import ComfyImageGenerator
                 return ComfyImageGenerator(
                     source_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
@@ -698,8 +704,8 @@ class PipelineWorker(QObject):
                     sampler=sampler,
                     scheduler=scheduler,
                     shift=shift,
-                    width=int(self.config.get("image_width", 1024)),
-                    height=int(self.config.get("image_height", 576)),
+                    width=int(self.config.get("image_width", 1344)),
+                    height=int(self.config.get("image_height", 768)),
                     timeout=float(self.config.get("comfy_image_timeout", 900.0)),
                 )
 

@@ -1,4 +1,7 @@
-"""Native ComfyUI image generation for the VID pipeline."""
+"""Native ComfyUI image generation for the VID pipeline.
+
+ComfyUI is the GPU render backend. Prompt lock stays in prompts/.
+"""
 
 import os
 import tempfile
@@ -7,30 +10,15 @@ from typing import Callable, Dict, Optional
 import yaml
 
 from comfy_bridge.client import ComfyClient
-
-
-WORKFLOWS = {
-    "flux-schnell": "flux1_schnell_image.json",
-    "zimage-turbo": "zimage_turbo_image.json",
-    "flux-dev": "flux1_dev_image.json",
-    "hidream-dev": "hidream_i1_dev_image.json",
-    "flux2": "flux2_image.json",
-}
-
-ZIMAGE_REQUIREMENTS = (
-    ("UNETLoader", "unet_name", "z_image_turbo_bf16.safetensors", "models/diffusion_models"),
-    ("CLIPLoader", "clip_name", "qwen_3_4b.safetensors", "models/text_encoders"),
-    ("VAELoader", "vae_name", "ae.safetensors", "models/vae"),
+from comfy_bridge.graphs import (
+    WORKFLOWS,
+    leftover_placeholders,
+    params_for_spec,
+    spec_for_model,
 )
 
-HIDREAM_REQUIREMENTS = (
-    ("UNETLoader", "unet_name", "hidream_i1_dev_fp8.safetensors", "models/diffusion_models"),
-    ("QuadrupleCLIPLoader", "clip_name1", "clip_l_hidream.safetensors", "models/text_encoders"),
-    ("QuadrupleCLIPLoader", "clip_name2", "clip_g_hidream.safetensors", "models/text_encoders"),
-    ("QuadrupleCLIPLoader", "clip_name3", "t5xxl_fp8_e4m3fn_scaled.safetensors", "models/text_encoders"),
-    ("QuadrupleCLIPLoader", "clip_name4", "llama_3.1_8b_instruct_fp8_scaled.safetensors", "models/text_encoders"),
-    ("VAELoader", "vae_name", "ae.safetensors", "models/vae"),
-)
+# Re-export for callers that still import WORKFLOWS from here.
+__all__ = ["ComfyImageGenerator", "WORKFLOWS"]
 
 
 class ComfyImageGenerator:
@@ -49,8 +37,7 @@ class ComfyImageGenerator:
         shift: float = 3.0,
         timeout: float = 900.0,
     ):
-        if model_type not in WORKFLOWS:
-            raise ValueError(f"Unsupported ComfyUI image model: {model_type}")
+        self.spec = spec_for_model(model_type)
         self.source_dir = source_dir
         self.model_type = model_type
         self.output_dir = output_dir
@@ -70,21 +57,30 @@ class ComfyImageGenerator:
             host=str(config.get("host", "127.0.0.1")),
             port=int(config.get("port", 8188)),
         )
-        workflow_path = os.path.join(source_dir, "workflows", WORKFLOWS[model_type])
+        workflow_path = os.path.join(source_dir, "workflows", self.spec.filename)
         self.workflow = self.client.load_workflow(workflow_path)
+        declared = leftover_placeholders(self.workflow)
+        extra = declared - self.spec.params
+        missing = self.spec.params - declared
+        if extra or missing:
+            parts = []
+            if extra:
+                parts.append("graph-only " + ", ".join(f"@{key}" for key in sorted(extra)))
+            if missing:
+                parts.append("spec-only " + ", ".join(f"@{key}" for key in sorted(missing)))
+            raise ValueError(
+                f"{self.spec.filename} does not match the product still contract: "
+                + "; ".join(parts)
+            )
         os.makedirs(output_dir, exist_ok=True)
 
     def _validate_required_models(self) -> None:
-        requirements = {
-            "zimage-turbo": ("Z-Image Turbo", ZIMAGE_REQUIREMENTS),
-            "hidream-dev": ("HiDream-I1 Dev", HIDREAM_REQUIREMENTS),
-        }.get(self.model_type)
-        if requirements is None:
+        if not self.spec.requirements:
             return
-        display_name, model_requirements = requirements
+        display_name = self.spec.display_name
         object_info = self.client.get_object_info()
         missing = []
-        for node_name, input_name, filename, folder in model_requirements:
+        for node_name, input_name, filename, folder in self.spec.requirements:
             try:
                 input_spec = object_info[node_name]["input"]["required"][input_name]
                 if input_spec[0] == "COMBO":
@@ -112,7 +108,11 @@ class ComfyImageGenerator:
         wait_callback: Optional[Callable[[float], None]] = None,
     ) -> str:
         if not self.client.is_alive():
-            raise ConnectionError("ComfyUI is not running or is not reachable.")
+            raise ConnectionError(
+                f"ComfyUI is not running at {self.client.host}:{self.client.port}. "
+                "Start the app with launch_with_comfy.py so the render server is up "
+                "before generating stills."
+            )
         self._validate_required_models()
         # Clear any stuck/leftover job from a previous (cancelled or timed-out) generation
         # so it can't block this one from ever showing up in /history.
@@ -121,7 +121,7 @@ class ComfyImageGenerator:
         prompt = structure_prompt_for_model(prompt, self.model_type)
         active_seed = self.seed if seed_override is None else seed_override
         prefix = f"vid/{self.model_type}/scene_{scene_id:03d}{filename_suffix}"
-        params: Dict[str, object] = {
+        available: Dict[str, object] = {
             "prompt": prompt,
             "seed": active_seed,
             "width": self.width,
@@ -133,7 +133,8 @@ class ComfyImageGenerator:
             "shift": self.shift,
             "filename_prefix": prefix,
         }
-        prompt_id = self.client.execute_workflow(self.workflow, params)
+        params = params_for_spec(self.spec, available)
+        prompt_id = self.client.execute_workflow(self.workflow, params, strict=True)
         result = self.client.wait_for_result(
             prompt_id,
             timeout=self.timeout,

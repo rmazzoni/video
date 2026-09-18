@@ -161,6 +161,12 @@ class ComfyController(QObject):
             return
 
         graph = self.loader.load(workflow_name)
+        from comfy_bridge.graphs import spec_for_filename
+        spec = spec_for_filename(workflow_name)
+        if spec is not None and spec.role == "compatibility":
+            self.logger.warning(
+                "Running the frozen VID stage loop. Video stills belong on the Pipeline tab."
+            )
 
         self._thread = QThread(self)
         self._worker = WorkflowWorker(self.client, graph, params or {})

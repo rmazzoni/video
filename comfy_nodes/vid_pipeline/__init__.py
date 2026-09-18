@@ -1,4 +1,10 @@
-"""ComfyUI nodes that expose the VID pipeline stages."""
+"""FROZEN compatibility nodes. Not the product pipeline.
+
+These wrap PipelineWorker so an old Comfy graph can call VID stages.
+That path is Comfy → Python → Comfy for stills. Do not add models or stages.
+Product stills use images/comfy_image_generator.py and workflows/*_image.json.
+See docs/comfy_role.md.
+"""
 
 import os
 from typing import Any, Dict, Tuple

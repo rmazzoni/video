@@ -1,5 +1,5 @@
 {
-  "_meta_note": "FLUX.1-schnell text-to-image (4-step distilled). Params: @prompt, @seed.",
+  "_meta_note": "FLUX.1-schnell product still. Params: @prompt, @seed, @width, @height, @steps, @guidance, @filename_prefix. Sampler is hardcoded euler/simple.",
   "1": {
     "class_type": "UNETLoader",
     "_meta": { "title": "Load Diffusion Model" },

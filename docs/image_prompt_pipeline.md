@@ -19,6 +19,9 @@ scene narration
   → Python identity / kit lock + style suffix
   → structure_prompt_for_model() at ComfyUI render
   → native ComfyUI graph (Schnell / Z-Image Turbo / Dev / HiDream / FLUX.2)
+
+ComfyUI only receives the already-shaped positive prompt and sampling
+params. It does not see the beat, profile, or Qwen. See `docs/comfy_role.md`.
 ```
 
 Beats live in `output/model_prompts.yaml` and are shared. Each model has its

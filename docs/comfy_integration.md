@@ -3,6 +3,11 @@
 This document describes the ComfyUI backend integration added to the Qt6 (PyQt6) video
 generation UI.
 
+**Role:** ComfyUI is the GPU render backend for stills. The Qt app owns beats,
+prompts, TTS, and assembly. See `docs/comfy_role.md` for the decision and the
+per-model graph contract. Do not grow `vid_full_pipeline.json` as the product
+path.
+
 ## Overview
 
 ```mermaid

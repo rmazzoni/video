@@ -267,7 +267,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_prompts_tab(), "Prompts")
         self.tabs.addTab(self._build_draft_tab(), "Preview Images")
         self.tabs.addTab(self._build_lightbox_tab(), "Lightbox")
-        self.tabs.addTab(self._build_comfy_tab(), "ComfyUI")
+        self.tabs.addTab(self._build_comfy_tab(), "Comfy lab")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         layout.addWidget(self.tabs)
 
@@ -418,10 +418,18 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(left_panel)
 
         default_workflow = str(comfy_config.get("default_workflow", "zimage_turbo_image.json"))
+        from comfy_bridge.graphs import lab_workflow_choices
         self.comfy_workflow_selector = WorkflowSelector(
-            workflows_dir, default_workflow=default_workflow
+            workflows_dir,
+            default_workflow=default_workflow,
+            choices=lab_workflow_choices(),
         )
         self.comfy_status = PipelineStatus()
+        lab_note = QLabel(
+            "Lab: send a graph to the ComfyUI server. Video stills are generated "
+            "from the Pipeline tab. This tab does not lock beats or prompts."
+        )
+        lab_note.setWordWrap(True)
 
         parameter_form = QFormLayout()
         self.comfy_prompt_input = QPlainTextEdit()
@@ -491,6 +499,7 @@ class MainWindow(QMainWindow):
         snapshot_row.addWidget(self.comfy_save_snapshot_button)
         snapshot_row.addWidget(self.comfy_load_snapshot_button)
 
+        layout.addWidget(lab_note)
         layout.addWidget(self.comfy_workflow_selector)
         layout.addLayout(parameter_form)
         layout.addLayout(run_row)
@@ -566,8 +575,8 @@ class MainWindow(QMainWindow):
         model_key = self._COMFY_WORKFLOW_MODELS.get(workflow_name)
         config = self.controller.config
         self.comfy_seed_input.setValue(int(config.get("seed", 42)))
-        self.comfy_width_input.setValue(int(config.get("image_width", 1024)))
-        self.comfy_height_input.setValue(int(config.get("image_height", 576)))
+        self.comfy_width_input.setValue(int(config.get("image_width", 1344)))
+        self.comfy_height_input.setValue(int(config.get("image_height", 768)))
         if model_key:
             defaults = {
                 "schnell": (4, 0.0),
@@ -634,8 +643,18 @@ class MainWindow(QMainWindow):
 
     def _run_comfy_workflow(self) -> None:
         self._save_comfy_parameter_controls()
+        workflow_name = self.comfy_workflow_selector.selected_workflow()
+        from comfy_bridge.graphs import spec_for_filename
+        spec = spec_for_filename(workflow_name)
+        if spec is not None and spec.role == "compatibility":
+            self.comfy_status.append_log(
+                "This graph is the frozen VID stage loop (Comfy → Python → Comfy). "
+                "Generate video stills from the Pipeline tab."
+            )
+        elif spec is not None and spec.role == "lab":
+            self.comfy_status.append_log(f"Lab graph: {spec.display_name}")
         self.comfy_controller.run_workflow(
-            self.comfy_workflow_selector.selected_workflow(),
+            workflow_name,
             self._comfy_workflow_params(),
         )
 

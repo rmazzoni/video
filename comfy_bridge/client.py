@@ -140,14 +140,33 @@ class ComfyClient:
             return [self._substitute_params(v, params) for v in node]
         return node
 
-    def execute_workflow(self, workflow: Dict[str, Any], params: Dict[str, Any]) -> str:
+    def execute_workflow(
+        self,
+        workflow: Dict[str, Any],
+        params: Dict[str, Any],
+        strict: bool = True,
+    ) -> str:
         """
         Injects `params` (e.g. {"prompt": "...", "seed": 123}) into any
         "@prompt" / "@seed" placeholder found in the workflow's node inputs,
         submits the resulting graph, and returns the ComfyUI prompt_id.
         """
+        from comfy_bridge.graphs import leftover_placeholders, missing_placeholders
+
         graph = {k: v for k, v in workflow.items() if isinstance(v, dict)}
+        missing = missing_placeholders(graph, params)
+        if strict and missing:
+            raise ValueError(
+                "Workflow placeholders have no values: "
+                + ", ".join(f"@{key}" for key in sorted(missing))
+            )
         graph = self._substitute_params(copy.deepcopy(graph), params)
+        leftover = leftover_placeholders(graph)
+        if strict and leftover:
+            raise ValueError(
+                "Workflow still has unsubstituted placeholders: "
+                + ", ".join(f"@{key}" for key in sorted(leftover))
+            )
         queued = self.queue_prompt(graph)
         prompt_id = queued.get("prompt_id")
         if not prompt_id:
