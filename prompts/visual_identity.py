@@ -150,6 +150,7 @@ ZIMAGE_FACE_CONSTRAINTS = (
 )
 SCHNELL_RENDER_CONSTRAINTS = "Sharp focus, clear air."
 SCHNELL_FACE_CLAUSE = "Facing the camera, medium shot, face clearly visible"
+DEV_RENDER_CONSTRAINTS = "Sharp focus, clear air, crisp detail."
 
 
 def _word_bound(text: str, start: int, end: int) -> bool:

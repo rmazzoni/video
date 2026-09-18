@@ -12,7 +12,7 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
         "prompt_anchors": {
             "schnell": "Sharp photograph, clear air, simple staging.",
             "zimage": "Sharp photograph, clear air, tactile materials, directional daylight, fine detail.",
-            "dev": "Photographic scene, realistic materials, directional light, spatial depth.",
+            "dev": "Sharp photograph, clear air, directional daylight, fine detail.",
             "hidream": "Clear photograph, distinct faces, natural materials, directional room light.",
             "flux2": "Precise photographic scene, realistic surfaces, directional light.",
         },
@@ -34,12 +34,11 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
                 "an attractive generic scene."
             ),
             "dev": (
-                "Use expressive cinematic photography with deliberate visual hierarchy. Choose "
-                "lens perspective, camera distance, blocking, atmosphere, color contrast, and "
-                "directional light from the dramatic needs of this scene. Preserve environmental "
-                "detail and visual tension; avoid a generic commercial portrait or uniformly soft, "
-                "flat illumination. Stage the beat as a specific room or landscape; do not repeat "
-                "the beat sentence inside a list of lighting tags."
+                "Use concrete photographic language with one decisive moment, directional "
+                "daylight, and clear air. Do not add haze, fog, bloom, bokeh, or soft focus "
+                "unless the beat names weather. If a person is named, a medium-full shot with "
+                "a readable face; do not recede from camera. Do not invent a person for a "
+                "vehicle, drone, or landscape. A military convoy is armored military trucks."
             ),
             "hidream": (
                 "Use clear, spatially staged photography with natural anatomy, readable faces, "

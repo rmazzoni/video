@@ -732,6 +732,26 @@ class PromptAssemblyTests(unittest.TestCase):
         self.assertNotIn("motivated light", prompt.lower())
         self.assertNotIn("volumetric", prompt.lower())
 
+    def test_dev_template_uses_sharp_not_hazy_style(self):
+        profiles_dir = os.path.join(
+            os.path.dirname(__file__), "..", "config", "prompt_profiles"
+        )
+        service = ModelPromptService(profiles_dir, "qwen3:8b", "http://127.0.0.1:11434")
+        beat = VisualBeat(
+            beat="A meeting of Arab leaders in a conference room of the Gulf Cooperation Council.",
+            source="user_added",
+        )
+        prompt = service._template_prompt(
+            {"id": 1, "text": NARRATION},
+            {"model_key": "dev", "style_preset": "cinematic"},
+            beat,
+        )
+        self.assertIn("Sharp photograph", prompt)
+        self.assertIn("clear air", prompt)
+        self.assertNotIn("spatial depth", prompt.lower())
+        self.assertNotIn("Photographic scene, realistic materials", prompt)
+        self.assertIn("medium-full shot", prompt.lower())
+
     def test_system_instruction_skips_style_essay_and_complete_beats(self):
         profiles_dir = os.path.join(
             os.path.dirname(__file__), "..", "config", "prompt_profiles"
@@ -1020,6 +1040,46 @@ class RenderPromptTests(unittest.TestCase):
         self.assertNotIn("facing the camera", lower)
         self.assertNotIn("photographic lighting and depth", lower)
         self.assertIn("sharp photograph", lower)
+        self.assertRegex(rendered, r"toward a distant convoy")
+
+    def test_dev_officer_keeps_face_framing_without_schnell_portrait(self):
+        prompt = VisualIdentityTests.UAE_PROMPT
+        rendered = structure_prompt_for_model(prompt, "flux-dev")
+        lower = rendered.lower()
+        self.assertIn("emirati", lower)
+        self.assertIn("medium-full shot", lower)
+        self.assertNotIn("facing the camera, medium shot", lower)
+        self.assertIn("sharp photograph", lower)
+        self.assertIn("crisp detail", lower)
+        self.assertNotIn("spatial depth", lower)
+        self.assertNotIn("photographic depth", lower)
+
+    def test_dev_convoy_strike_is_military_trucks_not_wreckage(self):
+        prompt = (
+            "Photographic scene, realistic materials, directional light, spatial depth. "
+            "A drone strike hits a Sudan Rapid Response Force military convoy "
+            "under dim morning light, revealing shattered vehicles and scattered "
+            "equipment on a dusty desert road."
+        )
+        rendered = structure_prompt_for_model(prompt, "flux-dev")
+        lower = rendered.lower()
+        self.assertIn("armored military trucks", lower)
+        self.assertNotIn("shattered", lower)
+        self.assertNotIn("scattered equipment", lower)
+        self.assertNotIn("spatial depth", lower)
+        self.assertIn("sharp photograph", lower)
+
+    def test_dev_drone_prompt_stays_a_drone(self):
+        wandered = (
+            "A military drone in flight glides over the Sudan, an adult Saudi "
+            "with Gulf Arab features, olive-brown complexion and a clearly detailed "
+            "face, facing toward a distant convoy."
+        )
+        rendered = structure_prompt_for_model(wandered, "flux-dev")
+        lower = rendered.lower()
+        self.assertIn("drone", lower)
+        self.assertNotIn("adult saudi", lower)
+        self.assertNotIn("facing the camera", lower)
         self.assertRegex(rendered, r"toward a distant convoy")
 
 

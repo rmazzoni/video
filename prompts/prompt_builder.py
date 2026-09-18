@@ -134,6 +134,7 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     then append a sharp style phrase and Turbo constraints. Idempotent.
     """
     from prompts.visual_identity import (
+        DEV_RENDER_CONSTRAINTS,
         SCHNELL_RENDER_CONSTRAINTS,
         ZIMAGE_FACE_CONSTRAINTS,
         ZIMAGE_RENDER_CONSTRAINTS,
@@ -147,11 +148,12 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
     model_key = _MODEL_TYPE_KEYS.get(model, "")
     is_schnell = model in {"flux-schnell", "schnell"}
     is_zimage = model in {"zimage-turbo", "zimage"}
+    is_dev = model in {"flux-dev", "dev"}
     scene, illustration = strip_known_style_anchors(prompt_text)
     scene = apply_visual_identity(scene, model_key=model_key)
-    if is_schnell or is_zimage:
+    if is_schnell or is_zimage or is_dev:
         scene = strip_haze_phrases(scene)
-    if is_schnell and not prompt_has_person(scene):
+    if (is_schnell or is_dev) and not prompt_has_person(scene):
         scene = re.sub(r"\bfacing toward\b", "toward", scene, flags=re.IGNORECASE)
     style = _style_for_render(illustration, model_type)
     parts = [scene]
@@ -164,6 +166,8 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
             parts.append(ZIMAGE_FACE_CONSTRAINTS)
     elif is_schnell and "sharp focus, clear air" not in scene.lower():
         parts.append(SCHNELL_RENDER_CONSTRAINTS)
+    elif is_dev and "sharp focus, clear air" not in scene.lower():
+        parts.append(DEV_RENDER_CONSTRAINTS)
     return join_prompt_parts(*parts)
 
 

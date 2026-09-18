@@ -165,10 +165,16 @@ Diffusers-backed stage implementations have been migrated.
 
 ### Model-specific prompt profiles
 
-Prompt generation uses three editable profiles in `config/prompt_profiles`:
-`schnell.yaml`, `dev.yaml`, and `flux2.yaml`. The Prompts tab mirrors these as
-three subtabs. Each subtab exposes its Qwen system instructions and stores one
-or more visual beats per scene in `output/model_prompts.yaml`.
+Prompt generation uses editable profiles in `config/prompt_profiles`
+(`schnell.yaml`, `zimage.yaml`, `dev.yaml`, `hidream.yaml`, `flux2.yaml`).
+The Prompts tab mirrors enabled models. Each profile's Qwen system instruction
+plus the shared locked-beat rules in `prompts/model_prompt_service.py` write
+rows into `output/model_prompts.yaml`.
+
+How beats are locked, how nationality/wreckage/haze are stripped, and how
+Schnell / Z-Image Turbo / Dev prompts are shaped at render time is documented
+in `docs/image_prompt_pipeline.md`. Read that before changing prompt profiles
+or `structure_prompt_for_model`.
 
 Manual prompt saves are marked `manually_edited` and survive normal bulk builds.
 The per-model regeneration button is the explicit replacement path and asks for
