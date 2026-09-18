@@ -4,13 +4,13 @@ Ken Burns effect clip generator.
 Produces a video clip from a still image by applying a slow cinematic
 zoom-in and a single left-or-right pan. Consecutive clips alternate
 direction so the cut does not reverse mid-shot.
+
+Motion is a single ffmpeg crop/scale graph (no Python frame loop).
 """
 
-import concurrent.futures
 import os
 import subprocess
-import tempfile as _tf
-from typing import Optional
+from typing import Optional, Tuple
 
 from PIL import Image
 
@@ -28,15 +28,26 @@ def _nvenc_available() -> bool:
         return False
 
 
-def _enc_args(nvenc: bool) -> list:
+def max_parallel_encodes(nvenc: bool) -> int:
+    """How many ffmpeg encodes to run at once. NVENC has a low session cap."""
+    if nvenc:
+        return 3
+    cpu = os.cpu_count() or 4
+    return max(2, min(8, cpu))
+
+
+def _enc_args(nvenc: bool, x264_threads: Optional[int] = None) -> list:
     """Return ffmpeg encoder arguments: NVENC when available, libx264 ultrafast otherwise."""
     if nvenc:
         return ["-c:v", "h264_nvenc", "-preset", "p1", "-rc", "vbr",
                 "-cq", "24", "-pix_fmt", "yuv420p",
                 "-vsync", "cfr", "-video_track_timescale", "12288"]
-    return ["-c:v", "libx264", "-crf", "14", "-preset", "ultrafast",
+    args = ["-c:v", "libx264", "-crf", "18", "-preset", "ultrafast",
             "-pix_fmt", "yuv420p", "-vsync", "cfr",
             "-video_track_timescale", "12288"]
+    if x264_threads:
+        args.extend(["-threads", str(int(x264_threads))])
+    return args
 
 
 # Bump when crop math changes so clip sidecars force a re-render.
@@ -105,6 +116,34 @@ def interpolated_crop(
     return tuple(a + (b - a) * t for a, b in zip(start, end))
 
 
+MOTION_CAP = 6.0
+
+
+def ken_burns_vf(
+    img_w: float,
+    img_h: float,
+    out_w: int,
+    out_h: int,
+    duration: float,
+    clip_index: int,
+) -> str:
+    """ffmpeg crop+scale that matches interpolated_crop, with hold after MOTION_CAP."""
+    duration = max(float(duration), 1e-3)
+    motion_dur = min(duration, MOTION_CAP)
+    sw0, sh0, x0, y0 = interpolated_crop(img_w, img_h, 0.0, clip_index)
+    sw1, sh1, x1, y1 = interpolated_crop(img_w, img_h, 1.0, clip_index)
+    p = f"min(1\\,t/{motion_dur:.6f})"
+    w = f"{sw0:.4f}+({sw1 - sw0:.4f})*{p}"
+    h = f"{sh0:.4f}+({sh1 - sh0:.4f})*{p}"
+    x = f"{x0:.4f}+({x1 - x0:.4f})*{p}"
+    y = f"{y0:.4f}+({y1 - y0:.4f})*{p}"
+    return (
+        f"crop=w='max(2\\,trunc(({w})/2)*2)':h='max(2\\,trunc(({h})/2)*2)':"
+        f"x='max(0\\,trunc({x}))':y='max(0\\,trunc({y}))',"
+        f"scale={int(out_w)}:{int(out_h)}:flags=bilinear,setsar=1"
+    )
+
+
 class KenBurnsGenerator:
     """Generates Ken Burns-style video clips from still images."""
 
@@ -115,6 +154,7 @@ class KenBurnsGenerator:
         duration: float = 4.0,
         seed: Optional[int] = None,
         motion_style: str = "auto",
+        output_size: Optional[Tuple[int, int]] = None,
     ):
         """
         :param output_dir: where to save generated clips
@@ -122,18 +162,21 @@ class KenBurnsGenerator:
         :param duration: clip length in seconds
         :param seed: kept for caller compatibility; auto motion is deterministic
         :param motion_style: "auto" = one-way pan + slight zoom-in, "static" = no motion
+        :param output_size: optional (width, height); default is 1920x1080 for 16:9
         """
         self.output_dir = output_dir
         self.fps = fps
         self.duration = duration
         self.seed = seed
         self.motion_style = motion_style
+        self.output_size = output_size
 
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
         # Detect NVENC once at construction time so every clip reuses the result.
         self._nvenc: bool = _nvenc_available()
+        self._x264_threads = max(1, (os.cpu_count() or 4) // max_parallel_encodes(self._nvenc))
 
     # ---------------------------------------------------------
     # PUBLIC API
@@ -145,6 +188,7 @@ class KenBurnsGenerator:
         scene_id: int,
         filename_suffix: str = "",
         motion_index: Optional[int] = None,
+        duration: Optional[float] = None,
     ) -> str:
         """
         Generate a clip from a still image.
@@ -153,120 +197,39 @@ class KenBurnsGenerator:
         ``motion_index`` (or ``scene_id``) pans right; the next clip pans left.
         Returns the output video file path.
         """
-        image = Image.open(image_path)
-        img_w, img_h = image.size
-        image.close()
-        out_w, out_h = self._output_size(img_w, img_h)
+        clip_dur = float(self.duration if duration is None else duration)
+        with Image.open(image_path) as image:
+            img_w, img_h = image.size
+        if self.output_size:
+            out_w, out_h = self.output_size
+            out_w = out_w if out_w % 2 == 0 else out_w - 1
+            out_h = out_h if out_h % 2 == 0 else out_h - 1
+        else:
+            out_w, out_h = self._output_size(img_w, img_h)
 
         output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4")
+        enc = _enc_args(self._nvenc, None if self._nvenc else self._x264_threads)
+        dur = str(round(max(clip_dur, 0.05), 3))
 
         if self.motion_style == "static":
-            subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-loop", "1", "-i", image_path,
-                    "-vf", f"scale={out_w}:{out_h},setsar=1",
-                    "-t", str(round(self.duration, 3)),
-                    "-r", str(self.fps),
-                ] + _enc_args(self._nvenc) + [output_path],
-                check=True,
-                capture_output=True,
-            )
-            return output_path
+            vf = f"scale={out_w}:{out_h}:flags=bilinear,setsar=1"
+        else:
+            pan_number = scene_id if motion_index is None else motion_index
+            vf = ken_burns_vf(img_w, img_h, out_w, out_h, clip_dur, pan_number)
 
-        # ── Animated (auto) mode ──────────────────────────────────────────────
-        # Frames are rendered in parallel (ThreadPoolExecutor) using PIL
-        # affine + BICUBIC. The crop rectangle is interpolated from a start
-        # window to an end window so the pan never reverses mid-clip.
-        pan_number = scene_id if motion_index is None else motion_index
-
-        MOTION_CAP = 6.0
-        motion_dur = min(self.duration, MOTION_CAP)
-        hold_dur   = max(0.0, self.duration - motion_dur)
-        N          = max(2, round(motion_dur * self.fps))
-
-        image = Image.open(image_path).convert("RGB")
-        img_w, img_h = image.size
-
-        def _render(i: int) -> bytes:
-            t = i / max(N - 1, 1)
-            src_w, src_h, x0, y0 = interpolated_crop(img_w, img_h, t, pan_number)
-            return (
-                image.transform(
-                    (out_w, out_h),
-                    Image.AFFINE,
-                    (src_w / out_w, 0.0, x0, 0.0, src_h / out_h, y0),
-                    resample=Image.BICUBIC,
-                )
-                .tobytes()
-            )
-
-        # If there is a hold segment encode motion to a temp file first.
-        motion_target = output_path
-        motion_tmp: str | None = None
-        if hold_dur > 0.05:
-            motion_tmp = _tf.mktemp(suffix=".mp4")
-            motion_target = motion_tmp
-
-        workers = min(8, os.cpu_count() or 4)
-        proc = subprocess.Popen(
+        result = subprocess.run(
             [
-                "ffmpeg", "-y",
-                "-f", "rawvideo", "-vcodec", "rawvideo",
-                "-s", f"{out_w}x{out_h}", "-pix_fmt", "rgb24",
-                "-r", str(self.fps), "-i", "pipe:0",
-            ] + _enc_args(self._nvenc) + [motion_target],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-loop", "1", "-framerate", str(self.fps), "-i", image_path,
+                "-t", dur, "-vf", vf, "-an",
+                "-r", str(self.fps),
+            ] + enc + [output_path],
+            capture_output=True,
+            text=True,
         )
-
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(_render, i) for i in range(N)]
-                for fut in futures:
-                    proc.stdin.write(fut.result())
-            proc.stdin.close()
-            proc.wait()
-        except Exception:
-            proc.stdin.close()
-            proc.kill()
-            proc.wait()
-            if motion_tmp:
-                try:
-                    os.unlink(motion_tmp)
-                except Exception:
-                    pass
-            raise
-        finally:
-            image.close()
-
-        # Hold segment: freeze the end crop (last motion frame), no piping.
-        if hold_dur > 0.05 and motion_tmp:
-            crop_w, crop_h, crop_x, crop_y = interpolated_crop(
-                img_w, img_h, 1.0, pan_number
-            )
-            hold_vf  = (
-                f"crop={crop_w:.2f}:{crop_h:.2f}:{crop_x:.2f}:{crop_y:.2f}"
-                f",scale={out_w}:{out_h},setsar=1"
-            )
-            try:
-                subprocess.run(
-                    [
-                        "ffmpeg", "-y",
-                        "-i", motion_tmp,
-                        "-loop", "1", "-t", str(round(hold_dur, 3)), "-i", image_path,
-                        "-filter_complex", f"[1:v]{hold_vf}[hold];[0:v][hold]concat=n=2:v=1:a=0[v]",
-                        "-map", "[v]",
-                    ] + _enc_args(self._nvenc) + [output_path],
-                    check=True, capture_output=True,
-                )
-            finally:
-                try:
-                    os.unlink(motion_tmp)
-                except Exception:
-                    pass
-
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()[-1500:]
+            raise RuntimeError(f"ffmpeg Ken Burns failed for {image_path}: {err}")
         return output_path
 
     # ---------------------------------------------------------

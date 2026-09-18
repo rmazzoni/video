@@ -909,8 +909,10 @@ class PipelineWorker(QObject):
                 clip_engine = str(self.config.get("clip_engine", "ken_burns")).strip().lower()
 
                 if clip_engine == "ken_burns":
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
                     from video.ken_burns_generator import (
                         KenBurnsGenerator,
+                        max_parallel_encodes,
                         motion_cache_key,
                         pan_direction,
                     )
@@ -919,6 +921,7 @@ class PipelineWorker(QObject):
 
                     cur_params = motion_cache_key(current_motion, current_fps)
                     cur_params["clip_layout"] = "per_preview_still"
+                    cur_params["preview_size"] = "1280x720"
                     params_changed = self._ken_burns_params_changed(out_clips_dir, cur_params)
                     self.log.emit(
                         f"Ken Burns clip engine — motion_style={current_motion!r}  fps={current_fps}"
@@ -932,11 +935,13 @@ class PipelineWorker(QObject):
                         duration=default_dur,
                         seed=int(self.config.get("seed", 42)),
                         motion_style=current_motion,
+                        output_size=(1280, 720),
                     )
                     total = len(all_work)
                     failed_kb: list = []
+                    pending = []
+                    done = 0
                     for idx, (sid, img_path, clip_suffix, per_clip) in enumerate(all_work, 1):
-                        self._check_cancel()
                         existing = os.path.join(out_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
                         up_to_date = (
                             os.path.exists(existing)
@@ -945,26 +950,43 @@ class PipelineWorker(QObject):
                         )
                         label = f"{sid}{clip_suffix}" if clip_suffix else str(sid)
                         if up_to_date:
+                            done += 1
                             self.log.emit(f"Skipping clip {label} (already exists and up to date).")
                         else:
-                            gen_kb.duration = per_clip
-                            self.log.emit(
-                                f"Scene {label}: Ken Burns clip [{current_motion}"
-                                f"{'' if current_motion == 'static' else ', pan ' + pan_direction(idx - 1)}"
-                                f"], duration={per_clip:.1f}s"
-                            )
-                            try:
-                                gen_kb.generate_clip(
-                                    img_path,
-                                    sid,
-                                    filename_suffix=clip_suffix,
-                                    motion_index=idx - 1,
-                                )
-                            except Exception as _clip_err:
-                                self.log.emit(f"WARNING: clip {label} failed — {_clip_err}")
-                                failed_kb.append(label)
-                        step = 10 + int((idx / total) * 80)
-                        self._emit_progress(step, f"Clip {idx}/{total}")
+                            pending.append((idx, sid, img_path, clip_suffix, per_clip, label))
+                    workers = max_parallel_encodes(gen_kb._nvenc)
+                    enc_name = "NVENC" if gen_kb._nvenc else "libx264"
+                    self.log.emit(
+                        f"Encoding {len(pending)} clip(s) with {enc_name}, {workers} at a time."
+                    )
+
+                    def _encode_one(job):
+                        idx, sid, img_path, clip_suffix, per_clip, label = job
+                        gen_kb.generate_clip(
+                            img_path,
+                            sid,
+                            filename_suffix=clip_suffix,
+                            motion_index=idx - 1,
+                            duration=per_clip,
+                        )
+                        return label, idx
+
+                    if pending:
+                        with ThreadPoolExecutor(max_workers=workers) as pool:
+                            futures = [pool.submit(_encode_one, job) for job in pending]
+                            for fut in as_completed(futures):
+                                if self._cancel_requested:
+                                    raise RuntimeError("Pipeline canceled by user.")
+                                try:
+                                    label, idx = fut.result()
+                                    pan = "" if current_motion == "static" else f", pan {pan_direction(idx - 1)}"
+                                    self.log.emit(f"Scene {label}: Ken Burns clip [{current_motion}{pan}]")
+                                except Exception as _clip_err:
+                                    self.log.emit(f"WARNING: clip failed — {_clip_err}")
+                                    failed_kb.append(str(_clip_err)[:80])
+                                done += 1
+                                step = 10 + int((done / max(total, 1)) * 80)
+                                self._emit_progress(step, f"Clip {done}/{total}")
                     if failed_kb:
                         self.log.emit(f"Ken Burns: {len(failed_kb)} clip(s) failed and were skipped: {failed_kb}")
                     self._write_ken_burns_params(out_clips_dir, cur_params)
@@ -1611,8 +1633,10 @@ class PipelineWorker(QObject):
                 failed_fc: list = []
 
                 if clip_engine == "ken_burns":
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
                     from video.ken_burns_generator import (
                         KenBurnsGenerator,
+                        max_parallel_encodes,
                         motion_cache_key,
                         pan_direction,
                     )
@@ -1632,8 +1656,9 @@ class PipelineWorker(QObject):
                         seed=int(self.config.get("seed", 42)),
                         motion_style=current_motion,
                     )
+                    pending = []
+                    done = 0
                     for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
-                        self._check_cancel()
                         clip_suffix = f"_v{v_idx:02d}"
                         existing = os.path.join(final_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
                         up_to_date = (
@@ -1642,26 +1667,46 @@ class PipelineWorker(QObject):
                             and not params_changed
                         )
                         if up_to_date:
+                            done += 1
                             self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (up to date).")
                         else:
                             dur = per_clip_dur if per_clip_dur else default_dur
-                            gen_kb.duration = dur
-                            pan = "" if current_motion == "static" else f", pan {pan_direction(idx - 1)}"
-                            self.log.emit(
-                                f"Scene {sid} v{v_idx}: Ken Burns clip{pan}, duration={dur:.1f}s"
-                            )
-                            try:
-                                gen_kb.generate_clip(
-                                    img_path,
-                                    sid,
-                                    filename_suffix=clip_suffix,
-                                    motion_index=idx - 1,
-                                )
-                            except Exception as _e:
-                                self.log.emit(f"WARNING: clip scene_{sid:03d}{clip_suffix} failed — {_e}")
-                                failed_fc.append(f"{sid}{clip_suffix}")
-                        step = 10 + int((idx / total) * 80)
-                        self._emit_progress(step, f"Clip {idx}/{total}")
+                            pending.append((idx, sid, v_idx, img_path, clip_suffix, dur))
+                    workers = max_parallel_encodes(gen_kb._nvenc)
+                    self.log.emit(
+                        f"Encoding {len(pending)} final clip(s) with "
+                        f"{'NVENC' if gen_kb._nvenc else 'libx264'}, {workers} at a time."
+                    )
+
+                    def _encode_final(job):
+                        idx, sid, v_idx, img_path, clip_suffix, dur = job
+                        gen_kb.generate_clip(
+                            img_path,
+                            sid,
+                            filename_suffix=clip_suffix,
+                            motion_index=idx - 1,
+                            duration=dur,
+                        )
+                        return sid, v_idx, idx, dur
+
+                    if pending:
+                        with ThreadPoolExecutor(max_workers=workers) as pool:
+                            futures = [pool.submit(_encode_final, job) for job in pending]
+                            for fut in as_completed(futures):
+                                if self._cancel_requested:
+                                    raise RuntimeError("Pipeline canceled by user.")
+                                try:
+                                    sid, v_idx, idx, dur = fut.result()
+                                    pan = "" if current_motion == "static" else f", pan {pan_direction(idx - 1)}"
+                                    self.log.emit(
+                                        f"Scene {sid} v{v_idx}: Ken Burns clip{pan}, duration={dur:.1f}s"
+                                    )
+                                except Exception as _e:
+                                    self.log.emit(f"WARNING: clip failed — {_e}")
+                                    failed_fc.append(str(_e)[:80])
+                                done += 1
+                                step = 10 + int((done / max(total, 1)) * 80)
+                                self._emit_progress(step, f"Clip {done}/{total}")
                     if failed_fc:
                         self.log.emit(f"Ken Burns final: {len(failed_fc)} clip(s) failed: {failed_fc}")
                     self._write_ken_burns_params(final_clips_dir, cur_params)

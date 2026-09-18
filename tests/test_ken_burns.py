@@ -3,6 +3,7 @@ import unittest
 from video.ken_burns_generator import (
     MOTION_VERSION,
     interpolated_crop,
+    ken_burns_vf,
     motion_cache_key,
     pan_direction,
 )
@@ -67,6 +68,21 @@ class KenBurnsPanTests(unittest.TestCase):
                 self.assertGreaterEqual(y0, -1e-9)
                 self.assertLessEqual(x0 + src_w, img_w + 1e-9)
                 self.assertLessEqual(y0 + src_h, img_h + 1e-9)
+
+    def test_ffmpeg_filter_holds_end_crop_after_motion_cap(self):
+        vf = ken_burns_vf(1344, 768, 1280, 720, duration=10.0, clip_index=0)
+        self.assertIn("crop=", vf)
+        self.assertIn("scale=1280:720", vf)
+        self.assertIn("min(1\\,t/6.000000)", vf)
+
+    def test_ffmpeg_filter_endpoints_match_interpolated_crop(self):
+        img_w, img_h = 1344.0, 768.0
+        sw0, sh0, x0, y0 = interpolated_crop(img_w, img_h, 0.0, 0)
+        sw1, sh1, x1, y1 = interpolated_crop(img_w, img_h, 1.0, 0)
+        vf = ken_burns_vf(img_w, img_h, 1920, 1080, duration=4.0, clip_index=0)
+        self.assertIn(f"{sw0:.4f}", vf)
+        self.assertIn(f"{x1:.4f}", vf)
+        self.assertGreater(sw0, sw1)
 
     def test_motion_cache_key_tracks_math_version(self):
         key = motion_cache_key("auto", 24)
