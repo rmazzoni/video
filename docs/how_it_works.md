@@ -26,7 +26,7 @@ A project is a folder. Typical outputs:
 | --- | --- |
 | `output/narration.txt` | Scene script |
 | `output/model_prompts.yaml` | Shared visual beats + per-model prompt rows |
-| `output/draft_video/` | Preview stills (usually Schnell or Z-Image) |
+| `output/preview_images/` | Preview stills (usually Schnell or Z-Image) |
 | `output/lightbox/` | Final stills (Dev, HiDream, FLUX.2, …) |
 | `output/audio/` | Spoken scene tracks (`scene_NNN.mp3`) |
 | `output/draft_clips/` | Preview motion clips |
@@ -36,8 +36,9 @@ A project is a folder. Typical outputs:
 
 Assembled preview/final video and combined audio files are prefixed with the
 project name (from `vid_project.yaml`, else the folder name). Opening an older
-project renames `draft` → `draft_video`, `preview` → `preview_video`,
-`clips` → `final_clips`, and `final` → `final_video`.
+project renames `draft`, `draft_video`, and `images` → `preview_images`,
+`preview` → `preview_video`, `clips` → `final_clips`, and `final` →
+`final_video`.
 
 ## Two programs, one job
 

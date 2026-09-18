@@ -14,7 +14,7 @@ from utilis.project_paths import (
     DIR_DRAFT,
     DIR_DRAFT_CLIPS,
     DIR_FINAL_CLIPS,
-    DIR_IMAGES,
+    DIR_PREVIEW_IMAGES,
     ProjectLayout,
 )
 
@@ -374,7 +374,7 @@ class MainWindow(QMainWindow):
         btn_clear_clips.setToolTip("Delete all files in output/final_clips/")
         btn_clear_clips.clicked.connect(self._clear_clips)
         btn_clear_draft = QPushButton("🗑 Clear Preview Images")
-        btn_clear_draft.setToolTip("Delete images in output/draft_video/ so they are regenerated")
+        btn_clear_draft.setToolTip("Delete images in output/preview_images/ so they are regenerated")
         btn_clear_draft.clicked.connect(self._clear_draft)
         btn_clear_preview_clips = QPushButton("🗑 Clear Preview Clips")
         btn_clear_preview_clips.setToolTip("Delete all files in output/draft_clips/")
@@ -2704,21 +2704,14 @@ class MainWindow(QMainWindow):
             return
         project = self.project_path_input.text().strip()
         layout = ProjectLayout(project) if project else None
-        draft_dir   = layout.draft if layout else ""
-        images_dir  = layout.images if layout else ""
+        stills_dir = layout.preview_images if layout else ""
 
-        # Prefer full-res images when they exist; fall back to draft folder
         def _images_from(folder: str):
             if not folder or not os.path.isdir(folder):
                 return []
             return sorted(f for f in os.listdir(folder)
                           if f.lower().endswith((".png", ".jpg", ".jpeg")))
 
-        final_images = _images_from(images_dir)
-        draft_images = _images_from(draft_dir)
-
-        # Build merged per-scene lists: prefer final images when present, otherwise
-        # retain every draft beat/variant belonging to the scene.
         def _scene_id_from(fname: str) -> int:
             try:
                 return int(fname.split("_")[1].split(".")[0])
@@ -2726,30 +2719,17 @@ class MainWindow(QMainWindow):
                 return 0
 
         scene_entries: dict = {}  # scene_id -> [(dir, fname), ...]
-        for fname in draft_images:
+        for fname in _images_from(stills_dir):
             sid = _scene_id_from(fname)
             if sid > 0:
-                scene_entries.setdefault(sid, []).append((draft_dir, fname))
-        final_scene_ids = {_scene_id_from(fname) for fname in final_images}
-        for sid in final_scene_ids:
-            if sid > 0:
-                scene_entries[sid] = []
-        for fname in final_images:
-            sid = _scene_id_from(fname)
-            if sid > 0:
-                scene_entries.setdefault(sid, []).append((images_dir, fname))
+                scene_entries.setdefault(sid, []).append((stills_dir, fname))
 
         entries = [
             (sid, directory, fname)
             for sid, scene_images in sorted(scene_entries.items())
             for directory, fname in scene_images
         ]
-        n_final = sum(1 for _, directory, _ in entries if directory == images_dir)
-        n_draft = len(entries) - n_final
-        source_label = (
-            f"{n_final} final + {n_draft} draft" if n_final and n_draft
-            else ("final images" if n_final else "draft images")
-        )
+        source_label = "preview images"
 
         # clear existing cards
         while self._draft_grid_layout.count() > 1:
@@ -4346,7 +4326,7 @@ class MainWindow(QMainWindow):
             model_prompts = {}
 
         saved_preview_beats = set()
-        draft_dir = ProjectLayout(project).draft
+        draft_dir = ProjectLayout(project).preview_images
         if os.path.isdir(draft_dir):
             for filename in os.listdir(draft_dir):
                 match = re.match(
@@ -4653,7 +4633,7 @@ class MainWindow(QMainWindow):
         lightbox_dir = os.path.join(project, "output", "lightbox")
         is_preview_model = model_key in ("schnell", "zimage")
         preview_dir = (
-            ProjectLayout(project).draft
+            ProjectLayout(project).preview_images
             if is_preview_model else lightbox_dir
         )
         preview_candidates = [
@@ -5046,7 +5026,7 @@ class MainWindow(QMainWindow):
             if not _save(close_dialog=False):
                 return
             if is_preview_model:
-                destination_dir = ProjectLayout(project).draft
+                destination_dir = ProjectLayout(project).preview_images
             else:
                 destination_dir = lightbox_dir
             os.makedirs(destination_dir, exist_ok=True)
@@ -5118,7 +5098,7 @@ class MainWindow(QMainWindow):
         working_prompt = overrides.get(scene_id) or overrides.get(str(scene_id)) or llama_prompt
 
         project = self.project_path_input.text().strip()
-        image_path = os.path.join(ProjectLayout(project).draft, f"scene_{scene_id:03d}.png")
+        image_path = os.path.join(ProjectLayout(project).preview_images, f"scene_{scene_id:03d}.png")
         backup_path = image_path + ".prompt_backup"
         overrides_path = os.path.join(project, "output", "prompt_overrides.yaml")
 
@@ -6814,7 +6794,9 @@ class MainWindow(QMainWindow):
 
         # Auto-refresh the preview grid whenever preview_images or final_images completes.
         if success and payload and os.path.isdir(payload) and (
-            os.path.basename(payload) in {DIR_DRAFT, DIR_IMAGES, "draft"}
+            os.path.basename(payload) in {
+                DIR_PREVIEW_IMAGES, DIR_DRAFT, "draft", "draft_video", "images",
+            }
         ):
             # Defer so we never rebuild the grid inside a nested event-loop
             # (e.g. while a zoom dialog is still open).
@@ -7259,13 +7241,13 @@ class MainWindow(QMainWindow):
         if not project:
             QMessageBox.warning(self, "No project", "Load a project first.")
             return
-        draft_dir = ProjectLayout(project).draft
+        draft_dir = ProjectLayout(project).preview_images
         if not os.path.isdir(draft_dir):
-            QMessageBox.information(self, "No draft", f"No {DIR_DRAFT} folder found.")
+            QMessageBox.information(self, "No draft", f"No {DIR_PREVIEW_IMAGES} folder found.")
             return
         files = [f for f in os.listdir(draft_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
         if not files:
-            QMessageBox.information(self, "No draft", f"{DIR_DRAFT} folder is already empty.")
+            QMessageBox.information(self, "No draft", f"{DIR_PREVIEW_IMAGES} folder is already empty.")
             return
         reply = QMessageBox.question(
             self, "Clear Draft Images",

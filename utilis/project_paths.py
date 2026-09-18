@@ -9,20 +9,21 @@ from typing import List
 import yaml
 
 # Current folder names under output/.
-DIR_DRAFT = "draft_video"          # preview stills (was "draft")
+DIR_PREVIEW_IMAGES = "preview_images"  # preview stills (was draft / draft_video / images)
+DIR_DRAFT = DIR_PREVIEW_IMAGES         # alias used by older call sites
 DIR_DRAFT_CLIPS = "draft_clips"
-DIR_PREVIEW = "preview_video"      # assembled preview (was "preview")
+DIR_PREVIEW = "preview_video"          # assembled preview (was "preview")
 DIR_LIGHTBOX = "lightbox"
-DIR_FINAL_CLIPS = "final_clips"    # Ken Burns / SVD clips (was "clips")
-DIR_FINAL = "final_video"          # assembled final (was "final")
+DIR_FINAL_CLIPS = "final_clips"        # Ken Burns / SVD clips (was "clips")
+DIR_FINAL = "final_video"              # assembled final (was "final")
 DIR_AUDIO = "audio"
-DIR_IMAGES = "images"
 
+# new folder name -> leftover names to absorb
 LEGACY_DIR_NAMES = {
-    DIR_DRAFT: "draft",
-    DIR_PREVIEW: "preview",
-    DIR_FINAL_CLIPS: "clips",
-    DIR_FINAL: "final",
+    DIR_PREVIEW: ("preview",),
+    DIR_FINAL_CLIPS: ("clips",),
+    DIR_FINAL: ("final",),
+    DIR_PREVIEW_IMAGES: ("images", "draft", "draft_video"),
 }
 
 # Unprefixed assembled files, rewritten to {slug}_<name> on migrate.
@@ -92,20 +93,53 @@ def migrate_legacy_output_dirs(project_path: str) -> List[str]:
     if not os.path.isdir(output):
         return notes
 
-    for new_name, old_name in LEGACY_DIR_NAMES.items():
+    for new_name, old_names in LEGACY_DIR_NAMES.items():
         new_path = os.path.join(output, new_name)
-        old_path = os.path.join(output, old_name)
-        if os.path.isdir(old_path) and not os.path.exists(new_path):
-            try:
-                os.rename(old_path, new_path)
-                notes.append(f"Renamed output/{old_name} → output/{new_name}")
-            except OSError as exc:
-                notes.append(f"Could not rename output/{old_name} → output/{new_name}: {exc}")
+        for old_name in old_names:
+            notes.extend(_absorb_legacy_dir(os.path.join(output, old_name), new_path))
 
     slug = project_slug(project_path)
     notes.extend(_prefix_legacy_media(os.path.join(output, DIR_PREVIEW), slug, _PREVIEW_MEDIA_STEMS))
     notes.extend(_prefix_legacy_media(os.path.join(output, DIR_FINAL), slug, _FINAL_MEDIA_STEMS))
     notes.extend(_prefix_glob_stem(os.path.join(output, DIR_FINAL), slug, "final_audio."))
+    return notes
+
+
+def _absorb_legacy_dir(old_path: str, new_path: str) -> List[str]:
+    """Rename old_path to new_path, or merge files if new_path already exists."""
+    notes: List[str] = []
+    if not os.path.isdir(old_path):
+        return notes
+    old_name = os.path.basename(old_path)
+    new_name = os.path.basename(new_path)
+    if os.path.normpath(old_path) == os.path.normpath(new_path):
+        return notes
+    if not os.path.exists(new_path):
+        try:
+            os.rename(old_path, new_path)
+            notes.append(f"Renamed output/{old_name} → output/{new_name}")
+        except OSError as extra:
+            notes.append(f"Could not rename output/{old_name} → output/{new_name}: {extra}")
+        return notes
+    moved = 0
+    for name in os.listdir(old_path):
+        src = os.path.join(old_path, name)
+        dest = os.path.join(new_path, name)
+        if os.path.exists(dest):
+            continue
+        try:
+            os.rename(src, dest)
+            moved += 1
+        except OSError:
+            pass
+    try:
+        os.rmdir(old_path)
+        notes.append(f"Merged output/{old_name} into output/{new_name}")
+    except OSError:
+        if moved:
+            notes.append(
+                f"Moved {moved} file(s) from output/{old_name} into output/{new_name}"
+            )
     return notes
 
 
@@ -155,14 +189,14 @@ class ProjectLayout:
         self.project_path = os.path.normpath(os.path.abspath(project_path))
         self.slug = project_slug(self.project_path)
         self.output = os.path.join(self.project_path, "output")
-        self.draft = os.path.join(self.output, DIR_DRAFT)
+        self.preview_images = os.path.join(self.output, DIR_PREVIEW_IMAGES)
+        self.draft = self.preview_images
         self.draft_clips = os.path.join(self.output, DIR_DRAFT_CLIPS)
         self.preview = os.path.join(self.output, DIR_PREVIEW)
         self.lightbox = os.path.join(self.output, DIR_LIGHTBOX)
         self.final_clips = os.path.join(self.output, DIR_FINAL_CLIPS)
         self.final = os.path.join(self.output, DIR_FINAL)
         self.audio = os.path.join(self.output, DIR_AUDIO)
-        self.images = os.path.join(self.output, DIR_IMAGES)
         self.preview_video = os.path.join(
             self.preview, prefixed_media_name(self.slug, "preview_video.mp4")
         )
@@ -187,14 +221,13 @@ class ProjectLayout:
 
     def ensure_dirs(self) -> None:
         for path in (
-            self.draft,
+            self.preview_images,
             self.draft_clips,
             self.preview,
             self.lightbox,
             self.final_clips,
             self.final,
             self.audio,
-            self.images,
         ):
             os.makedirs(path, exist_ok=True)
 

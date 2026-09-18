@@ -5,10 +5,10 @@ import unittest
 import yaml
 
 from utilis.project_paths import (
-    DIR_DRAFT,
     DIR_FINAL,
     DIR_FINAL_CLIPS,
     DIR_PREVIEW,
+    DIR_PREVIEW_IMAGES,
     ProjectLayout,
     migrate_legacy_output_dirs,
     prefixed_media_name,
@@ -59,10 +59,14 @@ class LayoutTests(unittest.TestCase):
             os.makedirs(root)
             layout = ProjectLayout(root)
             self.assertEqual(layout.slug, "Gulf_Story")
-            self.assertTrue(layout.draft.endswith(os.path.join("output", DIR_DRAFT)))
+            self.assertEqual(layout.draft, layout.preview_images)
+            self.assertTrue(layout.draft.endswith(os.path.join("output", DIR_PREVIEW_IMAGES)))
             self.assertTrue(layout.preview.endswith(os.path.join("output", DIR_PREVIEW)))
             self.assertTrue(layout.final_clips.endswith(os.path.join("output", DIR_FINAL_CLIPS)))
             self.assertTrue(layout.final.endswith(os.path.join("output", DIR_FINAL)))
+            self.assertTrue(
+                layout.preview_images.endswith(os.path.join("output", DIR_PREVIEW_IMAGES))
+            )
             self.assertEqual(
                 os.path.basename(layout.preview_video),
                 "Gulf_Story_preview_video.mp4",
@@ -104,7 +108,8 @@ class LayoutTests(unittest.TestCase):
             old_clips = os.path.join(output, "clips")
             old_draft = os.path.join(output, "draft")
             old_final = os.path.join(output, "final")
-            for path in (old_preview, old_clips, old_draft, old_final):
+            old_images = os.path.join(output, "images")
+            for path in (old_preview, old_clips, old_draft, old_final, old_images):
                 os.makedirs(path)
             open(os.path.join(old_preview, "preview_video.mp4"), "w").close()
             open(os.path.join(old_preview, "preview_with_audio.mp4"), "w").close()
@@ -113,13 +118,15 @@ class LayoutTests(unittest.TestCase):
             open(os.path.join(old_final, "final_audio.mp3"), "w").close()
 
             notes = migrate_legacy_output_dirs(root)
-            self.assertTrue(any("draft" in line and DIR_DRAFT in line for line in notes))
-            self.assertTrue(os.path.isdir(os.path.join(output, DIR_DRAFT)))
+            self.assertTrue(any("draft" in line and DIR_PREVIEW_IMAGES in line for line in notes))
+            self.assertTrue(os.path.isdir(os.path.join(output, DIR_PREVIEW_IMAGES)))
             self.assertTrue(os.path.isdir(os.path.join(output, DIR_PREVIEW)))
             self.assertTrue(os.path.isdir(os.path.join(output, DIR_FINAL_CLIPS)))
             self.assertTrue(os.path.isdir(os.path.join(output, DIR_FINAL)))
             self.assertFalse(os.path.exists(old_preview))
             self.assertFalse(os.path.exists(old_clips))
+            self.assertFalse(os.path.exists(old_draft))
+            self.assertFalse(os.path.exists(old_images))
             self.assertTrue(
                 os.path.isfile(os.path.join(output, DIR_PREVIEW, "Alpha_preview_video.mp4"))
             )
@@ -129,6 +136,19 @@ class LayoutTests(unittest.TestCase):
             self.assertTrue(
                 os.path.isfile(os.path.join(output, DIR_FINAL, "Alpha_final_audio.mp3"))
             )
+
+    def test_draft_video_merges_into_existing_preview_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "Gamma")
+            output = os.path.join(root, "output")
+            preview_images = os.path.join(output, DIR_PREVIEW_IMAGES)
+            draft_video = os.path.join(output, "draft_video")
+            os.makedirs(preview_images)
+            os.makedirs(draft_video)
+            open(os.path.join(draft_video, "scene_001.png"), "w").close()
+            migrate_legacy_output_dirs(root)
+            self.assertTrue(os.path.isfile(os.path.join(preview_images, "scene_001.png")))
+            self.assertFalse(os.path.exists(draft_video))
 
     def test_migrate_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:

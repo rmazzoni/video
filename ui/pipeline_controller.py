@@ -356,7 +356,7 @@ class PipelineWorker(QObject):
             layout.ensure_dirs()
             tts_dir = layout.audio
             timings_path = os.path.join(tts_dir, "timings.yaml")
-            draft_dir = layout.draft
+            draft_dir = layout.preview_images
             draft_clips_dir = layout.draft_clips
             lightbox_dir = layout.lightbox
             final_clips_dir = layout.final_clips
@@ -577,7 +577,7 @@ class PipelineWorker(QObject):
                                 "scene_[0-9][0-9][0-9].jpg",
                                 "scene_[0-9][0-9][0-9].jpeg",
                             ])
-                        _remove_matching(layout.draft, draft_patterns)
+                        _remove_matching(layout.preview_images, draft_patterns)
                         _remove_matching(layout.draft_clips, ["scene_*.mp4"])
                         _remove_matching(
                             layout.preview,
@@ -1015,7 +1015,7 @@ class PipelineWorker(QObject):
                 )
 
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            # STAGE: preview_images  — stills → output/draft_video/
+            # STAGE: preview_images  — stills → output/preview_images/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if stage == "preview_scene":
                 self._check_cancel()
@@ -1790,6 +1790,7 @@ class PipelineController(QObject):
         layout = ProjectLayout(normalized)
         for note in layout.migrate_legacy():
             self.log.info(note)
+        layout.ensure_dirs()
         self._add_recent_project(normalized)
         self.log.info(f"Project path set to: {normalized}")
         self.project_changed.emit(normalized)
