@@ -106,6 +106,34 @@ EDGE_TTS_VOICES: List[Tuple[str, str, str]] = [
 ]
 
 
+def voice_locale(voice: str) -> str:
+    """Return the BCP-47 locale prefix of an Edge TTS short name (e.g. en-US)."""
+    parts = [p for p in str(voice or "").split("-") if p]
+    if len(parts) >= 2:
+        return f"{parts[0]}-{parts[1]}"
+    return "it-IT"
+
+
+_TTS_PREVIEW_BY_LOCALE = {
+    "it-IT": "Ciao, questa e una anteprima della voce.",
+    "en-US": "Hello, this is a preview of the selected voice.",
+    "en-GB": "Hello, this is a preview of the selected voice.",
+}
+
+
+def preview_text_for_voice(voice: str) -> str:
+    """Sample sentence in the same language as *voice*, for the Settings preview."""
+    locale = voice_locale(voice)
+    text = _TTS_PREVIEW_BY_LOCALE.get(locale)
+    if text:
+        return text
+    lang = locale.split("-", 1)[0].lower()
+    for key, sample in _TTS_PREVIEW_BY_LOCALE.items():
+        if key.lower().startswith(lang + "-"):
+            return sample
+    return _TTS_PREVIEW_BY_LOCALE["en-US"]
+
+
 # ── TTS Engine ────────────────────────────────────────────────────────────────
 
 class TTSEngine:

@@ -95,3 +95,4 @@ installed.
 - An in-app node graph editor (`NodeEditorStub`)
 - Expanding `vid_full_pipeline.json` into the real pipeline
 - Putting Qwen/Ollama inside Comfy
+- Putting Blender scene authoring in Qt or in a Comfy graph (`docs/blender_role.md`)

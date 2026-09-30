@@ -302,6 +302,14 @@ class MainWindow(QMainWindow):
                 self._save_script()
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(_ctrl_s)
 
+        def _ctrl_b():
+            tab_title = self.tabs.tabText(self.tabs.currentIndex())
+            if tab_title == "Lightbox":
+                self._lightbox_goto_bookmark()
+            elif tab_title == "Dubbing":
+                self._dub_goto_next_bookmark()
+        QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(_ctrl_b)
+
         self._refresh_recent_projects(self.controller.get_recent_projects())
         self._load_settings_to_form(self.controller.load_settings())
 
@@ -1399,11 +1407,11 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel(""))  # spacer
         form.addRow(QLabel("── Narration TTS (Edge TTS) ──"))
 
-        from narration.tts_engine import EDGE_TTS_VOICES
         self.tts_voice_input = QComboBox()
-        for label, short_name, _gender in EDGE_TTS_VOICES:
-            self.tts_voice_input.addItem(label, short_name)
-        self.tts_voice_input.setToolTip("Voice used for narration synthesis")
+        self._populate_tts_voice_combo(self.tts_voice_input)
+        self.tts_voice_input.setToolTip(
+            "Voice used for narration synthesis. Italian, US English, and UK English."
+        )
         self.tts_voice_input.currentIndexChanged.connect(self._on_tts_voice_changed)
 
         self._tts_preview_btn = QPushButton("▶ Preview")
@@ -1679,6 +1687,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._lightbox_scroll_area = scroll
         self._lightbox_grid_widget = QWidget()
         self._lightbox_grid_layout = QVBoxLayout(self._lightbox_grid_widget)
         self._lightbox_grid_layout.setSpacing(14)
@@ -1690,6 +1699,8 @@ class MainWindow(QMainWindow):
         self._lightbox_cells: dict = {}
         self._lightbox_scene_cards: dict = {}
         self._lightbox_image_labels: dict = {}
+        self._lightbox_bookmarks: dict = {}
+        self._lightbox_bookmark_buttons: dict = {}
         return page
 
     def _refresh_lightbox(self, only_scene_id: int | None = None) -> None:
@@ -1713,6 +1724,16 @@ class MainWindow(QMainWindow):
             self._lightbox_cells.clear()
             self._lightbox_scene_cards.clear()
             self._lightbox_image_labels.clear()
+            self._lightbox_bookmark_buttons.clear()
+            self._lightbox_bookmarks = {}
+            bm_path = self._lightbox_bookmark_path()
+            if bm_path and os.path.exists(bm_path):
+                try:
+                    bm_data = _yaml.safe_load(Path(bm_path).read_text(encoding="utf-8")) or {}
+                    if bm_data.get("bookmarked_scene"):
+                        self._lightbox_bookmarks[int(bm_data["bookmarked_scene"])] = True
+                except Exception:
+                    pass
 
         if not lightbox_dir or not os.path.isdir(lightbox_dir):
             self._lightbox_status_label.setText(
@@ -1806,6 +1827,15 @@ class MainWindow(QMainWindow):
             scene_layout.addWidget(scene_content, 1)
 
             header_row = QHBoxLayout()
+            bm_btn = QPushButton("🔖")
+            bm_btn.setFixedSize(28, 28)
+            bm_btn.setCheckable(True)
+            bm_btn.setChecked(self._lightbox_bookmarks.get(sid, False))
+            bm_btn.setToolTip("Bookmark this scene (Ctrl+B jumps here)")
+            self._apply_bookmark_style(bm_btn, bm_btn.isChecked())
+            bm_btn.toggled.connect(
+                lambda checked, s=sid, b=bm_btn: self._lightbox_toggle_bookmark(s, checked, b)
+            )
             hdr = QLabel(f"Scene {sid}  \u2014  {scene_texts.get(sid, '')[:120]}")
             hdr.setStyleSheet(
                 "color:#96BDE2; font-weight:bold; font-size:11px; background:transparent; border:none;")
@@ -1815,6 +1845,7 @@ class MainWindow(QMainWindow):
                 "color:#F3C98B; font-size:12px; font-weight:bold; background:#3A2D1E; "
                 "border:1px solid #6B5130; border-radius:8px; padding:1px 6px;"
             )
+            header_row.addWidget(bm_btn, 0, Qt.AlignmentFlag.AlignTop)
             header_row.addWidget(hdr, 1)
             header_row.addWidget(image_lbl)
             scene_vlay.addLayout(header_row)
@@ -1825,6 +1856,7 @@ class MainWindow(QMainWindow):
             self._lightbox_cells[sid] = {}
             self._lightbox_scene_cards[sid] = scene_card
             self._lightbox_image_labels[sid] = image_lbl
+            self._lightbox_bookmark_buttons[sid] = bm_btn
 
             ordered_files = sorted(scene_files[sid], key=_variant_order)
             for variant_index, fname in enumerate(ordered_files):
@@ -1888,6 +1920,7 @@ class MainWindow(QMainWindow):
             self._lightbox_checkboxes.pop(only_scene_id, None)
             self._lightbox_cells.pop(only_scene_id, None)
             self._lightbox_image_labels.pop(only_scene_id, None)
+            self._lightbox_bookmark_buttons.pop(only_scene_id, None)
             if old_card is not None:
                 self._lightbox_grid_layout.removeWidget(old_card)
                 old_card.deleteLater()
@@ -1917,6 +1950,44 @@ class MainWindow(QMainWindow):
             self._lightbox_update_image_badges()
             self._lightbox_apply_unselected_filter()
 
+
+    def _lightbox_bookmark_path(self) -> str:
+        project = self.project_path_input.text().strip()
+        return os.path.join(project, "output", "lightbox_bookmark.yaml") if project else ""
+
+    def _lightbox_toggle_bookmark(self, sid: int, checked: bool, btn) -> None:
+        if checked:
+            for other_sid, active in list(self._lightbox_bookmarks.items()):
+                if active and other_sid != sid:
+                    self._lightbox_bookmarks[other_sid] = False
+                    other_btn = self._lightbox_bookmark_buttons.get(other_sid)
+                    if other_btn is not None:
+                        other_btn.blockSignals(True)
+                        other_btn.setChecked(False)
+                        other_btn.blockSignals(False)
+                        self._apply_bookmark_style(other_btn, False)
+        self._lightbox_bookmarks[sid] = checked
+        self._apply_bookmark_style(btn, checked)
+        bm_path = self._lightbox_bookmark_path()
+        if bm_path:
+            import yaml as _yaml
+            os.makedirs(os.path.dirname(bm_path), exist_ok=True)
+            data = {"bookmarked_scene": sid if checked else None}
+            Path(bm_path).write_text(_yaml.dump(data, allow_unicode=True), encoding="utf-8")
+
+    def _lightbox_goto_bookmark(self) -> None:
+        bookmarked = [sid for sid, v in getattr(self, "_lightbox_bookmarks", {}).items() if v]
+        if not bookmarked:
+            return
+        target = bookmarked[0]
+        card = getattr(self, "_lightbox_scene_cards", {}).get(target)
+        if card is None:
+            return
+        card.setVisible(True)
+        scroll = getattr(self, "_lightbox_scroll_area", None)
+        if scroll is not None:
+            scroll.ensureWidgetVisible(card, 0, 48)
+        self._lightbox_status_label.setText(f"Jumped to bookmarked scene {target}.")
 
     def _lightbox_toggle_unselected(self, hide_unselected: bool) -> None:
         self._lightbox_unselected_btn.setText(
@@ -2873,6 +2944,20 @@ class MainWindow(QMainWindow):
         self._dub_speed_input.setToolTip("Narration speed (1.0 = normal, 0.95 = 5% slower, 1.10 = 10% faster)")
         self._dub_speed_input.valueChanged.connect(self._dub_speed_changed)
 
+        voice_label = QLabel("Voice:")
+        self._dub_voice_input = QComboBox()
+        self._populate_tts_voice_combo(self._dub_voice_input)
+        self._dub_voice_input.setFixedHeight(28)
+        self._dub_voice_input.setMinimumContentsLength(22)
+        self._dub_voice_input.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._dub_voice_input.setToolTip(
+            "Narration voice (Edge TTS). Italian, US English, and UK English. "
+            "Same list as Settings."
+        )
+        self._dub_voice_input.currentIndexChanged.connect(self._on_tts_voice_changed)
+
         btn_export_word = QPushButton("📄 Export Word")
         btn_export_word.setToolTip("Export all dubbed text to a .docx file in the project output folder")
         btn_export_word.clicked.connect(self._dub_export_word)
@@ -2910,6 +2995,8 @@ class MainWindow(QMainWindow):
         bar.addWidget(self._dub_play_btn)
         bar.addWidget(speed_label)
         bar.addWidget(self._dub_speed_input)
+        bar.addWidget(voice_label)
+        bar.addWidget(self._dub_voice_input)
         bar.addWidget(btn_export_word)
         bar.addWidget(btn_find)
         bar.addWidget(btn_spell_it)
@@ -3425,7 +3512,7 @@ class MainWindow(QMainWindow):
     def _set_unsaved_button_style(self, button: QPushButton, needs_save: bool) -> None:
         button.setStyleSheet(self._UNSAVED_BUTTON_STYLE if needs_save else "")
 
-    def _open_beat_editor(self, scene_id: int, beat_index: int) -> None:
+    def _open_beat_editor(self, scene_id: int, beat_index: int, parent=None) -> None:
         from PyQt6.QtWidgets import QDialog, QTextEdit
         from prompts.beat_feedback import (
             load_beat_feedback,
@@ -3459,12 +3546,13 @@ class MainWindow(QMainWindow):
             "models": {},
         }
         beats = normalize_stored_beats(scene_entry.get("visual_beats", []))
+        host = parent or self
         if beat_index < 1 or beat_index > len(beats):
-            QMessageBox.warning(self, "Beat unavailable", f"Scene {scene_id} has no beat {beat_index}.")
+            QMessageBox.warning(host, "Beat unavailable", f"Scene {scene_id} has no beat {beat_index}.")
             return
         original = beats[beat_index - 1]
 
-        dialog = QDialog(self)
+        dialog = QDialog(host)
         dialog.setWindowTitle(f"Scene {scene_id} | Visual beat {beat_index}")
         dialog.resize(900, 720)
         layout = QVBoxLayout(dialog)
@@ -4682,10 +4770,17 @@ class MainWindow(QMainWindow):
 
         popup_text_editors = []
 
-        def _readonly_section(title: str, text: str, height: int, color: str):
+        def _readonly_section(title: str, text: str, height: int, color: str,
+                              extra_widget=None):
             title_label = QLabel(title)
             title_label.setStyleSheet(f"color:{color}; font-weight:bold;")
-            layout.addWidget(title_label)
+            if extra_widget is None:
+                layout.addWidget(title_label)
+            else:
+                title_row = QHBoxLayout()
+                title_row.addWidget(title_label, 1)
+                title_row.addWidget(extra_widget)
+                layout.addLayout(title_row)
             editor = QTextEdit()
             editor.setPlainText(text)
             editor.setReadOnly(True)
@@ -4698,9 +4793,16 @@ class MainWindow(QMainWindow):
             editor.setPalette(palette)
             layout.addWidget(editor)
             popup_text_editors.append((editor, color, height))
+            return editor
 
         _readonly_section("Original script", str(scene.get("text", "")), 75, "#96BDE2")
-        _readonly_section("Visual beat identified by Qwen", visual_beat, 75, "#9FD6B8")
+        tweak_beat = QPushButton("Tweak Beat")
+        tweak_beat.setToolTip("Edit the locked visual beat for this shot")
+        tweak_beat.setEnabled(stored_beat is not None)
+        beat_view = _readonly_section(
+            "Visual beat identified by Qwen", visual_beat, 75, "#9FD6B8",
+            extra_widget=tweak_beat,
+        )
         _readonly_section("Original prompt generated by Qwen", generated_prompt, 105, "#C9A6E6")
 
         layout.addWidget(QLabel("Working prompt"))
@@ -4783,6 +4885,10 @@ class MainWindow(QMainWindow):
         progress.setVisible(False)
         layout.addWidget(progress)
         actions = QHBoxLayout()
+        tweak_beat_action = QPushButton("Tweak Beat")
+        tweak_beat_action.setToolTip(tweak_beat.toolTip())
+        tweak_beat_action.setEnabled(tweak_beat.isEnabled())
+        actions.addWidget(tweak_beat_action)
         actions.addStretch(1)
         cancel = QPushButton("Close")
         regenerate = QPushButton("Regenerate with Qwen")
@@ -4917,6 +5023,9 @@ class MainWindow(QMainWindow):
             regenerate.setEnabled(not running)
             save.setEnabled(not running)
             cancel.setEnabled(not running)
+            can_tweak_beat = not running and stored_beat is not None
+            tweak_beat.setEnabled(can_tweak_beat)
+            tweak_beat_action.setEnabled(can_tweak_beat)
             save_image.setEnabled(not running and bool(candidate_state["path"]))
             progress.setVisible(running)
 
@@ -5076,12 +5185,63 @@ class MainWindow(QMainWindow):
                 "force_lightbox_update": True,
             })
 
+        def _reload_after_beat_tweak():
+            nonlocal visual_beat, stored_beat, visual_beats, row, scene_entry, data, model_entry, rows, models
+            try:
+                fresh = _yaml.safe_load(Path(prompts_path).read_text(encoding="utf-8")) or {}
+            except Exception:
+                return
+            if not isinstance(fresh, dict):
+                return
+            data = fresh
+            scene_entry = data.get(scene_id) or data.get(str(scene_id)) or scene_entry
+            if not isinstance(scene_entry, dict):
+                return
+            models = scene_entry.setdefault("models", {})
+            if not isinstance(models, dict):
+                models = {}
+                scene_entry["models"] = models
+            model_entry = models.get(model_key)
+            if not isinstance(model_entry, dict):
+                model_entry = {"profile": f"{model_key}.yaml", "prompts": []}
+                models[model_key] = model_entry
+            rows = model_entry.get("prompts", [])
+            if not isinstance(rows, list):
+                rows = []
+            row = find_prompt_row(rows, beat_index) or row
+            visual_beats = normalize_stored_beats(scene_entry.get("visual_beats", []))
+            stored_beat = (
+                visual_beats[beat_index - 1]
+                if 1 <= beat_index <= len(visual_beats)
+                else None
+            )
+            visual_beat = str(
+                row.get("visual_beat")
+                or (stored_beat.beat if stored_beat is not None else "")
+                or scene.get("text", "")
+            )
+            beat_view.setPlainText(visual_beat)
+            tweak_beat.setEnabled(stored_beat is not None)
+            tweak_beat_action.setEnabled(stored_beat is not None)
+            if prompt_editor.toPlainText().strip() == saved_prompt_state["text"]:
+                new_text = str(row.get("text", ""))
+                prompt_editor.setPlainText(new_text)
+                saved_prompt_state["text"] = new_text
+                _update_save_states()
+            _set_popup_font_size(font_slider.value())
+
+        def _tweak_beat():
+            self._open_beat_editor(scene_id, beat_index, parent=dialog)
+            _reload_after_beat_tweak()
+
         cancel.clicked.connect(dialog.reject)
         regenerate.clicked.connect(_regenerate)
         save.clicked.connect(lambda: _save(close_dialog=False))
         generate_image.clicked.connect(_generate_image)
         update_lightbox.clicked.connect(_update_lightbox)
         save_image.clicked.connect(_save_image)
+        tweak_beat.clicked.connect(_tweak_beat)
+        tweak_beat_action.clicked.connect(_tweak_beat)
         dialog.exec()
 
     def _open_prompt_scene_dialog(self, scene_id: int, candidate: bool = False,
@@ -5845,7 +6005,7 @@ class MainWindow(QMainWindow):
             bm_btn.setCheckable(True)
             bm_btn.setChecked(self._dub_bookmarks.get(sid, False))
             bm_btn.setToolTip("Toggle bookmark (Ctrl+B cycles through bookmarks)")
-            self._dub_apply_bookmark_style(bm_btn, bm_btn.isChecked())
+            self._apply_bookmark_style(bm_btn, bm_btn.isChecked())
             bm_btn.toggled.connect(lambda checked, s=sid, b=bm_btn: self._dub_toggle_bookmark(s, checked, b))
 
             hdr.addWidget(id_lbl)
@@ -5961,14 +6121,6 @@ class MainWindow(QMainWindow):
         if self._dub_editors:
             self._dub_select_scene(min(self._dub_editors))
 
-        # Ctrl+B shortcut (created once)
-        if not getattr(self, "_dub_bm_shortcut_installed", False):
-            from PyQt6.QtGui import QShortcut, QKeySequence
-            sc = QShortcut(QKeySequence("Ctrl+B"), self)
-            sc.activated.connect(self._dub_goto_next_bookmark)
-
-            self._dub_bm_shortcut_installed = True
-
         self._dub_status_label.setText(f"{len(scenes)} scene(s) loaded.")
         self._dub_update_total_duration()
         self._dub_update_image_badges()
@@ -6019,7 +6171,7 @@ class MainWindow(QMainWindow):
         self._dub_update_save_btn()
         self._dub_update_dub_btn()
 
-    def _dub_apply_bookmark_style(self, btn, active: bool) -> None:
+    def _apply_bookmark_style(self, btn, active: bool) -> None:
         if active:
             btn.setStyleSheet(
                 "QPushButton { background:#4A3800; color:#FFD600; border:1px solid #FFD600; "
@@ -6047,9 +6199,9 @@ class MainWindow(QMainWindow):
                                 child.blockSignals(True)
                                 child.setChecked(False)
                                 child.blockSignals(False)
-                                self._dub_apply_bookmark_style(child, False)
+                                self._apply_bookmark_style(child, False)
         self._dub_bookmarks[sid] = checked
-        self._dub_apply_bookmark_style(btn, checked)
+        self._apply_bookmark_style(btn, checked)
         # Persist to disk
         bm_path = self._dub_bookmark_path()
         if bm_path:
@@ -6400,14 +6552,61 @@ class MainWindow(QMainWindow):
         self._dub_seg_threads.append((thread, worker))
         thread.start()
 
+    def _populate_tts_voice_combo(self, combo: QComboBox) -> None:
+        """Fill a combo with Italian, US English, and UK English Edge TTS voices."""
+        from narration.tts_engine import EDGE_TTS_VOICES, voice_locale
+
+        combo.blockSignals(True)
+        combo.clear()
+        last_locale = None
+        for label, short_name, _gender in EDGE_TTS_VOICES:
+            locale = voice_locale(short_name)
+            if last_locale is not None and locale != last_locale:
+                combo.insertSeparator(combo.count())
+            combo.addItem(label, short_name)
+            last_locale = locale
+        combo.blockSignals(False)
+
+    def _tts_voice_combos(self):
+        return [
+            combo
+            for combo in (
+                getattr(self, "tts_voice_input", None),
+                getattr(self, "_dub_voice_input", None),
+            )
+            if combo is not None
+        ]
+
     def _tts_voice_setting(self) -> str:
-        try:
-            return self.tts_voice_input.currentData() or "it-IT-DiegoNeural"
-        except Exception:
-            return "it-IT-DiegoNeural"
+        for combo in self._tts_voice_combos():
+            data = combo.currentData()
+            if data:
+                return str(data)
+        return "it-IT-DiegoNeural"
+
+    def _set_tts_voice_combos(self, voice: str, origin=None) -> None:
+        for combo in self._tts_voice_combos():
+            if combo is origin:
+                continue
+            idx = combo.findData(voice)
+            if idx >= 0 and combo.currentIndex() != idx:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
 
     def _on_tts_voice_changed(self) -> None:
-        """Mark all segments that have existing audio as dirty when voice changes."""
+        """Keep Settings and Dubbing pickers in sync; mark dubbed audio stale."""
+        sender = self.sender()
+        voice = None
+        if sender is not None and hasattr(sender, "currentData"):
+            data = sender.currentData()
+            if data:
+                voice = str(data)
+        if not voice:
+            voice = self._tts_voice_setting()
+        self._set_tts_voice_combos(voice, origin=sender)
+        if hasattr(self, "controller") and getattr(self.controller, "config", None) is not None:
+            self.controller.config["tts_voice"] = voice
         if not hasattr(self, "_dub_editors") or not self._dub_editors:
             return
         changed = False
@@ -6922,9 +7121,12 @@ class MainWindow(QMainWindow):
 
         # TTS
         tts_voice = str(settings.get("tts_voice", "it-IT-DiegoNeural"))
-        idx = self.tts_voice_input.findData(tts_voice)
-        if idx >= 0:
-            self.tts_voice_input.setCurrentIndex(idx)
+        for combo in self._tts_voice_combos():
+            idx = combo.findData(tts_voice)
+            if idx >= 0:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
         tts_rate = str(settings.get("tts_rate", "+0%")).replace("+", "").replace("%", "")
         self.tts_rate_input.setValue(int(tts_rate) if tts_rate.lstrip("-").isdigit() else 0)
         self._tts_rate_changed(self.tts_rate_input.value())
@@ -6983,7 +7185,7 @@ class MainWindow(QMainWindow):
             "use_ollama": self.use_ollama_input.isChecked(),
             "ollama_model": self.ollama_model_input.text().strip() or "qwen3:8b",
             "ollama_host": self.ollama_host_input.text().strip() or "http://localhost:11434",
-            "tts_voice": self.tts_voice_input.currentData() or "it-IT-DiegoNeural",
+            "tts_voice": self._tts_voice_setting(),
             "tts_rate": f"{self.tts_rate_input.value():+d}%",
             "tts_pitch": f"{self.tts_pitch_input.value():+d}Hz",
             "tts_volume": f"{self.tts_volume_input.value():+d}%",
@@ -7040,7 +7242,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Create project failed", str(exc))
 
     def _preview_tts_voice(self) -> None:
-        voice  = self.tts_voice_input.currentData() or "it-IT-DiegoNeural"
+        from narration.tts_engine import preview_text_for_voice
+
+        voice  = self._tts_voice_setting()
+        sample = preview_text_for_voice(voice)
         rate   = f"{self.tts_rate_input.value():+d}%"
         pitch  = f"{self.tts_pitch_input.value():+d}Hz"
         volume = f"{self.tts_volume_input.value():+d}%"
@@ -7058,13 +7263,14 @@ class MainWindow(QMainWindow):
             done  = pyqtSignal(str)
             error = pyqtSignal(str)
 
-            def __init__(self, voice, rate, pitch, volume, path):
+            def __init__(self, voice, rate, pitch, volume, path, sample):
                 super().__init__()
                 self._voice  = voice
                 self._rate   = rate
                 self._pitch  = pitch
                 self._volume = volume
                 self._path   = path
+                self._sample = sample
 
             def run(self):
                 try:
@@ -7082,7 +7288,7 @@ class MainWindow(QMainWindow):
                         "async def _go():\n"
                         "    kwargs = {}\n"
                         + kwargs_lines +
-                        f"    c = edge_tts.Communicate('Ciao, questa e una anteprima della voce.', {self._voice!r}, **kwargs)\n"
+                        f"    c = edge_tts.Communicate({self._sample!r}, {self._voice!r}, **kwargs)\n"
                         f"    await c.save({self._path!r})\n"
                         "asyncio.run(_go())\n"
                     )
@@ -7103,7 +7309,7 @@ class MainWindow(QMainWindow):
                     self.error.emit(str(exc))
 
         self._tts_preview_thread = QThread(self)
-        self._tts_preview_worker = _Worker(voice, rate, pitch, volume, tmp_path)
+        self._tts_preview_worker = _Worker(voice, rate, pitch, volume, tmp_path, sample)
         self._tts_preview_worker.moveToThread(self._tts_preview_thread)
         self._tts_preview_thread.started.connect(self._tts_preview_worker.run)
 

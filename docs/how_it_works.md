@@ -8,7 +8,10 @@ model prompts.
 This document is the map. Specialized contracts live in:
 
 - `docs/image_prompt_pipeline.md` — locked beats, prompt rules, per-model style
+- `docs/show_types_and_models.md` — which still model, style, profile, and clip engine for each kind of show
+- `docs/real_political_figures.md` — named public figures, LoRA vs reference identity, 16 GB notes
 - `docs/comfy_role.md` — what ComfyUI owns vs what Qt owns
+- `docs/blender_role.md` — Blender as a later headless clip backend, not a new app
 - `docs/comfy_integration.md` — HTTP bridge, lab tab, workflow JSON
 
 ## Start it
@@ -69,7 +72,9 @@ prompt string and sampling numbers.
    edit a row by hand (`manually_edited`). Build Prompts fills the rest.
 6. **Preview Images** — fast stills for checking composition.
 7. **Lightbox** — compare model variants and pick the still that goes to
-   clips.
+   clips. Click a still to open the viewer; **Tweak Prompt** edits that
+   model's prompt, and **Tweak Beat** in that popup opens the locked visual
+   beat. Bookmark a scene card and press Ctrl+B to jump back to it.
 8. **Comfy lab** — send a raw graph to ComfyUI. Not the video pipeline. It
    does not lock beats or prompts.
 9. **Settings** — canvas size, which models are enabled, steps/guidance,
