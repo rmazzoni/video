@@ -1,13 +1,18 @@
 import unittest
 
 from video.ken_burns_generator import (
+    MOTION_CAP,
     MOTION_VERSION,
+    OPTIMAL_SHOT_SECONDS,
+    ZOOM_END,
     ZOOM_PRESCALE,
+    ZOOM_START,
     interpolated_crop,
     ken_burns_frame_count,
     ken_burns_vf,
     motion_cache_key,
     pan_direction,
+    required_shot_count,
 )
 
 
@@ -72,26 +77,42 @@ class KenBurnsPanTests(unittest.TestCase):
                 self.assertLessEqual(y0 + src_h, img_h + 1e-9)
 
     def test_ffmpeg_filter_holds_end_crop_after_motion_cap(self):
-        vf = ken_burns_vf(1344, 768, 1280, 720, duration=10.0, clip_index=0)
+        # 18s clip, motion finishes at OPTIMAL_SHOT_SECONDS and then holds.
+        frames = ken_burns_frame_count(18.0, 24)
+        vf = ken_burns_vf(1344, 768, 1280, 720, duration=18.0, clip_index=0)
         self.assertIn("zoompan=", vf)
         self.assertIn(f"iw*{ZOOM_PRESCALE}", vf)
         self.assertIn("s=1280x720", vf)
-        self.assertIn("d=240:", vf)
-        self.assertIn("min(1\\,on/144.000000)", vf)
+        self.assertIn(f"d={frames}:", vf)
+        self.assertIn(f"min(1\\,on/{MOTION_CAP * 24:.6f})", vf)
+        self.assertGreater(frames, int(MOTION_CAP * 24))
 
     def test_ffmpeg_filter_endpoints_match_interpolated_crop(self):
         img_w, img_h = 1344.0, 768.0
         sw0, _sh0, _x0, _y0 = interpolated_crop(img_w, img_h, 0.0, 0)
         sw1, _sh1, _x1, _y1 = interpolated_crop(img_w, img_h, 1.0, 0)
         vf = ken_burns_vf(img_w, img_h, 1920, 1080, duration=4.0, clip_index=0)
-        self.assertIn("1.120000", vf)
-        self.assertIn("0.260000", vf)
+        self.assertIn(f"{ZOOM_START:.6f}", vf)
+        self.assertIn(f"{ZOOM_END - ZOOM_START:.6f}", vf)
         self.assertIn("d=96:", vf)
-        self.assertIn("(iw-iw/zoom)*min(1\\,on/", vf)
-        self.assertNotIn("(1-min(1\\,on/", vf)
+        # Short clips share the shot-length timebase, so they do not finish the move.
+        self.assertIn(f"min(1\\,on/{MOTION_CAP * 24:.6f})", vf)
+        self.assertIn("(iw-iw/1.050000)*0.250000", vf)
+        self.assertIn("(iw-iw/1.120000)*0.750000", vf)
+        self.assertNotIn("(iw-iw/zoom)*min(1\\,on/", vf)
         vf_left = ken_burns_vf(img_w, img_h, 1920, 1080, duration=4.0, clip_index=1)
-        self.assertIn("(iw-iw/zoom)*(1-min(1\\,on/", vf_left)
+        self.assertIn("(iw-iw/1.050000)*0.750000", vf_left)
+        self.assertIn("(iw-iw/1.120000)*0.250000", vf_left)
         self.assertGreater(sw0, sw1)
+
+    def test_required_shots_follow_dubbed_audio(self):
+        self.assertEqual(OPTIMAL_SHOT_SECONDS, 12.0)
+        self.assertEqual(required_shot_count(0), 0)
+        self.assertEqual(required_shot_count(12), 1)
+        self.assertEqual(required_shot_count(12.1), 2)
+        self.assertEqual(required_shot_count(60), 5)
+        self.assertEqual(required_shot_count(90), 8)
+        self.assertEqual(required_shot_count(5), 1)
 
     def test_frame_count_rounds_duration_to_fps(self):
         self.assertEqual(ken_burns_frame_count(4.0, 24), 96)

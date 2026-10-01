@@ -8,6 +8,7 @@ direction so the cut does not reverse mid-shot.
 Motion is a single ffmpeg zoompan graph (no Python frame loop).
 """
 
+import math
 import os
 import subprocess
 from typing import Optional, Tuple
@@ -55,12 +56,14 @@ def _enc_args(nvenc: bool, x264_threads: Optional[int] = None) -> list:
 
 
 # Bump when crop math or the ffmpeg graph changes so clip sidecars force a re-render.
-MOTION_VERSION = 4
+MOTION_VERSION = 6
 
 # Stay above 1.0 for the whole clip. Zoom 1.0 has zero horizontal slack, so
 # the window can only shrink from one side and the center reverses (wobble).
-ZOOM_START = 1.12
-ZOOM_END = 1.38
+# The delta is small on purpose: a bigger push-in reads as jitter once zoompan
+# snaps x/y to whole pixels.
+ZOOM_START = 1.05
+ZOOM_END = 1.12
 # zoompan x/y snap to integer pixels. Upscale first so one source pixel is a
 # fraction of an output pixel and slow pans do not stair-step.
 ZOOM_PRESCALE = 4
@@ -82,10 +85,14 @@ def motion_cache_key(motion_style: str, fps: int = 24) -> dict:
 
 
 def _pan_aligns(clip_index: int) -> tuple:
-    """Crop x origin as a 0=left … 1=right fraction at start and end."""
+    """Crop x origin as a 0=left … 1=right fraction at start and end.
+
+    Half the available slack, kept in the middle. A full left-to-right sweep
+    looks fast and stair-steps.
+    """
     if pan_direction(clip_index) == "right":
-        return 0.0, 1.0
-    return 1.0, 0.0
+        return 0.25, 0.75
+    return 0.75, 0.25
 
 
 def crop_window(
@@ -123,7 +130,21 @@ def interpolated_crop(
     return tuple(a + (b - a) * t for a, b in zip(start, end))
 
 
-MOTION_CAP = 6.0
+# Average shot length. The Lightbox counter divides dubbed audio by this.
+# The same length is the full zoom+pan, so a balanced shot keeps drifting
+# instead of holding a still. Shorter clips only travel duration/MOTION_CAP
+# of the path, so a 2s clip does not rush through the whole move.
+OPTIMAL_SHOT_SECONDS = 12.0
+MOTION_CAP = OPTIMAL_SHOT_SECONDS
+
+
+def required_shot_count(audio_seconds: float, shot_seconds: float = OPTIMAL_SHOT_SECONDS) -> int:
+    """How many stills a dubbed scene needs at about shot_seconds each."""
+    audio = float(audio_seconds or 0.0)
+    shot = float(shot_seconds)
+    if audio <= 0.0 or shot <= 0.0:
+        return 0
+    return int(math.ceil(audio / shot))
 
 
 def ken_burns_frame_count(duration: float, fps: int = 24) -> int:
@@ -145,19 +166,20 @@ def ken_burns_vf(
 
     crop w/h are configured once with t=NAN, so a t-based crop graph fails on
     FFmpeg 8. zoompan evaluates zoom/x/y per output frame. A 4x pre-scale keeps
-    those steps subpixel on the output frame.
+    those steps subpixel on the output frame. Progress is always over
+    MOTION_CAP, not the clip length, so short clips move slowly.
     """
-    duration = max(float(duration), 1e-3)
-    motion_dur = min(duration, MOTION_CAP)
-    frames_motion = max(1.0, motion_dur * float(fps))
+    frames_motion = max(1.0, MOTION_CAP * float(fps))
     if nframes is None:
         nframes = ken_burns_frame_count(duration, fps)
     p = f"min(1\\,on/{frames_motion:.6f})"
     z_expr = f"{ZOOM_START:.6f}+({ZOOM_END - ZOOM_START:.6f})*{p}"
-    if pan_direction(clip_index) == "right":
-        x_expr = f"(iw-iw/zoom)*{p}"
-    else:
-        x_expr = f"(iw-iw/zoom)*(1-{p})"
+    # Linear x between the two crop origins. Multiplying the live slack by
+    # progress sweeps the whole frame; these aligns stay in the middle.
+    start_align, end_align = _pan_aligns(clip_index)
+    x0 = f"(iw-iw/{ZOOM_START:.6f})*{start_align:.6f}"
+    x1 = f"(iw-iw/{ZOOM_END:.6f})*{end_align:.6f}"
+    x_expr = f"{x0}+({x1}-{x0})*{p}"
     # Even dimensions: zoompan rejects odd scaled sizes.
     return (
         f"scale=trunc(iw*{ZOOM_PRESCALE}/2)*2:trunc(ih*{ZOOM_PRESCALE}/2)*2:flags=lanczos,"

@@ -1693,6 +1693,7 @@ class MainWindow(QMainWindow):
         self._lightbox_grid_layout.setSpacing(14)
         self._lightbox_grid_layout.addStretch(1)
         scroll.setWidget(self._lightbox_grid_widget)
+        scroll.verticalScrollBar().rangeChanged.connect(self._lightbox_on_scroll_range_changed)
         root.addWidget(scroll, 1)
 
         self._lightbox_checkboxes: dict = {}
@@ -2015,7 +2016,6 @@ class MainWindow(QMainWindow):
     def _lightbox_update_image_badges(self, only_sid: int = None) -> None:
         labels = getattr(self, "_lightbox_image_labels", {})
         scene_ids = [only_sid] if only_sid is not None else labels.keys()
-        clip_duration = self._dub_expected_clip_duration()
         for sid in scene_ids:
             label = labels.get(sid)
             if label is None:
@@ -2024,16 +2024,103 @@ class MainWindow(QMainWindow):
                 checkbox.isChecked()
                 for checkbox in self._lightbox_checkboxes.get(sid, {}).values()
             )
-            audio_duration = self._dub_segment_duration_seconds(sid)
-            optimum = math.ceil(audio_duration / clip_duration) if audio_duration else 0
-            label.setText(f"Images {selected} / {optimum}")
-            label.setStyleSheet(self._image_badge_style(selected, optimum))
-            label.setToolTip(
-                f"{selected} selected image(s); {optimum} estimated optimum "
-                f"at {clip_duration:.1f} seconds per clip"
+            required, audio = self._shot_requirement(sid)
+            label.setText(f"Images {selected} / {required}")
+            label.setStyleSheet(self._image_badge_style(selected, required))
+            label.setToolTip(self._shot_badge_tooltip(selected, required, audio))
+
+    def _lightbox_capture_scroll_anchor(self) -> tuple:
+        """Scene at the top of the viewport, and how far into that card we are."""
+        scroll = getattr(self, "_lightbox_scroll_area", None)
+        cards = getattr(self, "_lightbox_scene_cards", {})
+        if scroll is None or not cards:
+            return None, 0
+        value = scroll.verticalScrollBar().value()
+        grid = self._lightbox_grid_widget
+        anchor_sid = None
+        offset = 0
+        for sid in sorted(cards):
+            card = cards[sid]
+            if card is None or not card.isVisible():
+                continue
+            top = card.mapTo(grid, card.rect().topLeft()).y()
+            if top <= value + 4:
+                anchor_sid = sid
+                offset = value - top
+            else:
+                break
+        return anchor_sid, offset
+
+    def _lightbox_restore_scroll_anchor(self, anchor_sid, offset: int) -> None:
+        if getattr(self, "_lightbox_restoring_scroll", False):
+            return
+        scroll = getattr(self, "_lightbox_scroll_area", None)
+        cards = getattr(self, "_lightbox_scene_cards", {})
+        if scroll is None or anchor_sid is None or not cards:
+            return
+        self._lightbox_restoring_scroll = True
+        try:
+            grid = self._lightbox_grid_widget
+            layout = grid.layout()
+            if layout is not None:
+                layout.activate()
+            visible = [
+                sid for sid in sorted(cards)
+                if cards[sid] is not None and cards[sid].isVisible()
+            ]
+            if not visible:
+                return
+            if anchor_sid not in visible:
+                later = [sid for sid in visible if sid > anchor_sid]
+                anchor_sid = later[0] if later else visible[-1]
+                offset = 0
+            card = cards.get(anchor_sid)
+            if card is None:
+                return
+            top = card.mapTo(grid, card.rect().topLeft()).y()
+            scroll.verticalScrollBar().setValue(max(0, top + int(offset)))
+        finally:
+            self._lightbox_restoring_scroll = False
+
+    def _lightbox_on_scroll_range_changed(self, _minimum: int, _maximum: int) -> None:
+        lock = getattr(self, "_lightbox_scroll_lock", None)
+        if not lock or getattr(self, "_lightbox_restoring_scroll", False):
+            return
+        self._lightbox_restore_scroll_anchor(lock[0], lock[1])
+
+    def _lightbox_release_scroll_lock(self) -> None:
+        lock = getattr(self, "_lightbox_scroll_lock", None)
+        if lock:
+            self._lightbox_restore_scroll_anchor(lock[0], lock[1])
+        focus = getattr(self, "_lightbox_filter_focus", None)
+        self._lightbox_filter_focus = None
+        grid = getattr(self, "_lightbox_grid_widget", None)
+        if focus is not None and not sip.isdeleted(focus) and focus.isVisible() and grid is not None:
+            from PyQt6.QtWidgets import QApplication
+            current = QApplication.focusWidget()
+            moved_into_grid = (
+                current is not None
+                and current is not focus
+                and (current is grid or grid.isAncestorOf(current))
             )
+            if moved_into_grid:
+                focus.setFocus(Qt.FocusReason.OtherFocusReason)
+        if lock:
+            self._lightbox_restore_scroll_anchor(lock[0], lock[1])
+        QTimer.singleShot(0, self._lightbox_drop_scroll_lock)
+
+    def _lightbox_drop_scroll_lock(self) -> None:
+        lock = getattr(self, "_lightbox_scroll_lock", None)
+        self._lightbox_scroll_lock = None
+        if lock:
+            self._lightbox_restore_scroll_anchor(lock[0], lock[1])
 
     def _lightbox_apply_unselected_filter(self, only_sid: int = None) -> None:
+        from PyQt6.QtWidgets import QApplication
+
+        anchor_sid, offset = self._lightbox_capture_scroll_anchor()
+        self._lightbox_scroll_lock = (anchor_sid, offset)
+        self._lightbox_filter_focus = QApplication.focusWidget()
         hide_unselected = self._lightbox_unselected_btn.isChecked()
         scene_ids = [only_sid] if only_sid is not None else self._lightbox_cells.keys()
         for sid in scene_ids:
@@ -2046,6 +2133,8 @@ class MainWindow(QMainWindow):
                 card.setVisible(not hide_unselected or any(
                     checkbox.isChecked() for checkbox in checkboxes.values()
                 ))
+        self._lightbox_restore_scroll_anchor(anchor_sid, offset)
+        QTimer.singleShot(0, self._lightbox_release_scroll_lock)
 
     def _lightbox_set_all(self, checked: bool) -> None:
         for sid_dict in self._lightbox_checkboxes.values():
@@ -5776,11 +5865,22 @@ class MainWindow(QMainWindow):
             except Exception:
                 return 0.0
 
-    def _dub_expected_clip_duration(self) -> float:
-        config = self.controller.config
-        if str(config.get("clip_engine", "ken_burns")).strip().lower() == "ken_burns":
-            return max(0.1, float(config.get("ken_burns_duration", 5.0)))
-        return max(0.1, int(config.get("num_frames", 14)) / max(1, int(config.get("fps", 8))))
+    def _shot_requirement(self, sid: int) -> tuple:
+        """Required stills for one scene: dubbed seconds / optimal shot length."""
+        from video.ken_burns_generator import required_shot_count
+
+        audio = self._dub_segment_duration_seconds(sid)
+        return required_shot_count(audio), audio
+
+    def _shot_badge_tooltip(self, selected: int, required: int, audio: float) -> str:
+        from video.ken_burns_generator import OPTIMAL_SHOT_SECONDS
+
+        if audio <= 0:
+            return "Dub this scene to calculate how many shots the audio needs."
+        return (
+            f"{selected} selected image(s); {required} required. "
+            f"{audio:.0f}s of dubbed audio at {OPTIMAL_SHOT_SECONDS:.0f}s per shot."
+        )
 
     def _dub_selected_image_counts(self) -> dict:
         project = self.project_path_input.text().strip()
@@ -5810,20 +5910,15 @@ class MainWindow(QMainWindow):
         labels = getattr(self, "_dub_image_labels", {})
         selected_counts = self._dub_selected_image_counts()
         scene_ids = [only_sid] if only_sid is not None else labels.keys()
-        clip_duration = self._dub_expected_clip_duration()
         for sid in scene_ids:
             label = labels.get(sid)
             if label is None:
                 continue
-            audio_duration = self._dub_segment_duration_seconds(sid)
-            optimum = math.ceil(audio_duration / clip_duration) if audio_duration else 0
             selected = selected_counts.get(sid, 0)
-            label.setText(f"Images {selected} / {optimum}")
-            label.setStyleSheet(self._image_badge_style(selected, optimum))
-            label.setToolTip(
-                f"{selected} selected Lightbox image(s); {optimum} estimated optimum "
-                f"at {clip_duration:.1f} seconds per clip"
-            )
+            required, audio = self._shot_requirement(sid)
+            label.setText(f"Images {selected} / {required}")
+            label.setStyleSheet(self._image_badge_style(selected, required))
+            label.setToolTip(self._shot_badge_tooltip(selected, required, audio))
 
     def _dub_update_segment_badges(self, sid: int) -> None:
         """Refresh a single scene card's speed/duration badges."""
@@ -6112,7 +6207,7 @@ class MainWindow(QMainWindow):
         self._dub_spell_highlighters  = {}   # sid → _SpellHighlighter
         self._dub_speed_labels: dict  = {}   # sid → QLabel (speed badge)
         self._dub_duration_labels: dict = {} # sid → QLabel (duration badge)
-        self._dub_image_labels: dict = {}    # sid → QLabel (selected / optimum images)
+        self._dub_image_labels: dict = {}    # sid → QLabel (selected / required stills)
         self._dub_rates:   dict       = {}   # sid → TTS rate % used for its current audio
         self._dub_selected_sid = None
         # Load bookmark from disk for this project
