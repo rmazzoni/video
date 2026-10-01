@@ -2,11 +2,42 @@ import os
 import tempfile
 import unittest
 
+from ui.main_window import lightbox_thumb_refresh_plan
 from ui.pipeline_controller import (
     copy_preview_to_lightbox,
     preview_v2_filename,
     recover_preview_still,
 )
+
+
+class LightboxThumbRefreshPlanTests(unittest.TestCase):
+    def test_reload_lists_only_rewritten_files(self):
+        plan, changed = lightbox_thumb_refresh_plan(
+            {"a.png": 1.0, "b.png": 2.0},
+            {"b.png": 3.0, "a.png": 1.0},
+        )
+        self.assertEqual(plan, "reload")
+        self.assertEqual(changed, ["b.png"])
+
+    def test_unchanged_files_reload_nothing(self):
+        plan, changed = lightbox_thumb_refresh_plan(
+            {"a.png": 1.0},
+            {"a.png": 1.0},
+        )
+        self.assertEqual(plan, "reload")
+        self.assertEqual(changed, [])
+
+    def test_added_or_removed_file_rebuilds_the_card(self):
+        added, _changed = lightbox_thumb_refresh_plan(
+            {"a.png": 1.0},
+            {"a.png": 1.0, "b.png": 2.0},
+        )
+        removed, _changed = lightbox_thumb_refresh_plan(
+            {"a.png": 1.0, "b.png": 2.0},
+            {"a.png": 1.0},
+        )
+        self.assertEqual(added, "rebuild")
+        self.assertEqual(removed, "rebuild")
 
 
 class PreviewLightboxCopyTests(unittest.TestCase):

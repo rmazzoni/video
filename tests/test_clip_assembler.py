@@ -100,6 +100,38 @@ class ClipNameTests(unittest.TestCase):
             os.utime(clip, (os.path.getmtime(src) + 10, os.path.getmtime(src) + 10))
             self.assertTrue(PipelineWorker._clip_output_is_current(clip, src))
 
+    def test_final_clip_is_stale_when_source_or_duration_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "scene_001_schnell_b01_v2.png")
+            other = os.path.join(tmp, "scene_001_dev_b01_v1.png")
+            clip = os.path.join(tmp, "scene_001_v00.mp4")
+            for path in (src, other):
+                with open(path, "wb") as fh:
+                    fh.write(b"png")
+            with open(clip, "wb") as fh:
+                fh.write(b"\x00" * 64)
+            os.utime(clip, (os.path.getmtime(src) + 10, os.path.getmtime(src) + 10))
+            plan = {"scene_001_v00.mp4": {"source": "scene_001_schnell_b01_v2.png", "duration": 5.0}}
+            self.assertTrue(PipelineWorker._final_clip_is_current(clip, src, 5.0, False, plan))
+            self.assertFalse(PipelineWorker._final_clip_is_current(clip, src, 12.0, False, plan))
+            self.assertFalse(PipelineWorker._final_clip_is_current(clip, other, 5.0, False, plan))
+            self.assertFalse(PipelineWorker._final_clip_is_current(clip, src, 5.0, False, {}))
+
+    def test_unplanned_final_clips_are_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            keep = os.path.join(tmp, "scene_001_v00.mp4")
+            extra = os.path.join(tmp, "scene_001_v08.mp4")
+            padded_extra = os.path.join(tmp, "scene_001_v08_padded.mp4")
+            padded_keep = os.path.join(tmp, "scene_001_v00_padded.mp4")
+            for path in (keep, extra, padded_extra, padded_keep):
+                with open(path, "wb") as fh:
+                    fh.write(b"\x00" * 64)
+            removed = PipelineWorker._remove_unplanned_clips(tmp, {"scene_001_v00.mp4"})
+            self.assertEqual(sorted(removed), ["scene_001_v08.mp4", "scene_001_v08_padded.mp4"])
+            self.assertTrue(os.path.isfile(keep))
+            self.assertTrue(os.path.isfile(padded_keep))
+            self.assertFalse(os.path.isfile(extra))
+
 
 class PreviewStillCandidateTests(unittest.TestCase):
     def test_lists_each_schnell_and_zimage_beat(self):

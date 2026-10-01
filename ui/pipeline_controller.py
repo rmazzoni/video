@@ -205,6 +205,101 @@ class PipelineWorker(QObject):
             return False
 
     @staticmethod
+    def _final_clip_name(sid: int, v_idx: int) -> str:
+        return f"scene_{int(sid):03d}_v{int(v_idx):02d}.mp4"
+
+    @staticmethod
+    def _clip_plan_path(clips_dir: str) -> str:
+        return os.path.join(clips_dir, ".kb_clip_plan.yaml")
+
+    @staticmethod
+    def _load_clip_plan(clips_dir: str) -> dict:
+        path = PipelineWorker._clip_plan_path(clips_dir)
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _write_clip_plan(clips_dir: str, plan: dict) -> None:
+        try:
+            os.makedirs(clips_dir, exist_ok=True)
+            with open(PipelineWorker._clip_plan_path(clips_dir), "w", encoding="utf-8") as handle:
+                yaml.safe_dump(plan, handle, sort_keys=True)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _final_clip_is_current(
+        existing: str,
+        source_path: str,
+        duration: float,
+        params_changed: bool,
+        plan: dict,
+    ) -> bool:
+        """True when this file is the current still at the current shot length.
+
+        A newer timestamp is not enough. Final clip names are selection indexes
+        (scene_001_v00.mp4), so the same filename can be a different Lightbox
+        image, or the same image cut to the old per-clip length, after the
+        selection changes.
+        """
+        if not PipelineWorker._clip_output_is_current(existing, source_path, params_changed):
+            return False
+        entry = plan.get(os.path.basename(existing))
+        if not isinstance(entry, dict):
+            return False
+        if str(entry.get("source") or "") != os.path.basename(source_path):
+            return False
+        try:
+            planned = float(entry.get("duration"))
+        except (TypeError, ValueError):
+            return False
+        return abs(planned - float(duration)) <= 0.05
+
+    @staticmethod
+    def _remove_unplanned_clips(clips_dir: str, keep_names: set) -> list:
+        """Delete final clips that are not in the current Lightbox selection."""
+        removed = []
+        if not clips_dir or not os.path.isdir(clips_dir):
+            return removed
+        for fname in list(os.listdir(clips_dir)):
+            lower = fname.lower()
+            if not fname.startswith("scene_") or not lower.endswith(".mp4"):
+                continue
+            if lower.endswith("_padded.mp4"):
+                canonical = fname[: -len("_padded.mp4")] + ".mp4"
+            else:
+                canonical = fname
+            if canonical in keep_names:
+                continue
+            try:
+                os.remove(os.path.join(clips_dir, fname))
+                removed.append(fname)
+            except OSError:
+                pass
+        return removed
+
+    @staticmethod
+    def _clip_plan_for_work(all_work, clips_dir: str, default_dur: float) -> dict:
+        from video.clip_assembler import clip_file_is_usable
+        plan = {}
+        for sid, v_idx, img_path, per_clip_dur in all_work:
+            name = PipelineWorker._final_clip_name(sid, v_idx)
+            if not clip_file_is_usable(os.path.join(clips_dir, name)):
+                continue
+            dur = per_clip_dur if per_clip_dur else default_dur
+            plan[name] = {
+                "source": os.path.basename(img_path),
+                "duration": round(float(dur), 3),
+            }
+        return plan
+
+    @staticmethod
     def _unusable_clip_names(paths: List[str]) -> List[str]:
         from video.clip_assembler import clip_file_is_usable
         return [os.path.basename(p) for p in paths if not clip_file_is_usable(p)]
@@ -1692,6 +1787,23 @@ class PipelineWorker(QObject):
 
                 total = len(all_work)
                 failed_fc: list = []
+                from video.ken_burns_generator import OPTIMAL_SHOT_SECONDS
+                self.log.emit(
+                    f"Final clips use the current Lightbox selection: {total} still(s) "
+                    f"across {len(selections)} scene(s). Each scene's dubbed audio is "
+                    f"split across its selected stills"
+                    f" (about {OPTIMAL_SHOT_SECONDS:.0f}s each when the shot counter is green)."
+                )
+                keep_names = {
+                    self._final_clip_name(sid, v_idx)
+                    for sid, v_idx, _img_path, _per_clip_dur in all_work
+                }
+                removed = self._remove_unplanned_clips(final_clips_dir, keep_names)
+                if removed:
+                    self.log.emit(
+                        f"Removed {len(removed)} clip(s) left over from an earlier selection."
+                    )
+                clip_plan = self._load_clip_plan(final_clips_dir)
 
                 if clip_engine == "ken_burns":
                     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1719,17 +1831,26 @@ class PipelineWorker(QObject):
                     )
                     pending = []
                     done = 0
+                    untimed = sorted({
+                        sid for sid, _v_idx, _img_path, per_clip_dur in all_work
+                        if not per_clip_dur
+                    })
+                    if untimed:
+                        self.log.emit(
+                            f"{len(untimed)} scene(s) have no dubbed audio length; "
+                            f"those clips use {default_dur:.0f}s each."
+                        )
                     for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
                         clip_suffix = f"_v{v_idx:02d}"
                         existing = os.path.join(final_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
-                        up_to_date = self._clip_output_is_current(
-                            existing, img_path, params_changed
+                        dur = per_clip_dur if per_clip_dur else default_dur
+                        up_to_date = self._final_clip_is_current(
+                            existing, img_path, dur, params_changed, clip_plan
                         )
                         if up_to_date:
                             done += 1
                             self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (up to date).")
                         else:
-                            dur = per_clip_dur if per_clip_dur else default_dur
                             pending.append((idx, sid, v_idx, img_path, clip_suffix, dur))
                     workers = max_parallel_encodes(gen_kb._nvenc)
                     self.log.emit(
@@ -1774,6 +1895,9 @@ class PipelineWorker(QObject):
                     ]
                     self._raise_if_clips_missing(expected_final, failed_fc, "final")
                     self._write_ken_burns_params(final_clips_dir, cur_params)
+                    self._write_clip_plan(final_clips_dir, self._clip_plan_for_work(
+                        all_work, final_clips_dir, default_dur
+                    ))
                 else:
                     from video.video_generator import VideoGenerator
                     gen = VideoGenerator(
@@ -1796,7 +1920,8 @@ class PipelineWorker(QObject):
                         self._check_cancel()
                         clip_suffix = f"_v{v_idx:02d}"
                         existing = os.path.join(final_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
-                        if self._clip_output_is_current(existing, img_path):
+                        dur = per_clip_dur if per_clip_dur else float(self.config.get("ken_burns_duration", 5.0))
+                        if self._final_clip_is_current(existing, img_path, dur, False, clip_plan):
                             self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (up to date).")
                         else:
                             ov = scene_overrides.get(sid, scene_overrides.get(str(sid), {}))
@@ -1822,6 +1947,9 @@ class PipelineWorker(QObject):
                         for sid, v_idx, _img_path, _dur in all_work
                     ]
                     self._raise_if_clips_missing(expected_final, failed_fc, "final")
+                    self._write_clip_plan(final_clips_dir, self._clip_plan_for_work(
+                        all_work, final_clips_dir, float(self.config.get("ken_burns_duration", 5.0))
+                    ))
                     _log_vram("before final clips unload")
                     gen.unload()
                     try:

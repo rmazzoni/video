@@ -222,6 +222,27 @@ def _load_thumbnail(path: str, w: int, h: int) -> "QPixmap":
     return QPixmap.fromImage(image) if not image.isNull() else QPixmap()
 
 
+_LIGHTBOX_THUMB_W = 180
+_LIGHTBOX_THUMB_H = 102
+_LIGHTBOX_THUMB_BATCH = 4
+
+
+def lightbox_thumb_refresh_plan(loaded_mtime: dict, disk_mtime: dict) -> tuple:
+    """How to refresh one scene's thumbnails after new stills are written.
+
+    ("reload", names) when the filenames are unchanged and only some files were
+    rewritten. ("rebuild", []) when images were added or removed, so the card
+    widgets have to be recreated.
+    """
+    if set(loaded_mtime) != set(disk_mtime):
+        return "rebuild", []
+    changed = [
+        name for name, mtime in disk_mtime.items()
+        if loaded_mtime.get(name) != mtime
+    ]
+    return "reload", changed
+
+
 class MainWindow(QMainWindow):
     _COMFY_WORKFLOW_MODELS = {
         "flux1_schnell_image.json": "schnell",
@@ -1702,14 +1723,121 @@ class MainWindow(QMainWindow):
         self._lightbox_image_labels: dict = {}
         self._lightbox_bookmarks: dict = {}
         self._lightbox_bookmark_buttons: dict = {}
+        self._lightbox_thumb_labels: dict = {}
+        self._lightbox_thumb_mtime: dict = {}
+        self._lightbox_thumb_queue: list = []
+        self._lightbox_thumb_pump_pending = False
         return page
+
+    def _lightbox_disk_mtimes(self) -> dict:
+        project = self.project_path_input.text().strip()
+        lightbox_dir = os.path.join(project, "output", "lightbox") if project else ""
+        found: dict = {}
+        if not lightbox_dir or not os.path.isdir(lightbox_dir):
+            return found
+        for fname in os.listdir(lightbox_dir):
+            if not fname.lower().endswith(".png"):
+                continue
+            parts = fname.split("_")
+            try:
+                sid = int(parts[1])
+            except (IndexError, ValueError):
+                continue
+            path = os.path.join(lightbox_dir, fname)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                mtime = None
+            found.setdefault(sid, {})[fname] = mtime
+        return found
+
+    def _lightbox_reload_in_place(self, only_scene_id: int | None) -> bool:
+        """Reload rewritten thumbnails without recreating cards.
+
+        Returns False when a card has to be built or rebuilt.
+        """
+        cards = getattr(self, "_lightbox_scene_cards", None)
+        if not cards:
+            return False
+        scene_ids = [only_scene_id] if only_scene_id is not None else list(cards)
+        if any(sid not in cards for sid in scene_ids):
+            return False
+        disk = self._lightbox_disk_mtimes()
+        if only_scene_id is None and set(disk) != set(cards):
+            return False
+        project = self.project_path_input.text().strip()
+        lightbox_dir = os.path.join(project, "output", "lightbox") if project else ""
+        planned = []
+        for sid in scene_ids:
+            labels = self._lightbox_thumb_labels.get(sid) or {}
+            if not labels:
+                return False
+            plan, changed = lightbox_thumb_refresh_plan(
+                self._lightbox_thumb_mtime.get(sid) or {},
+                disk.get(sid) or {},
+            )
+            if plan == "rebuild":
+                return False
+            for fname in changed:
+                label = labels.get(fname)
+                if label is None or sip.isdeleted(label):
+                    return False
+            planned.append((sid, changed))
+        for sid, changed in planned:
+            labels = self._lightbox_thumb_labels.get(sid) or {}
+            disk_scene = disk.get(sid) or {}
+            for fname in changed:
+                self._lightbox_thumb_mtime.setdefault(sid, {})[fname] = disk_scene.get(fname)
+                self._lightbox_thumb_queue.append(
+                    (labels[fname], os.path.join(lightbox_dir, fname), sid, fname)
+                )
+        if any(changed for _sid, changed in planned):
+            self._lightbox_ensure_thumb_pump()
+        return True
+
+    def _lightbox_ensure_thumb_pump(self) -> None:
+        if self._lightbox_thumb_pump_pending or not self._lightbox_thumb_queue:
+            return
+        self._lightbox_thumb_pump_pending = True
+        QTimer.singleShot(0, self._lightbox_pump_thumbs)
+
+    def _lightbox_pump_thumbs(self) -> None:
+        self._lightbox_thumb_pump_pending = False
+        batch = self._lightbox_thumb_queue[:_LIGHTBOX_THUMB_BATCH]
+        del self._lightbox_thumb_queue[:_LIGHTBOX_THUMB_BATCH]
+        for label, path, sid, fname in batch:
+            if sip.isdeleted(label):
+                continue
+            if not os.path.exists(path):
+                label.setText("(missing)")
+                label.setPixmap(QPixmap())
+                self._lightbox_thumb_mtime.setdefault(sid, {})[fname] = None
+                continue
+            px = _load_thumbnail(path, _LIGHTBOX_THUMB_W, _LIGHTBOX_THUMB_H)
+            if px.isNull():
+                label.setText("(error)")
+                label.setStyleSheet("color:#E73A4B; font-size:10px;")
+                continue
+            label.setText("")
+            label.setPixmap(px)
+            try:
+                self._lightbox_thumb_mtime.setdefault(sid, {})[fname] = os.path.getmtime(path)
+            except OSError:
+                pass
+        if self._lightbox_thumb_queue:
+            self._lightbox_ensure_thumb_pump()
 
     def _refresh_lightbox(self, only_scene_id: int | None = None) -> None:
         import yaml as _yaml
 
-        # Rebuilding this grid while the Lightbox viewer is in exec() deletes the
-        # thumbnail whose click opened that viewer. On Windows that nested-loop
-        # teardown freezes the UI. Defer until the viewer closes.
+        # Rewritten stills keep their filenames. Swap those pixmaps in place,
+        # including while the viewer is open, so closing it does not re-decode
+        # every thumbnail on the UI thread. A filename added or removed still
+        # needs a card rebuild, and that rebuild must wait until the viewer
+        # closes: deleting the clicked thumbnail during exec() freezes Windows.
+        if self._lightbox_reload_in_place(only_scene_id):
+            return
+
         if getattr(self, "_lightbox_dialog_depth", 0) > 0:
             if not getattr(self, "_lightbox_grid_refresh_pending", False):
                 self._lightbox_grid_refresh_scene_id = only_scene_id
@@ -1737,6 +1865,9 @@ class MainWindow(QMainWindow):
             self._lightbox_scene_cards.clear()
             self._lightbox_image_labels.clear()
             self._lightbox_bookmark_buttons.clear()
+            self._lightbox_thumb_labels.clear()
+            self._lightbox_thumb_mtime.clear()
+            self._lightbox_thumb_queue.clear()
             self._lightbox_bookmarks = {}
             bm_path = self._lightbox_bookmark_path()
             if bm_path and os.path.exists(bm_path):
@@ -1791,7 +1922,7 @@ class MainWindow(QMainWindow):
         self._lightbox_status_label.setText(
             f"{len(scene_files)} scene(s), {total_images} image(s) \u2014 check images to include in Final Clips")
 
-        THUMB_W, THUMB_H = 180, 102
+        THUMB_W, THUMB_H = _LIGHTBOX_THUMB_W, _LIGHTBOX_THUMB_H
 
         def _variant_parts(fname: str):
             match = re.match(
@@ -1890,18 +2021,21 @@ class MainWindow(QMainWindow):
                 img_lbl.clicked.connect(self._open_lightbox_viewer)
                 img_lbl.setFixedSize(THUMB_W, THUMB_H)
                 img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._lightbox_thumb_labels.setdefault(sid, {})[fname] = img_lbl
                 if os.path.exists(img_path):
-                    # Scaled decode via QImageReader — reading full-res pixels for
-                    # every variant of every scene on each refresh is what froze the UI.
-                    px = _load_thumbnail(img_path, THUMB_W, THUMB_H)
-                    if not px.isNull():
-                        img_lbl.setPixmap(px)
-                    else:
-                        img_lbl.setText("(error)")
-                        img_lbl.setStyleSheet("color:#E73A4B; font-size:10px;")
+                    # Decode after this refresh returns so the window can paint.
+                    # Reading every full-size PNG on the UI thread is what made
+                    # the Lightbox freeze after the viewer closed.
+                    try:
+                        mtime = os.path.getmtime(img_path)
+                    except OSError:
+                        mtime = None
+                    self._lightbox_thumb_mtime.setdefault(sid, {})[fname] = mtime
+                    self._lightbox_thumb_queue.append((img_lbl, img_path, sid, fname))
                 else:
                     img_lbl.setText("(missing)")
                     img_lbl.setStyleSheet("color:#8E8B90; font-size:10px;")
+                    self._lightbox_thumb_mtime.setdefault(sid, {})[fname] = None
                 cell_lay.addWidget(img_lbl)
 
                 lbl_row = QHBoxLayout()
@@ -1933,6 +2067,11 @@ class MainWindow(QMainWindow):
             self._lightbox_cells.pop(only_scene_id, None)
             self._lightbox_image_labels.pop(only_scene_id, None)
             self._lightbox_bookmark_buttons.pop(only_scene_id, None)
+            self._lightbox_thumb_labels.pop(only_scene_id, None)
+            self._lightbox_thumb_mtime.pop(only_scene_id, None)
+            self._lightbox_thumb_queue = [
+                item for item in self._lightbox_thumb_queue if item[2] != only_scene_id
+            ]
             if old_card is not None:
                 self._lightbox_grid_layout.removeWidget(old_card)
                 old_card.deleteLater()
@@ -1961,6 +2100,7 @@ class MainWindow(QMainWindow):
         else:
             self._lightbox_update_image_badges()
             self._lightbox_apply_unselected_filter()
+        self._lightbox_ensure_thumb_pump()
 
 
     def _lightbox_bookmark_path(self) -> str:
@@ -2146,7 +2286,7 @@ class MainWindow(QMainWindow):
         self._save_lightbox_selections(silent=True)
         self._lightbox_apply_unselected_filter()
 
-    def _save_lightbox_selections(self, silent: bool = False) -> None:
+    def _save_lightbox_selections(self, silent: bool = False, update_badges: bool = True) -> None:
         import yaml as _yaml
 
         project = self.project_path_input.text().strip()
@@ -2184,8 +2324,9 @@ class MainWindow(QMainWindow):
         total = sum(len(v) for v in selections.values())
         self._lightbox_status_label.setText(
             f"Saved {total} selection(s) across {len(selections)} scene(s) \u2192 lightbox_selections.yaml")
-        self._dub_update_image_badges()
-        self._lightbox_update_image_badges()
+        if update_badges:
+            self._dub_update_image_badges()
+            self._lightbox_update_image_badges()
         if not silent:
             self._append_log(f"Lightbox selections saved: {total} image(s) in {len(selections)} scene(s).")
 
@@ -2439,19 +2580,17 @@ class MainWindow(QMainWindow):
             self._lightbox_viewer_release = None
             self._lightbox_dialog_depth -= 1
 
-        # Auto-save selections after the viewer closes (X button, Close, or Esc) so
-        # that any checkbox changes made inside the viewer are persisted to
-        # lightbox_selections.yaml immediately — without requiring the user
-        # to manually click the Save button afterwards. Save before any deferred
-        # grid rebuild so the current checkbox widgets are still alive.
-        self._save_lightbox_selections()
+        # Checkbox toggles already saved. This write is the safety net. Skip the
+        # per-scene audio scan inside the badge update — that scan, plus a
+        # synchronous thumbnail rebuild, is what froze the window on close.
+        self._save_lightbox_selections(silent=True, update_badges=False)
         if getattr(self, "_lightbox_dialog_depth", 0) <= 0 and getattr(
             self, "_lightbox_grid_refresh_pending", False
         ):
             sid = getattr(self, "_lightbox_grid_refresh_scene_id", None)
             self._lightbox_grid_refresh_pending = False
             self._lightbox_grid_refresh_scene_id = None
-            self._refresh_lightbox(only_scene_id=sid)
+            QTimer.singleShot(0, lambda sid=sid: self._refresh_lightbox(only_scene_id=sid))
 
     def _open_draft_zoom_dialog(self, image_path: str) -> None:
         """Zoom dialog for a draft image: shows zoomed image, narration text (read-only),
