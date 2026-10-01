@@ -3,7 +3,14 @@ import tempfile
 import unittest
 
 from ui.pipeline_controller import PipelineWorker
-from video.clip_assembler import clip_sort_key, scene_id_from_name, _clips_grouped_by_scene
+from video.clip_assembler import (
+    ClipAssembler,
+    clip_file_is_usable,
+    clip_sort_key,
+    concat_list_line,
+    scene_id_from_name,
+    _clips_grouped_by_scene,
+)
 
 
 class ClipNameTests(unittest.TestCase):
@@ -46,6 +53,52 @@ class ClipNameTests(unittest.TestCase):
 
     def test_scene_id_from_preview_clip_name(self):
         self.assertEqual(scene_id_from_name("scene_014_zimage_b03_v2.mp4"), 14)
+
+    def test_empty_mp4_is_not_usable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = os.path.join(tmp, "scene_001_v00.mp4")
+            open(empty, "wb").close()
+            self.assertFalse(clip_file_is_usable(empty))
+            self.assertFalse(clip_file_is_usable(os.path.join(tmp, "missing.mp4")))
+            real = os.path.join(tmp, "scene_001_v01.mp4")
+            with open(real, "wb") as fh:
+                fh.write(b"\x00" * 64)
+            self.assertTrue(clip_file_is_usable(real))
+
+    def test_assemble_rejects_empty_clips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "scene_001_v00.mp4"), "wb").close()
+            assembler = ClipAssembler(os.path.join(tmp, "out.mp4"))
+            with self.assertRaises(ValueError) as ctx:
+                assembler.assemble(tmp)
+            message = str(ctx.exception)
+            self.assertIn("empty or unreadable", message)
+            self.assertIn("scene_001_v00.mp4", message)
+
+    def test_concat_list_line_uses_forward_slashes(self):
+        line = concat_list_line(r"F:\proj\output\final_clips\scene_001_v00.mp4")
+        self.assertTrue(line.startswith("file '"))
+        self.assertNotIn("\\", line)
+
+    def test_padded_temp_clips_are_not_assembled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "scene_001_v00_padded.mp4"), "wb").close()
+            assembler = ClipAssembler(os.path.join(tmp, "out.mp4"))
+            self.assertEqual(assembler._get_sorted_clips(tmp), [])
+
+    def test_clip_output_is_current_rejects_empty_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "still.png")
+            clip = os.path.join(tmp, "scene_001_v00.mp4")
+            with open(src, "wb") as fh:
+                fh.write(b"png")
+            open(clip, "wb").close()
+            os.utime(clip, (os.path.getmtime(src) + 10, os.path.getmtime(src) + 10))
+            self.assertFalse(PipelineWorker._clip_output_is_current(clip, src))
+            with open(clip, "wb") as fh:
+                fh.write(b"\x00" * 64)
+            os.utime(clip, (os.path.getmtime(src) + 10, os.path.getmtime(src) + 10))
+            self.assertTrue(PipelineWorker._clip_output_is_current(clip, src))
 
 
 class PreviewStillCandidateTests(unittest.TestCase):

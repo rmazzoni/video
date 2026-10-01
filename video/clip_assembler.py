@@ -4,6 +4,24 @@ import tempfile
 from typing import Dict, List, Optional, Tuple
 
 _PREVIEW_MODELS = ("schnell", "zimage", "dev", "hidream", "flux2")
+# ffmpeg -y truncates the output as soon as it starts. A killed or failed
+# encode leaves a 0-byte (or tiny) MP4 with no moov atom; treat those as missing.
+_MIN_USABLE_CLIP_BYTES = 32
+
+
+def clip_file_is_usable(path: str) -> bool:
+    """Return True if *path* looks like a finished MP4, not a truncated stub."""
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) >= _MIN_USABLE_CLIP_BYTES
+    except OSError:
+        return False
+
+
+def concat_list_line(path: str) -> str:
+    """One ffmpeg concat-demuxer line; forward slashes so Windows paths parse."""
+    posix = os.path.abspath(path).replace("\\", "/")
+    escaped = posix.replace("'", r"'\''")
+    return f"file '{escaped}'\n"
 
 
 def scene_id_from_name(filename: str) -> int:
@@ -76,6 +94,14 @@ class ClipAssembler:
         clip_files = self._get_sorted_clips(clips_dir)
         if not clip_files:
             raise ValueError(f"No clips found in {clips_dir}")
+        empty = [os.path.basename(p) for p in clip_files if not clip_file_is_usable(p)]
+        if empty:
+            example = empty[0]
+            raise ValueError(
+                f"{len(empty)} clip(s) in {clips_dir} are empty or unreadable "
+                f"(example: {example}). Re-run Final Clips (or Preview Clips) "
+                "so they are encoded before assembling."
+            )
 
         total = len(clip_files)
         print(f"Assembling {total} clips via FFmpeg concat…")
@@ -114,7 +140,7 @@ class ClipAssembler:
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         ) as fh:
             for p in padded_files:
-                fh.write(f"file '{p.replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'\n")
+                fh.write(concat_list_line(p))
             list_path = fh.name
 
         # Sum clip durations up front so FFmpeg's own "out_time" progress can
@@ -240,7 +266,9 @@ class ClipAssembler:
     def _get_sorted_clips(self, clips_dir: str) -> List[str]:
         files = [
             f for f in os.listdir(clips_dir)
-            if f.lower().endswith(".mp4") and f.startswith("scene_")
+            if f.lower().endswith(".mp4")
+            and f.startswith("scene_")
+            and not f.lower().endswith("_padded.mp4")
         ]
 
         files.sort(key=clip_sort_key)

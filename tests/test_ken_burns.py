@@ -71,17 +71,21 @@ class KenBurnsPanTests(unittest.TestCase):
 
     def test_ffmpeg_filter_holds_end_crop_after_motion_cap(self):
         vf = ken_burns_vf(1344, 768, 1280, 720, duration=10.0, clip_index=0)
-        self.assertIn("crop=", vf)
-        self.assertIn("scale=1280:720", vf)
-        self.assertIn("min(1\\,t/6.000000)", vf)
+        self.assertIn("zoompan=", vf)
+        self.assertIn("s=1280x720", vf)
+        self.assertIn("min(1\\,on/144.000000)", vf)
 
     def test_ffmpeg_filter_endpoints_match_interpolated_crop(self):
         img_w, img_h = 1344.0, 768.0
-        sw0, sh0, x0, y0 = interpolated_crop(img_w, img_h, 0.0, 0)
-        sw1, sh1, x1, y1 = interpolated_crop(img_w, img_h, 1.0, 0)
+        sw0, _sh0, _x0, _y0 = interpolated_crop(img_w, img_h, 0.0, 0)
+        sw1, _sh1, _x1, _y1 = interpolated_crop(img_w, img_h, 1.0, 0)
         vf = ken_burns_vf(img_w, img_h, 1920, 1080, duration=4.0, clip_index=0)
-        self.assertIn(f"{sw0:.4f}", vf)
-        self.assertIn(f"{x1:.4f}", vf)
+        self.assertIn("1.120000", vf)
+        self.assertIn("0.260000", vf)
+        self.assertIn("(iw-iw/zoom)*min(1\\,on/", vf)
+        self.assertNotIn("(1-min(1\\,on/", vf)
+        vf_left = ken_burns_vf(img_w, img_h, 1920, 1080, duration=4.0, clip_index=1)
+        self.assertIn("(iw-iw/zoom)*(1-min(1\\,on/", vf_left)
         self.assertGreater(sw0, sw1)
 
     def test_motion_cache_key_tracks_math_version(self):

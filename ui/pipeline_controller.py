@@ -171,6 +171,32 @@ class PipelineWorker(QObject):
         return ""
 
     @staticmethod
+    def _clip_output_is_current(existing: str, source_path: str, params_changed: bool = False) -> bool:
+        from video.clip_assembler import clip_file_is_usable
+        if params_changed or not clip_file_is_usable(existing):
+            return False
+        try:
+            return os.path.getmtime(existing) >= os.path.getmtime(source_path)
+        except OSError:
+            return False
+
+    @staticmethod
+    def _unusable_clip_names(paths: List[str]) -> List[str]:
+        from video.clip_assembler import clip_file_is_usable
+        return [os.path.basename(p) for p in paths if not clip_file_is_usable(p)]
+
+    @staticmethod
+    def _raise_if_clips_missing(paths: List[str], failed: list, stage_label: str) -> None:
+        missing = PipelineWorker._unusable_clip_names(paths)
+        if not missing:
+            return
+        extra = f" Encode errors: {failed[:3]}" if failed else ""
+        raise RuntimeError(
+            f"{len(missing)} {stage_label} clip(s) are empty or missing "
+            f"(example: {missing[0]}). Re-run this stage.{extra}"
+        )
+
+    @staticmethod
     def _preview_still_candidates(images_dir: str) -> List[str]:
         """One still per Schnell/Z-Image beat; skip leftover scene_NNN.png when named files exist."""
         named: List[str] = []
@@ -943,10 +969,8 @@ class PipelineWorker(QObject):
                     done = 0
                     for idx, (sid, img_path, clip_suffix, per_clip) in enumerate(all_work, 1):
                         existing = os.path.join(out_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
-                        up_to_date = (
-                            os.path.exists(existing)
-                            and os.path.getmtime(existing) >= os.path.getmtime(img_path)
-                            and not params_changed
+                        up_to_date = self._clip_output_is_current(
+                            existing, img_path, params_changed
                         )
                         label = f"{sid}{clip_suffix}" if clip_suffix else str(sid)
                         if up_to_date:
@@ -989,6 +1013,11 @@ class PipelineWorker(QObject):
                                 self._emit_progress(step, f"Clip {done}/{total}")
                     if failed_kb:
                         self.log.emit(f"Ken Burns: {len(failed_kb)} clip(s) failed and were skipped: {failed_kb}")
+                    expected_preview = [
+                        os.path.join(out_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
+                        for sid, _img_path, clip_suffix, _per_clip in all_work
+                    ]
+                    self._raise_if_clips_missing(expected_preview, failed_kb, "preview")
                     self._write_ken_burns_params(out_clips_dir, cur_params)
                 else:
                     from video.video_generator import VideoGenerator
@@ -1014,7 +1043,7 @@ class PipelineWorker(QObject):
                         self._check_cancel()
                         existing = os.path.join(out_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
                         label = f"{sid}{clip_suffix}" if clip_suffix else str(sid)
-                        if os.path.exists(existing) and os.path.getmtime(existing) >= os.path.getmtime(img_path):
+                        if self._clip_output_is_current(existing, img_path):
                             self.log.emit(f"Skipping clip {label} (already exists and up to date).")
                         else:
                             self.log.emit(f"Scene {label}: target duration = {per_clip:.1f}s")
@@ -1034,6 +1063,11 @@ class PipelineWorker(QObject):
                         self._emit_progress(step, f"Clip {idx}/{total}")
                     if failed:
                         self.log.emit(f"SVD: {len(failed)} clip(s) failed and were skipped: {failed}")
+                    expected_preview = [
+                        os.path.join(out_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
+                        for sid, _img_path, clip_suffix, _per_clip in all_work
+                    ]
+                    self._raise_if_clips_missing(expected_preview, failed, "preview")
                     _log_vram("before clip gen unload")
                     gen.unload()
                     _log_vram("after clip gen unload")
@@ -1661,10 +1695,8 @@ class PipelineWorker(QObject):
                     for idx, (sid, v_idx, img_path, per_clip_dur) in enumerate(all_work, 1):
                         clip_suffix = f"_v{v_idx:02d}"
                         existing = os.path.join(final_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
-                        up_to_date = (
-                            os.path.exists(existing)
-                            and os.path.getmtime(existing) >= os.path.getmtime(img_path)
-                            and not params_changed
+                        up_to_date = self._clip_output_is_current(
+                            existing, img_path, params_changed
                         )
                         if up_to_date:
                             done += 1
@@ -1709,6 +1741,11 @@ class PipelineWorker(QObject):
                                 self._emit_progress(step, f"Clip {done}/{total}")
                     if failed_fc:
                         self.log.emit(f"Ken Burns final: {len(failed_fc)} clip(s) failed: {failed_fc}")
+                    expected_final = [
+                        os.path.join(final_clips_dir, f"scene_{sid:03d}_v{v_idx:02d}.mp4")
+                        for sid, v_idx, _img_path, _dur in all_work
+                    ]
+                    self._raise_if_clips_missing(expected_final, failed_fc, "final")
                     self._write_ken_burns_params(final_clips_dir, cur_params)
                 else:
                     from video.video_generator import VideoGenerator
@@ -1732,7 +1769,7 @@ class PipelineWorker(QObject):
                         self._check_cancel()
                         clip_suffix = f"_v{v_idx:02d}"
                         existing = os.path.join(final_clips_dir, f"scene_{sid:03d}{clip_suffix}.mp4")
-                        if os.path.exists(existing) and os.path.getmtime(existing) >= os.path.getmtime(img_path):
+                        if self._clip_output_is_current(existing, img_path):
                             self.log.emit(f"Skipping clip scene_{sid:03d}{clip_suffix} (up to date).")
                         else:
                             ov = scene_overrides.get(sid, scene_overrides.get(str(sid), {}))
@@ -1753,6 +1790,11 @@ class PipelineWorker(QObject):
                         self._emit_progress(step, f"Clip {idx}/{total}")
                     if failed_fc:
                         self.log.emit(f"SVD final: {len(failed_fc)} clip(s) failed: {failed_fc}")
+                    expected_final = [
+                        os.path.join(final_clips_dir, f"scene_{sid:03d}_v{v_idx:02d}.mp4")
+                        for sid, v_idx, _img_path, _dur in all_work
+                    ]
+                    self._raise_if_clips_missing(expected_final, failed_fc, "final")
                     _log_vram("before final clips unload")
                     gen.unload()
                     try:

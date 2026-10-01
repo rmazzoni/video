@@ -14,12 +14,16 @@ from typing import Optional, Tuple
 
 from PIL import Image
 
+from video.clip_assembler import clip_file_is_usable
+
 
 def _nvenc_available() -> bool:
     """Return True if ffmpeg was built with h264_nvenc and a capable GPU is present."""
     try:
+        # NVENC rejects tiny frames (16x16 is below the encoder minimum and
+        # used to make this probe always fail, so every clip fell back to x264).
         r = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.1",
+            ["ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "nullsrc=s=256x256:d=0.1",
              "-c:v", "h264_nvenc", "-f", "null", "-"],
             capture_output=True, timeout=8,
         )
@@ -41,17 +45,17 @@ def _enc_args(nvenc: bool, x264_threads: Optional[int] = None) -> list:
     if nvenc:
         return ["-c:v", "h264_nvenc", "-preset", "p1", "-rc", "vbr",
                 "-cq", "24", "-pix_fmt", "yuv420p",
-                "-vsync", "cfr", "-video_track_timescale", "12288"]
+                "-fps_mode", "cfr", "-video_track_timescale", "12288"]
     args = ["-c:v", "libx264", "-crf", "18", "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p", "-vsync", "cfr",
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr",
             "-video_track_timescale", "12288"]
     if x264_threads:
         args.extend(["-threads", str(int(x264_threads))])
     return args
 
 
-# Bump when crop math changes so clip sidecars force a re-render.
-MOTION_VERSION = 2
+# Bump when crop math or the ffmpeg graph changes so clip sidecars force a re-render.
+MOTION_VERSION = 3
 
 # Stay above 1.0 for the whole clip. Zoom 1.0 has zero horizontal slack, so
 # the window can only shrink from one side and the center reverses (wobble).
@@ -126,21 +130,25 @@ def ken_burns_vf(
     out_h: int,
     duration: float,
     clip_index: int,
+    fps: int = 24,
 ) -> str:
-    """ffmpeg crop+scale that matches interpolated_crop, with hold after MOTION_CAP."""
+    """ffmpeg zoompan matching interpolated_crop, with hold after MOTION_CAP.
+
+    crop w/h are configured once with t=NAN, so a t-based crop graph fails on
+    FFmpeg 8. zoompan evaluates zoom/x/y per output frame.
+    """
     duration = max(float(duration), 1e-3)
     motion_dur = min(duration, MOTION_CAP)
-    sw0, sh0, x0, y0 = interpolated_crop(img_w, img_h, 0.0, clip_index)
-    sw1, sh1, x1, y1 = interpolated_crop(img_w, img_h, 1.0, clip_index)
-    p = f"min(1\\,t/{motion_dur:.6f})"
-    w = f"{sw0:.4f}+({sw1 - sw0:.4f})*{p}"
-    h = f"{sh0:.4f}+({sh1 - sh0:.4f})*{p}"
-    x = f"{x0:.4f}+({x1 - x0:.4f})*{p}"
-    y = f"{y0:.4f}+({y1 - y0:.4f})*{p}"
+    frames_motion = max(1.0, motion_dur * float(fps))
+    p = f"min(1\\,on/{frames_motion:.6f})"
+    z_expr = f"{ZOOM_START:.6f}+({ZOOM_END - ZOOM_START:.6f})*{p}"
+    if pan_direction(clip_index) == "right":
+        x_expr = f"(iw-iw/zoom)*{p}"
+    else:
+        x_expr = f"(iw-iw/zoom)*(1-{p})"
     return (
-        f"crop=w='max(2\\,trunc(({w})/2)*2)':h='max(2\\,trunc(({h})/2)*2)':"
-        f"x='max(0\\,trunc({x}))':y='max(0\\,trunc({y}))',"
-        f"scale={int(out_w)}:{int(out_h)}:flags=bilinear,setsar=1"
+        f"zoompan=z='{z_expr}':x='{x_expr}':y='(ih-ih/zoom)/2':d=1:"
+        f"s={int(out_w)}x{int(out_h)}:fps={int(fps)},setsar=1"
     )
 
 
@@ -208,28 +216,48 @@ class KenBurnsGenerator:
             out_w, out_h = self._output_size(img_w, img_h)
 
         output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4")
-        enc = _enc_args(self._nvenc, None if self._nvenc else self._x264_threads)
         dur = str(round(max(clip_dur, 0.05), 3))
 
         if self.motion_style == "static":
             vf = f"scale={out_w}:{out_h}:flags=bilinear,setsar=1"
         else:
             pan_number = scene_id if motion_index is None else motion_index
-            vf = ken_burns_vf(img_w, img_h, out_w, out_h, clip_dur, pan_number)
+            vf = ken_burns_vf(
+                img_w, img_h, out_w, out_h, clip_dur, pan_number, fps=self.fps
+            )
 
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-loop", "1", "-framerate", str(self.fps), "-i", image_path,
-                "-t", dur, "-vf", vf, "-an",
-                "-r", str(self.fps),
-            ] + enc + [output_path],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
+        tmp_path = output_path + ".partial.mp4"
+
+        def _run(enc_args: list) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-loop", "1", "-framerate", str(self.fps), "-i", image_path,
+                    "-t", dur, "-vf", vf, "-an",
+                    "-r", str(self.fps),
+                ] + enc_args + [tmp_path],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+
+        enc = _enc_args(self._nvenc, None if self._nvenc else self._x264_threads)
+        result = _run(enc)
+        if result.returncode != 0 and self._nvenc:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            result = _run(_enc_args(False, self._x264_threads))
+        if result.returncode != 0 or not clip_file_is_usable(tmp_path):
             err = (result.stderr or result.stdout or "").strip()[-1500:]
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
             raise RuntimeError(f"ffmpeg Ken Burns failed for {image_path}: {err}")
+        os.replace(tmp_path, output_path)
         return output_path
 
     # ---------------------------------------------------------
