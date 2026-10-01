@@ -2,7 +2,9 @@ import unittest
 
 from video.ken_burns_generator import (
     MOTION_VERSION,
+    ZOOM_PRESCALE,
     interpolated_crop,
+    ken_burns_frame_count,
     ken_burns_vf,
     motion_cache_key,
     pan_direction,
@@ -72,7 +74,9 @@ class KenBurnsPanTests(unittest.TestCase):
     def test_ffmpeg_filter_holds_end_crop_after_motion_cap(self):
         vf = ken_burns_vf(1344, 768, 1280, 720, duration=10.0, clip_index=0)
         self.assertIn("zoompan=", vf)
+        self.assertIn(f"iw*{ZOOM_PRESCALE}", vf)
         self.assertIn("s=1280x720", vf)
+        self.assertIn("d=240:", vf)
         self.assertIn("min(1\\,on/144.000000)", vf)
 
     def test_ffmpeg_filter_endpoints_match_interpolated_crop(self):
@@ -82,11 +86,16 @@ class KenBurnsPanTests(unittest.TestCase):
         vf = ken_burns_vf(img_w, img_h, 1920, 1080, duration=4.0, clip_index=0)
         self.assertIn("1.120000", vf)
         self.assertIn("0.260000", vf)
+        self.assertIn("d=96:", vf)
         self.assertIn("(iw-iw/zoom)*min(1\\,on/", vf)
         self.assertNotIn("(1-min(1\\,on/", vf)
         vf_left = ken_burns_vf(img_w, img_h, 1920, 1080, duration=4.0, clip_index=1)
         self.assertIn("(iw-iw/zoom)*(1-min(1\\,on/", vf_left)
         self.assertGreater(sw0, sw1)
+
+    def test_frame_count_rounds_duration_to_fps(self):
+        self.assertEqual(ken_burns_frame_count(4.0, 24), 96)
+        self.assertEqual(ken_burns_frame_count(0.04, 24), 1)
 
     def test_motion_cache_key_tracks_math_version(self):
         key = motion_cache_key("auto", 24)

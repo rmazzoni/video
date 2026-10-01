@@ -99,6 +99,30 @@ class PipelineWorker(QObject):
         if self._cancel_requested:
             raise RuntimeError("Pipeline canceled by user.")
 
+    def _uses_inprocess_cuda(self) -> bool:
+        engine = str(self.config.get("clip_engine", "ken_burns")).strip().lower()
+        return engine not in {"", "ken_burns"}
+
+    def _release_comfy_memory(self, reason: str = "") -> None:
+        """Ask the ComfyUI server to drop loaded models so RAM/VRAM can return to idle."""
+        try:
+            from comfy_bridge.client import ComfyClient
+            cfg_path = os.path.join(self.root_dir, "config", "comfy.yaml")
+            host, port = "127.0.0.1", 8188
+            if os.path.isfile(cfg_path):
+                with open(cfg_path, encoding="utf-8") as handle:
+                    cfg = yaml.safe_load(handle) or {}
+                host = str(cfg.get("host", host))
+                port = int(cfg.get("port", port))
+            ComfyClient(host=host, port=port).free_memory(unload_models=True)
+            note = f" ({reason})" if reason else ""
+            self.log.emit(f"ComfyUI models unloaded{note}.")
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "refused" in msg or "timed out" in msg or "10061" in msg:
+                return
+            self.log.emit(f"ComfyUI unload skipped: {exc}")
+
     def _resolve_path(self, path_value: str) -> str:
         if os.path.isabs(path_value):
             return path_value
@@ -439,10 +463,12 @@ class PipelineWorker(QObject):
             # Beat/prompt stages talk to Ollama only. CUDA sync here can stall
             # the worker for a long time with no progress, which looks like a
             # dead click on the Beats tab.
-            if stage not in {"beats", "beat_prompts"}:
-                # Force-release any GPU memory left over from a previous pipeline run
-                # before loading new models.  This handles the case where unload() in
-                # a prior run failed to free everything (e.g. lingering Python refs).
+            # Ken Burns / Comfy stills must not import torch: is_available() and
+            # synchronize() create a CUDA context in the Qt process that never
+            # returns RAM after the stage finishes.
+            if self._uses_inprocess_cuda() and stage in {
+                "preview_clips", "final_clips", "full",
+            }:
                 import gc as _gc
                 _gc.collect()
                 try:
@@ -453,9 +479,7 @@ class PipelineWorker(QObject):
                         _gc.collect()
                         alloc = _t.cuda.memory_allocated() / 1024**3
                         if alloc > 0.5:
-                            self.log.emit(f"âš  VRAM start: {alloc:.2f} GiB still allocated from previous run â€” forcing further cleanup")
-                            # Walk all live Python objects and delete any torch modules
-                            import sys
+                            self.log.emit(f"⚠ VRAM start: {alloc:.2f} GiB still allocated from previous run — forcing further cleanup")
                             for obj in list(_gc.get_objects()):
                                 try:
                                     if isinstance(obj, _t.nn.Module):
@@ -1447,6 +1471,7 @@ class PipelineWorker(QObject):
             # STAGE: preview_clips  — motion from draft stills → output/draft_clips/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if stage == "preview_clips":
+                self._release_comfy_memory("before preview clips")
                 self._check_cancel()
                 self._emit_progress(5, "Generating preview clips")
                 scene_timings = _load_scene_timings()
@@ -1459,6 +1484,7 @@ class PipelineWorker(QObject):
             # STAGE: preview_video  — assemble draft clips into output/preview_video/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if stage == "preview_video":
+                self._release_comfy_memory("before preview video")
                 self._check_cancel()
                 _run_assemble(draft_clips_dir, preview_video_path, preview_with_audio_path,
                               resolution=(1024, 576))
@@ -1624,6 +1650,7 @@ class PipelineWorker(QObject):
             # STAGE: final_clips  – motion from lightbox selections → output/final_clips/
             # ─────────────────────────────────────────────────────────────────
             if stage == "final_clips":
+                self._release_comfy_memory("before final clips")
                 self._check_cancel()
                 self._emit_progress(5, "Generating final clips from lightbox selections")
                 scene_timings = _load_scene_timings()
@@ -1814,6 +1841,7 @@ class PipelineWorker(QObject):
             # STAGE: final_video  — assemble final clips into output/final_video/
             # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if stage == "final_video":
+                self._release_comfy_memory("before final video")
                 self._check_cancel()
                 out_w = int(self.config.get("output_width", 1920))
                 out_h = int(self.config.get("output_height", 1080))
@@ -1832,6 +1860,8 @@ class PipelineWorker(QObject):
                 self.finished.emit(False, str(exc))
         except Exception as exc:
             self.finished.emit(False, str(exc))
+        finally:
+            self._release_comfy_memory("stage idle")
 
 
 class PipelineController(QObject):

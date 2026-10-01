@@ -5,7 +5,7 @@ Produces a video clip from a still image by applying a slow cinematic
 zoom-in and a single left-or-right pan. Consecutive clips alternate
 direction so the cut does not reverse mid-shot.
 
-Motion is a single ffmpeg crop/scale graph (no Python frame loop).
+Motion is a single ffmpeg zoompan graph (no Python frame loop).
 """
 
 import os
@@ -55,12 +55,15 @@ def _enc_args(nvenc: bool, x264_threads: Optional[int] = None) -> list:
 
 
 # Bump when crop math or the ffmpeg graph changes so clip sidecars force a re-render.
-MOTION_VERSION = 3
+MOTION_VERSION = 4
 
 # Stay above 1.0 for the whole clip. Zoom 1.0 has zero horizontal slack, so
 # the window can only shrink from one side and the center reverses (wobble).
 ZOOM_START = 1.12
 ZOOM_END = 1.38
+# zoompan x/y snap to integer pixels. Upscale first so one source pixel is a
+# fraction of an output pixel and slow pans do not stair-step.
+ZOOM_PRESCALE = 4
 
 
 def pan_direction(clip_index: int) -> str:
@@ -123,6 +126,11 @@ def interpolated_crop(
 MOTION_CAP = 6.0
 
 
+def ken_burns_frame_count(duration: float, fps: int = 24) -> int:
+    """Output frames for a still-image Ken Burns clip."""
+    return max(1, int(round(max(float(duration), 1e-3) * float(fps))))
+
+
 def ken_burns_vf(
     img_w: float,
     img_h: float,
@@ -131,23 +139,29 @@ def ken_burns_vf(
     duration: float,
     clip_index: int,
     fps: int = 24,
+    nframes: Optional[int] = None,
 ) -> str:
     """ffmpeg zoompan matching interpolated_crop, with hold after MOTION_CAP.
 
     crop w/h are configured once with t=NAN, so a t-based crop graph fails on
-    FFmpeg 8. zoompan evaluates zoom/x/y per output frame.
+    FFmpeg 8. zoompan evaluates zoom/x/y per output frame. A 4x pre-scale keeps
+    those steps subpixel on the output frame.
     """
     duration = max(float(duration), 1e-3)
     motion_dur = min(duration, MOTION_CAP)
     frames_motion = max(1.0, motion_dur * float(fps))
+    if nframes is None:
+        nframes = ken_burns_frame_count(duration, fps)
     p = f"min(1\\,on/{frames_motion:.6f})"
     z_expr = f"{ZOOM_START:.6f}+({ZOOM_END - ZOOM_START:.6f})*{p}"
     if pan_direction(clip_index) == "right":
         x_expr = f"(iw-iw/zoom)*{p}"
     else:
         x_expr = f"(iw-iw/zoom)*(1-{p})"
+    # Even dimensions: zoompan rejects odd scaled sizes.
     return (
-        f"zoompan=z='{z_expr}':x='{x_expr}':y='(ih-ih/zoom)/2':d=1:"
+        f"scale=trunc(iw*{ZOOM_PRESCALE}/2)*2:trunc(ih*{ZOOM_PRESCALE}/2)*2:flags=lanczos,"
+        f"zoompan=z='{z_expr}':x='{x_expr}':y='(ih-ih/zoom)/2':d={int(nframes)}:"
         f"s={int(out_w)}x{int(out_h)}:fps={int(fps)},setsar=1"
     )
 
@@ -216,15 +230,26 @@ class KenBurnsGenerator:
             out_w, out_h = self._output_size(img_w, img_h)
 
         output_path = os.path.join(self.output_dir, f"scene_{scene_id:03d}{filename_suffix}.mp4")
+        nframes = ken_burns_frame_count(clip_dur, self.fps)
         dur = str(round(max(clip_dur, 0.05), 3))
 
         if self.motion_style == "static":
             vf = f"scale={out_w}:{out_h}:flags=bilinear,setsar=1"
+            input_args = [
+                "-loop", "1", "-framerate", str(self.fps), "-i", image_path,
+                "-t", dur,
+            ]
+            output_args = ["-an", "-r", str(self.fps)]
         else:
             pan_number = scene_id if motion_index is None else motion_index
             vf = ken_burns_vf(
-                img_w, img_h, out_w, out_h, clip_dur, pan_number, fps=self.fps
+                img_w, img_h, out_w, out_h, clip_dur, pan_number,
+                fps=self.fps, nframes=nframes,
             )
+            # One still → zoompan emits nframes. Looping plus -r restamps
+            # timestamps and makes the pan stutter.
+            input_args = ["-i", image_path]
+            output_args = ["-an", "-frames:v", str(nframes)]
 
         tmp_path = output_path + ".partial.mp4"
 
@@ -232,10 +257,9 @@ class KenBurnsGenerator:
             return subprocess.run(
                 [
                     "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-loop", "1", "-framerate", str(self.fps), "-i", image_path,
-                    "-t", dur, "-vf", vf, "-an",
-                    "-r", str(self.fps),
-                ] + enc_args + [tmp_path],
+                ] + input_args + [
+                    "-vf", vf,
+                ] + output_args + enc_args + [tmp_path],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

@@ -7156,16 +7156,21 @@ class MainWindow(QMainWindow):
     def _flush_cuda_background() -> None:
         """
         Runs on its own throwaway Python thread after a pipeline stage
-        completes. Forces Python GC and frees the CUDA allocator cache so
-        that VRAM drops back to idle. This MUST NOT run on the Qt main
-        thread: torch.cuda.empty_cache()/synchronize() calls made from the
-        event-loop thread — a different thread than whichever pipeline
-        worker last touched CUDA — can block on the driver for a long time
-        (or hard-crash it on Windows) while the GPU is still winding down,
-        which froze the whole UI until the process was killed.
+        completes. Forces Python GC and, only if this process already imported
+        torch (SVD clips), frees the CUDA allocator cache. Importing torch
+        here would create a CUDA context in the Qt process and keep RAM high
+        after Ken Burns / Comfy stages that never needed it.
         """
         import gc
+        import sys
         gc.collect()
+        try:
+            from PyQt6.QtGui import QPixmapCache
+            QPixmapCache.clear()
+        except Exception:
+            pass
+        if "torch" not in sys.modules:
+            return
         try:
             import torch
             if torch.cuda.is_available():
