@@ -1706,6 +1706,17 @@ class MainWindow(QMainWindow):
     def _refresh_lightbox(self, only_scene_id: int | None = None) -> None:
         import yaml as _yaml
 
+        # Rebuilding this grid while the Lightbox viewer is in exec() deletes the
+        # thumbnail whose click opened that viewer. On Windows that nested-loop
+        # teardown freezes the UI. Defer until the viewer closes.
+        if getattr(self, "_lightbox_dialog_depth", 0) > 0:
+            if not getattr(self, "_lightbox_grid_refresh_pending", False):
+                self._lightbox_grid_refresh_scene_id = only_scene_id
+            elif getattr(self, "_lightbox_grid_refresh_scene_id", None) != only_scene_id:
+                self._lightbox_grid_refresh_scene_id = None
+            self._lightbox_grid_refresh_pending = True
+            return
+
         project = self.project_path_input.text().strip()
         lightbox_dir = os.path.join(project, "output", "lightbox") if project else ""
 
@@ -2194,10 +2205,11 @@ class MainWindow(QMainWindow):
         btn_prev = QPushButton("◀  Prev")
         btn_tweak_prompt = QPushButton("Tweak Prompt")
         btn_next = QPushButton("Next  ▶")
+        btn_close = QPushButton("Close")
         info_lbl = QLabel()
         info_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
         info_lbl.setStyleSheet("color:#8E8B90; font-size:11px;")
-        for btn in (btn_prev, btn_tweak_prompt, btn_next):
+        for btn in (btn_prev, btn_tweak_prompt, btn_next, btn_close):
             btn.setStyleSheet(
                 "QPushButton { background:#36343B; color:#E6E1E5; border:none;"
                 " border-radius:4px; padding:5px 18px; }"
@@ -2211,6 +2223,8 @@ class MainWindow(QMainWindow):
         nav_row.addWidget(info_lbl, 2)
         nav_row.addStretch(1)
         nav_row.addWidget(btn_next)
+        nav_row.addSpacing(12)
+        nav_row.addWidget(btn_close)
         lay.addLayout(nav_row)
 
         state = {"idx": start_idx}
@@ -2255,17 +2269,18 @@ class MainWindow(QMainWindow):
         sel_chk.stateChanged.connect(_on_viewer_chk)
 
         def _load(idx: int):
+            if sip.isdeleted(dlg):
+                return
             idx = max(0, min(len(image_list) - 1, idx))
             state["idx"] = idx
             path = image_list[idx]
-            px = QPixmap(path)
+            # QImageReader (via _load_thumbnail) re-reads from disk, so a
+            # just-regenerated file is not served from QPixmapCache.
+            px = _load_thumbnail(path, max_w, max_h)
             if not px.isNull():
-                scaled = px.scaled(max_w, max_h,
-                                   _Qt.AspectRatioMode.KeepAspectRatio,
-                                   _Qt.TransformationMode.SmoothTransformation)
-                img_lbl.setPixmap(scaled)
-                dlg.resize(max(scaled.width() + 16, 480),
-                            scaled.height() + 90)
+                img_lbl.setPixmap(px)
+                dlg.resize(max(px.width() + 16, 480),
+                            px.height() + 90)
             else:
                 img_lbl.setText("(cannot load image)")
             name = os.path.basename(path)
@@ -2297,6 +2312,7 @@ class MainWindow(QMainWindow):
         btn_prev.clicked.connect(lambda: _load(state["idx"] - 1))
         btn_tweak_prompt.clicked.connect(_tweak_prompt)
         btn_next.clicked.connect(lambda: _load(state["idx"] + 1))
+        btn_close.clicked.connect(dlg.accept)
 
         def _key(event: QKeyEvent):
             key = event.key()
@@ -2311,13 +2327,42 @@ class MainWindow(QMainWindow):
 
         dlg.keyPressEvent = _key
         _load(start_idx)
-        dlg.exec()
 
-        # Auto-save selections after the viewer closes (X button or Esc) so
+        def _reload_current():
+            if sip.isdeleted(dlg):
+                return
+            _load(state["idx"])
+
+        def _release_current():
+            # Drop the displayed pixmap so Windows can overwrite the PNG
+            # during Update Lightbox (the same path the viewer is showing).
+            if sip.isdeleted(dlg):
+                return
+            img_lbl.clear()
+
+        self._lightbox_dialog_depth = getattr(self, "_lightbox_dialog_depth", 0) + 1
+        self._lightbox_viewer_reload = _reload_current
+        self._lightbox_viewer_release = _release_current
+        try:
+            dlg.exec()
+        finally:
+            self._lightbox_viewer_reload = None
+            self._lightbox_viewer_release = None
+            self._lightbox_dialog_depth -= 1
+
+        # Auto-save selections after the viewer closes (X button, Close, or Esc) so
         # that any checkbox changes made inside the viewer are persisted to
         # lightbox_selections.yaml immediately — without requiring the user
-        # to manually click the Save button afterwards.
+        # to manually click the Save button afterwards. Save before any deferred
+        # grid rebuild so the current checkbox widgets are still alive.
         self._save_lightbox_selections()
+        if getattr(self, "_lightbox_dialog_depth", 0) <= 0 and getattr(
+            self, "_lightbox_grid_refresh_pending", False
+        ):
+            sid = getattr(self, "_lightbox_grid_refresh_scene_id", None)
+            self._lightbox_grid_refresh_pending = False
+            self._lightbox_grid_refresh_scene_id = None
+            self._refresh_lightbox(only_scene_id=sid)
 
     def _open_draft_zoom_dialog(self, image_path: str) -> None:
         """Zoom dialog for a draft image: shows zoomed image, narration text (read-only),
@@ -3512,6 +3557,51 @@ class MainWindow(QMainWindow):
     def _set_unsaved_button_style(self, button: QPushButton, needs_save: bool) -> None:
         button.setStyleSheet(self._UNSAVED_BUTTON_STYLE if needs_save else "")
 
+    def _confirm_create_missing_beat(
+        self, host, scene_id: int, beat_index: int, stored_count: int
+    ) -> bool:
+        box = QMessageBox(host)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Beat unavailable")
+        box.setText(f"Scene {scene_id} has no beat {beat_index}.")
+        if stored_count <= 0:
+            extra = f"Create beat {beat_index} as a new locked shot?"
+        elif beat_index == stored_count + 1:
+            extra = f"Create beat {beat_index} as a new locked shot?"
+        else:
+            extra = (
+                f"{stored_count} beat(s) are stored now. Create beat {beat_index}? "
+                f"Beats {stored_count + 1}–{beat_index} will be added so this still "
+                f"keeps its beat number."
+            )
+        box.setInformativeText(
+            "This still may be leftover from a previous beat list. " + extra
+        )
+        create_btn = box.addButton("Create Beat", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(create_btn)
+        box.exec()
+        return box.clickedButton() is create_btn
+
+    def _seed_text_for_missing_beat(self, scene_entry: dict, beat_index: int) -> str:
+        from prompts.visual_beats import find_prompt_row
+
+        models = scene_entry.get("models") if isinstance(scene_entry, dict) else None
+        if isinstance(models, dict):
+            for entry in models.values():
+                if not isinstance(entry, dict):
+                    continue
+                rows = entry.get("prompts", [])
+                if not isinstance(rows, list):
+                    continue
+                row = find_prompt_row(rows, beat_index)
+                if not isinstance(row, dict):
+                    continue
+                text = str(row.get("visual_beat") or row.get("text") or "").strip()
+                if text:
+                    return text
+        return "New visual beat"
+
     def _open_beat_editor(self, scene_id: int, beat_index: int, parent=None) -> None:
         from PyQt6.QtWidgets import QDialog, QTextEdit
         from prompts.beat_feedback import (
@@ -3539,20 +3629,67 @@ class MainWindow(QMainWindow):
             data = yaml.safe_load(Path(prompts_path).read_text(encoding="utf-8")) or {}
         except Exception:
             data = {}
-        scene_entry = data.get(scene_id) or data.get(str(scene_id)) or {
-            "scene_id": scene_id,
-            "visual_beats": [],
-            "visual_beats_source": narration,
-            "models": {},
-        }
+        if not isinstance(data, dict):
+            data = {}
+        scene_entry = data.get(scene_id) or data.get(str(scene_id)) or {}
+        if not isinstance(scene_entry, dict):
+            scene_entry = {
+                "scene_id": scene_id,
+                "visual_beats": [],
+                "visual_beats_source": narration,
+                "models": {},
+            }
         beats = normalize_stored_beats(scene_entry.get("visual_beats", []))
         host = parent or self
-        if beat_index < 1 or beat_index > len(beats):
-            QMessageBox.warning(host, "Beat unavailable", f"Scene {scene_id} has no beat {beat_index}.")
+        if beat_index < 1:
+            QMessageBox.warning(
+                host, "Beat unavailable", f"Scene {scene_id} has no beat {beat_index}."
+            )
             return
+        if beat_index > len(beats):
+            if not self._confirm_create_missing_beat(
+                host, scene_id, beat_index, len(beats)
+            ):
+                return
+            if getattr(self.controller, "_thread", None) is not None:
+                QMessageBox.warning(
+                    host,
+                    "Pipeline busy",
+                    "Wait for the current pipeline operation to finish before adding a beat.",
+                )
+                return
+            seed = self._seed_text_for_missing_beat(scene_entry, beat_index)
+            while len(beats) < beat_index:
+                target = len(beats) + 1 == beat_index
+                beats.append(VisualBeat(
+                    beat=seed if target else "New visual beat",
+                    source="user_added",
+                ))
+            scene_entry["scene_id"] = scene_id
+            scene_entry["visual_beats"] = beats_as_dicts(beats)
+            scene_entry["visual_beats_source"] = str(
+                scene_entry.get("visual_beats_source") or narration
+            )
+            scene_entry["models"] = sync_model_prompts_to_beats(
+                scene_entry.get("models", {}),
+                beats,
+                scene_id,
+                MODEL_KEYS,
+            )
+            data[scene_id] = scene_entry
+            data.pop(str(scene_id), None)
+            os.makedirs(os.path.dirname(prompts_path), exist_ok=True)
+            Path(prompts_path).write_text(
+                yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            self._beats_refresh()
+            self._prompts_refresh(only_scene_id=scene_id)
         original = beats[beat_index - 1]
 
         dialog = QDialog(host)
+        dialog.setModal(True)
+        dialog.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         dialog.setWindowTitle(f"Scene {scene_id} | Visual beat {beat_index}")
         dialog.resize(900, 720)
         layout = QVBoxLayout(dialog)
@@ -3889,7 +4026,28 @@ class MainWindow(QMainWindow):
         ):
             editor.textChanged.connect(_update_save_state)
         _update_save_state()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
         dialog.exec()
+
+    def _open_beat_editor_from_prompt(self, scene_id: int, beat_index: int,
+                                      model_key: str, owner) -> None:
+        """Open the beat editor after Tweak Prompt has closed, then restore it.
+
+        Lightbox already nests Tweak Prompt with exec(); a third stacked exec()
+        never appears on Windows. Closing Tweak Prompt first keeps this at the
+        same depth that already works.
+        """
+        if owner is None or sip.isdeleted(owner):
+            owner = self
+        try:
+            self._open_beat_editor(scene_id, beat_index, parent=owner)
+        except Exception as exc:
+            QMessageBox.warning(owner, "Tweak Beat failed", str(exc))
+        if owner is not None and sip.isdeleted(owner):
+            owner = self
+        self._open_prompt_beat_dialog(scene_id, model_key, beat_index, parent=owner)
 
     def _build_prompts_tab(self) -> QWidget:
         page = QWidget()
@@ -4380,6 +4538,20 @@ class MainWindow(QMainWindow):
     def _prompts_refresh(self, only_scene_id: int | None = None, only_model_key: str | None = None) -> None:
         if not hasattr(self, "_prompt_model_layouts"):
             return
+        if getattr(self, "_prompt_dialog_depth", 0) > 0:
+            # Tweak Prompt is often opened from a prompt-card click. Rebuilding
+            # that card while its nested exec() is still running freezes Windows.
+            if not getattr(self, "_prompt_grid_refresh_pending", False):
+                self._prompt_grid_refresh_scene_id = only_scene_id
+                self._prompt_grid_refresh_model_key = only_model_key
+            else:
+                if getattr(self, "_prompt_grid_refresh_scene_id", None) != only_scene_id:
+                    self._prompt_grid_refresh_scene_id = None
+                    self._prompt_grid_refresh_model_key = None
+                elif getattr(self, "_prompt_grid_refresh_model_key", None) != only_model_key:
+                    self._prompt_grid_refresh_model_key = None
+            self._prompt_grid_refresh_pending = True
+            return
         if not hasattr(self, "_prompt_scene_cards"):
             self._prompt_scene_cards = {}
 
@@ -4798,7 +4970,7 @@ class MainWindow(QMainWindow):
         _readonly_section("Original script", str(scene.get("text", "")), 75, "#96BDE2")
         tweak_beat = QPushButton("Tweak Beat")
         tweak_beat.setToolTip("Edit the locked visual beat for this shot")
-        tweak_beat.setEnabled(stored_beat is not None)
+        tweak_beat.setEnabled(True)
         beat_view = _readonly_section(
             "Visual beat identified by Qwen", visual_beat, 75, "#9FD6B8",
             extra_widget=tweak_beat,
@@ -5023,9 +5195,8 @@ class MainWindow(QMainWindow):
             regenerate.setEnabled(not running)
             save.setEnabled(not running)
             cancel.setEnabled(not running)
-            can_tweak_beat = not running and stored_beat is not None
-            tweak_beat.setEnabled(can_tweak_beat)
-            tweak_beat_action.setEnabled(can_tweak_beat)
+            tweak_beat.setEnabled(not running)
+            tweak_beat_action.setEnabled(not running)
             save_image.setEnabled(not running and bool(candidate_state["path"]))
             progress.setVisible(running)
 
@@ -5073,6 +5244,36 @@ class MainWindow(QMainWindow):
             progress.setValue(100)
             status.setText("Candidate ready. Save it or adjust the prompt and generate again.")
 
+        def _reload_preview_image():
+            if sip.isdeleted(dialog):
+                return
+            candidates = [
+                os.path.join(
+                    lightbox_dir,
+                    f"scene_{scene_id:03d}_{model_key}_b{beat_index:02d}_v{variant}.png",
+                )
+                for variant in (2, 1, 3)
+            ]
+            if is_preview_model:
+                candidates.extend(
+                    os.path.join(
+                        preview_dir,
+                        f"scene_{scene_id:03d}_{model_key}_b{beat_index:02d}_v{variant}.png",
+                    )
+                    for variant in (2, 1, 3)
+                )
+            new_path = next((path for path in candidates if os.path.exists(path)), "")
+            if not new_path:
+                return
+            pixmap = _load_thumbnail(new_path, 840, 300)
+            if pixmap.isNull():
+                return
+            preview.setPixmap(pixmap)
+            preview.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            preview.mousePressEvent = (
+                lambda event, path=new_path: self._open_image_viewer(path)
+            )
+
         def _show_lightbox_done(success: bool, payload: str):
             _disconnect_generation_signals()
             if sip.isdeleted(dialog):
@@ -5082,6 +5283,10 @@ class MainWindow(QMainWindow):
             if success:
                 self._prompts_refresh(only_scene_id=scene_id, only_model_key=model_key)
                 self._refresh_lightbox(only_scene_id=scene_id)
+                _reload_preview_image()
+                reload_viewer = getattr(self, "_lightbox_viewer_reload", None)
+                if callable(reload_viewer):
+                    reload_viewer()
                 status.setText(
                     f"Scene {scene_id} beat {beat_index} {model_key} Lightbox variants updated."
                 )
@@ -5166,7 +5371,18 @@ class MainWindow(QMainWindow):
                     dialog, "Pipeline busy", "Wait for the current pipeline operation to finish."
                 )
                 return
+            # Release pixmaps that are displaying the files about to be
+            # overwritten, so Windows can replace those PNGs. Do this before
+            # _save(), which deletes the same files for non-preview models.
+            release_viewer = getattr(self, "_lightbox_viewer_release", None)
+            if callable(release_viewer):
+                release_viewer()
+            preview.clear()
             if not _save(close_dialog=False):
+                _reload_preview_image()
+                reload_viewer = getattr(self, "_lightbox_viewer_reload", None)
+                if callable(reload_viewer):
+                    reload_viewer()
                 return
             _disconnect_generation_signals()
             _set_image_running(True)
@@ -5185,54 +5401,15 @@ class MainWindow(QMainWindow):
                 "force_lightbox_update": True,
             })
 
-        def _reload_after_beat_tweak():
-            nonlocal visual_beat, stored_beat, visual_beats, row, scene_entry, data, model_entry, rows, models
-            try:
-                fresh = _yaml.safe_load(Path(prompts_path).read_text(encoding="utf-8")) or {}
-            except Exception:
-                return
-            if not isinstance(fresh, dict):
-                return
-            data = fresh
-            scene_entry = data.get(scene_id) or data.get(str(scene_id)) or scene_entry
-            if not isinstance(scene_entry, dict):
-                return
-            models = scene_entry.setdefault("models", {})
-            if not isinstance(models, dict):
-                models = {}
-                scene_entry["models"] = models
-            model_entry = models.get(model_key)
-            if not isinstance(model_entry, dict):
-                model_entry = {"profile": f"{model_key}.yaml", "prompts": []}
-                models[model_key] = model_entry
-            rows = model_entry.get("prompts", [])
-            if not isinstance(rows, list):
-                rows = []
-            row = find_prompt_row(rows, beat_index) or row
-            visual_beats = normalize_stored_beats(scene_entry.get("visual_beats", []))
-            stored_beat = (
-                visual_beats[beat_index - 1]
-                if 1 <= beat_index <= len(visual_beats)
-                else None
-            )
-            visual_beat = str(
-                row.get("visual_beat")
-                or (stored_beat.beat if stored_beat is not None else "")
-                or scene.get("text", "")
-            )
-            beat_view.setPlainText(visual_beat)
-            tweak_beat.setEnabled(stored_beat is not None)
-            tweak_beat_action.setEnabled(stored_beat is not None)
-            if prompt_editor.toPlainText().strip() == saved_prompt_state["text"]:
-                new_text = str(row.get("text", ""))
-                prompt_editor.setPlainText(new_text)
-                saved_prompt_state["text"] = new_text
-                _update_save_states()
-            _set_popup_font_size(font_slider.value())
+        pending_beat_tweak = {"args": None}
 
         def _tweak_beat():
-            self._open_beat_editor(scene_id, beat_index, parent=dialog)
-            _reload_after_beat_tweak()
+            # A third exec() on top of Lightbox + Tweak Prompt never appears on
+            # Windows. Close this popup first, then open the beat editor after
+            # exec() returns — same nesting depth as Tweak Prompt itself.
+            owner = dialog.parentWidget() or self
+            pending_beat_tweak["args"] = (scene_id, beat_index, model_key, owner)
+            dialog.accept()
 
         cancel.clicked.connect(dialog.reject)
         regenerate.clicked.connect(_regenerate)
@@ -5242,7 +5419,23 @@ class MainWindow(QMainWindow):
         save_image.clicked.connect(_save_image)
         tweak_beat.clicked.connect(_tweak_beat)
         tweak_beat_action.clicked.connect(_tweak_beat)
-        dialog.exec()
+        self._prompt_dialog_depth = getattr(self, "_prompt_dialog_depth", 0) + 1
+        try:
+            dialog.exec()
+        finally:
+            self._prompt_dialog_depth -= 1
+        if getattr(self, "_prompt_dialog_depth", 0) <= 0 and getattr(
+            self, "_prompt_grid_refresh_pending", False
+        ):
+            pending_sid = getattr(self, "_prompt_grid_refresh_scene_id", None)
+            pending_key = getattr(self, "_prompt_grid_refresh_model_key", None)
+            self._prompt_grid_refresh_pending = False
+            self._prompt_grid_refresh_scene_id = None
+            self._prompt_grid_refresh_model_key = None
+            self._prompts_refresh(only_scene_id=pending_sid, only_model_key=pending_key)
+        pending = pending_beat_tweak["args"]
+        if pending:
+            self._open_beat_editor_from_prompt(*pending)
 
     def _open_prompt_scene_dialog(self, scene_id: int, candidate: bool = False,
                                   prior_override=None) -> None:
@@ -7050,6 +7243,18 @@ class MainWindow(QMainWindow):
             else:
                 self._beats_status_label.setText(f"Beat extraction failed: {payload}")
 
+        reload_viewer = getattr(self, "_lightbox_viewer_reload", None)
+        if success and callable(reload_viewer):
+            # Tweak Prompt may already have closed (disconnecting its own
+            # finished handler). Reload the still-open Lightbox viewer here.
+            QTimer.singleShot(0, reload_viewer)
+
+        nested = (
+            getattr(self, "_lightbox_dialog_depth", 0) > 0
+            or getattr(self, "_prompt_dialog_depth", 0) > 0
+            or getattr(self, "_draft_dialog_depth", 0) > 0
+        )
+
         if success:
             self.pipeline_status_label.setText("Pipeline complete")
             self.pipeline_progress.setValue(100)
@@ -7059,7 +7264,8 @@ class MainWindow(QMainWindow):
         if "canceled" in payload.lower():
             self.pipeline_status_label.setText("Pipeline canceled")
             self._append_log(payload)
-            QMessageBox.information(self, "Pipeline canceled", payload)
+            if not nested:
+                QMessageBox.information(self, "Pipeline canceled", payload)
             return
 
         missing_models_prefix = "[missing-models]\n"
@@ -7067,12 +7273,14 @@ class MainWindow(QMainWindow):
             message = payload[len(missing_models_prefix):]
             self.pipeline_status_label.setText("Model setup required")
             self._append_log(f"Model setup required: {message}")
-            QMessageBox.warning(self, "Model files missing", message)
+            if not nested:
+                QMessageBox.warning(self, "Model files missing", message)
             return
 
         self.pipeline_status_label.setText("Pipeline failed")
         self._append_log(f"Error: {payload}")
-        QMessageBox.critical(self, "Pipeline failed", payload)
+        if not nested:
+            QMessageBox.critical(self, "Pipeline failed", payload)
 
     def _on_settings_saved(self, path: str) -> None:
         self._dub_update_image_badges()
