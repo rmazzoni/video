@@ -376,12 +376,12 @@ class MainWindow(QMainWindow):
         stages_row2 = QHBoxLayout()
         self._stage_btns: dict = {}
         stage_defs = [
-            ("Preview Images",  "preview_images"),
-            ("Preview Clips",   "preview_clips"),
-            ("Preview Video",   "preview_video"),
-            ("Lightbox Images", "final_images"),
-            ("Final Clips",     "final_clips"),
-            ("Final Video",     "final_video"),
+            ("Create Preview Images",  "preview_images"),
+            ("Create Preview Clips",   "preview_clips"),
+            ("Create Preview Video",   "preview_video"),
+            ("Create Lightbox Images", "final_images"),
+            ("Create Final Clips",     "final_clips"),
+            ("Create Final Video",     "final_video"),
         ]
         for i, (label, value) in enumerate(stage_defs):
             btn = QPushButton(label)
@@ -1683,6 +1683,15 @@ class MainWindow(QMainWindow):
             'Run "8. Final Images" to generate three seed variants for every visual beat.')
         self._lightbox_status_label.setStyleSheet("color:#8E8B90; font-size:11px;")
         header_row.addWidget(self._lightbox_status_label, 1)
+        self._lightbox_total_badge = QLabel("Selected —")
+        self._lightbox_total_badge.setStyleSheet(
+            "color:#8E8B90; font-size:12px; font-weight:bold; background:#1D1B20; "
+            "border:1px solid #36343B; border-radius:8px; padding:1px 6px;"
+        )
+        self._lightbox_total_badge.setToolTip(
+            "Images checked in all scenes, and how many the dubbed audio needs"
+        )
+        header_row.addWidget(self._lightbox_total_badge)
 
         btn_run = QPushButton("\u25b6 Run Final Images")
         btn_run.setToolTip("Generate three seed variants per model-specific visual beat")
@@ -2168,6 +2177,35 @@ class MainWindow(QMainWindow):
             label.setText(f"Images {selected} / {required}")
             label.setStyleSheet(self._image_badge_style(selected, required))
             label.setToolTip(self._shot_badge_tooltip(selected, required, audio))
+        self._lightbox_update_total_badge()
+
+    def _lightbox_update_total_badge(self) -> None:
+        label = getattr(self, "_lightbox_total_badge", None)
+        if label is None:
+            return
+        checks = getattr(self, "_lightbox_checkboxes", {})
+        if not checks:
+            label.setText("Selected —")
+            label.setStyleSheet(
+                "color:#8E8B90; font-size:12px; font-weight:bold; background:#1D1B20; "
+                "border:1px solid #36343B; border-radius:8px; padding:1px 6px;"
+            )
+            label.setToolTip("Images checked in all scenes, and how many the dubbed audio needs")
+            return
+        from video.ken_burns_generator import OPTIMAL_SHOT_SECONDS
+
+        selected = 0
+        required = 0
+        for sid, fname_dict in checks.items():
+            selected += sum(checkbox.isChecked() for checkbox in fname_dict.values())
+            scene_required, _audio = self._shot_requirement(int(sid))
+            required += scene_required
+        label.setText(f"Selected {selected} / {required}")
+        label.setStyleSheet(self._image_badge_style(selected, required))
+        label.setToolTip(
+            f"{selected} images checked in the Lightbox; {required} required "
+            f"so each shot is about {OPTIMAL_SHOT_SECONDS:.0f} seconds of dubbed audio."
+        )
 
     def _lightbox_capture_scroll_anchor(self) -> tuple:
         """Scene at the top of the viewport, and how far into that card we are."""
@@ -5989,20 +6027,32 @@ class MainWindow(QMainWindow):
 
     def _dub_segment_duration_seconds(self, sid: int) -> float:
         audio_path = self._dub_audio_path(sid)
-        if not os.path.exists(audio_path):
-            return 0.0
+        cache = getattr(self, "_dub_duration_cache", None)
+        if cache is None:
+            cache = {}
+            self._dub_duration_cache = cache
         try:
-            from mutagen.mp3 import MP3
-            return float(MP3(audio_path).info.length)
-        except Exception:
+            stamp = os.path.getmtime(audio_path) if audio_path and os.path.exists(audio_path) else None
+        except OSError:
+            stamp = None
+        cached = cache.get(audio_path)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        duration = 0.0
+        if stamp is not None:
             try:
-                from moviepy import AudioFileClip
-                clip = AudioFileClip(audio_path)
-                duration = float(clip.duration)
-                clip.close()
-                return duration
+                from mutagen.mp3 import MP3
+                duration = float(MP3(audio_path).info.length)
             except Exception:
-                return 0.0
+                try:
+                    from moviepy import AudioFileClip
+                    clip = AudioFileClip(audio_path)
+                    duration = float(clip.duration)
+                    clip.close()
+                except Exception:
+                    duration = 0.0
+        cache[audio_path] = (stamp, duration)
+        return duration
 
     def _shot_requirement(self, sid: int) -> tuple:
         """Required stills for one scene: dubbed seconds / optimal shot length."""
