@@ -334,6 +334,7 @@ class SleepyPanel(QWidget):
         self._voice_thread: QThread | None = None
         self._voice_worker: _VoiceWorker | None = None
         self._action_buttons: list = []
+        self._lightbox_frames: list = []
 
         self._build_ui()
         self.controller.pipeline_started.connect(self._on_pipeline_started)
@@ -601,7 +602,7 @@ class SleepyPanel(QWidget):
         note = QLabel(
             "One card per picture. The caption is the [IMMAGINE] line from the script. "
             "The card stays empty until that still is painted. "
-            "Click a painted image to see it larger."
+            "Click a painted image to see it larger. Previous and Next step through the painted stills."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1274,9 +1275,18 @@ class SleepyPanel(QWidget):
             )
             return
         cards = lightbox_cards(scenes, self._stills, self._project)
-        painted = sum(
-            1 for card in cards for image in card["images"] if image["path"]
-        )
+        self._lightbox_frames = []
+        for card in cards:
+            for image in card["images"]:
+                if not image["path"]:
+                    continue
+                self._lightbox_frames.append({
+                    "path": str(image["path"]),
+                    "scene_id": int(card["scene_id"]),
+                    "beat": int(image.get("beat") or 1),
+                    "caption": str(card.get("caption") or ""),
+                })
+        painted = len(self._lightbox_frames)
         self._lightbox_status.setText(f"{len(cards)} pictures. {painted} painted.")
         for card in cards:
             widget = self._lightbox_scene_card(card)
@@ -1351,25 +1361,172 @@ class SleepyPanel(QWidget):
         return cell
 
     def _open_still_viewer(self, path: str) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle(os.path.basename(path))
-        dialog.resize(960, 540)
-        dialog.setStyleSheet("QDialog { background:#0F0D13; } QLabel { color:#E8E4EA; }")
-        label = QLabel()
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image = QImage(path)
-        if image.isNull():
-            label.setText("The still file could not be read.")
-        else:
-            pixmap = QPixmap.fromImage(image).scaled(
-                940, 520,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            label.setPixmap(pixmap)
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(label)
+        frames = list(self._lightbox_frames)
+        if not frames or not any(str(frame.get("path") or "") == path for frame in frames):
+            frames = self._painted_lightbox_frames()
+        dialog = self._build_lightbox_viewer(frames, path)
         dialog.exec()
+
+    def _painted_lightbox_frames(self) -> list:
+        """Painted stills in Lightbox order, each with its [IMMAGINE] caption."""
+        frames = []
+        for card in lightbox_cards(self._lightbox_scene_rows(), self._stills, self._project or ""):
+            for image in card["images"]:
+                if not image["path"]:
+                    continue
+                frames.append({
+                    "path": str(image["path"]),
+                    "scene_id": int(card["scene_id"]),
+                    "beat": int(image.get("beat") or 1),
+                    "caption": str(card.get("caption") or ""),
+                })
+        return frames
+
+    def _build_lightbox_viewer(self, frames: list, path: str) -> QDialog:
+        """Maximized still with Previous, Next, and the picture caption."""
+        frames = [frame for frame in frames if str(frame.get("path") or "")]
+        if not any(str(frame.get("path") or "") == path for frame in frames):
+            frames.append({
+                "path": path,
+                "scene_id": 0,
+                "beat": 1,
+                "caption": "",
+            })
+        start = 0
+        for index, frame in enumerate(frames):
+            if str(frame.get("path") or "") == path:
+                start = index
+                break
+
+        screen = self.screen().availableGeometry() if self.screen() is not None else None
+        if screen is None or screen.width() < 200 or screen.height() < 200:
+            max_w, max_h = 960, 540
+        else:
+            max_w = int(screen.width() * 0.88)
+            max_h = int(screen.height() * 0.72)
+
+        dialog = QDialog(self)
+        dialog.setModal(True)
+        dialog.setStyleSheet(
+            "QDialog { background:#0F0D13; }"
+            "QLabel { color:#E8E4EA; background:transparent; border:none; }"
+            "QPushButton { background:#36343B; color:#E8E4EA; border:none;"
+            " border-radius:4px; padding:5px 18px; }"
+            "QPushButton:disabled { color:#555555; }"
+        )
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        image_label = QLabel()
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(image_label, 1)
+
+        caption = QLabel()
+        caption.setObjectName("lightboxViewerCaption")
+        caption.setWordWrap(True)
+        caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(caption)
+
+        nav = QHBoxLayout()
+        previous = QPushButton("◀  Prev")
+        tweak = QPushButton("Tweak Prompt")
+        info = QLabel()
+        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info.setStyleSheet("color:#8E8B90; font-size:11px;")
+        nxt = QPushButton("Next  ▶")
+        close = QPushButton("Close")
+        for button in (previous, tweak, nxt, close):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        nav.addWidget(previous)
+        nav.addWidget(tweak)
+        nav.addStretch(1)
+        nav.addWidget(info)
+        nav.addStretch(1)
+        nav.addWidget(nxt)
+        nav.addSpacing(12)
+        nav.addWidget(close)
+        layout.addLayout(nav)
+
+        state = {"idx": start}
+
+        def load(index: int) -> None:
+            index = max(0, min(len(frames) - 1, index))
+            state["idx"] = index
+            frame = frames[index]
+            image_path = str(frame.get("path") or "")
+            picture = QImage(image_path)
+            if picture.isNull():
+                image_label.setPixmap(QPixmap())
+                image_label.setText("The still file could not be read.")
+            else:
+                pixmap = QPixmap.fromImage(picture).scaled(
+                    max_w,
+                    max_h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                image_label.setText("")
+                image_label.setPixmap(pixmap)
+            scene_id = int(frame.get("scene_id") or 0)
+            beat = int(frame.get("beat") or 1)
+            if scene_id:
+                dialog.setWindowTitle(f"Scene {scene_id:03d} · still {beat}")
+            else:
+                dialog.setWindowTitle(os.path.basename(image_path))
+            caption.setText(str(frame.get("caption") or ""))
+            info.setText(f"{index + 1} / {len(frames)}    ← → to move    Esc to close")
+            previous.setEnabled(index > 0)
+            nxt.setEnabled(index < len(frames) - 1)
+            tweak.setEnabled(int(frame.get("scene_id") or 0) > 0)
+
+        def tweak_prompt() -> None:
+            frame = frames[state["idx"]]
+            scene_id = int(frame.get("scene_id") or 0)
+            beat = int(frame.get("beat") or 1)
+            dialog.accept()
+            if scene_id:
+                self._show_still_on_stills_tab(scene_id, beat)
+
+        previous.clicked.connect(lambda: load(state["idx"] - 1))
+        tweak.clicked.connect(tweak_prompt)
+        nxt.clicked.connect(lambda: load(state["idx"] + 1))
+        close.clicked.connect(dialog.accept)
+
+        def on_key(event) -> None:
+            key = event.key()
+            if key in (Qt.Key.Key_Right, Qt.Key.Key_Down):
+                load(state["idx"] + 1)
+            elif key in (Qt.Key.Key_Left, Qt.Key.Key_Up):
+                load(state["idx"] - 1)
+            elif key == Qt.Key.Key_Escape:
+                dialog.accept()
+            else:
+                QDialog.keyPressEvent(dialog, event)
+
+        dialog.keyPressEvent = on_key
+        load(start)
+        return dialog
+
+    def _show_still_on_stills_tab(self, scene_id: int, beat: int) -> None:
+        """Leave the Lightbox viewer on this still's prompt in the Stills tab."""
+        for index in range(self.inner_tabs.count()):
+            if self.inner_tabs.tabText(index) == "Stills":
+                self.inner_tabs.setCurrentIndex(index)
+                break
+        target = None
+        for index, row in enumerate(self._stills):
+            if int(row["scene_id"]) == int(scene_id) and int(row["beat"]) == int(beat):
+                target = index
+                break
+        if target is None:
+            return
+        if self._still_list.currentRow() == target:
+            self._show_still(target)
+        else:
+            self._still_list.setCurrentRow(target)
+        self._still_list.scrollToItem(self._still_list.item(target))
+        self._prompt.setFocus()
 
     def _gpu_is_free(self) -> bool:
         if not (self.controller.gpu_owner() or self.controller.is_busy()):

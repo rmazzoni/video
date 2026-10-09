@@ -685,6 +685,85 @@ class SleepyPanelTests(unittest.TestCase):
         panel.deleteLater()
         app.processEvents()
 
+    def test_lightbox_viewer_steps_through_captions(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6.QtCore import QEvent, Qt
+        from PyQt6.QtGui import QColor, QImage, QKeyEvent
+        from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
+        from ui.pipeline_controller import PipelineController
+        from ui.sleepy_panel import SleepyPanel
+
+        app = QApplication.instance() or QApplication([])
+        panel = SleepyPanel(PipelineController())
+        with tempfile.TemporaryDirectory() as image_dir:
+            first = os.path.join(image_dir, "scene_001_hidream_b01_v1.png")
+            second = os.path.join(image_dir, "scene_002_hidream_b01_v1.png")
+            for path, color in ((first, QColor(180, 140, 90)), (second, QColor(40, 70, 120))):
+                image = QImage(32, 18, QImage.Format.Format_RGB32)
+                image.fill(color)
+                self.assertTrue(image.save(path, "PNG"))
+            frames = [
+                {"path": first, "scene_id": 1, "beat": 1, "caption": "Il Tevere al crepuscolo."},
+                {"path": second, "scene_id": 2, "beat": 1, "caption": "Uno studio a lume di lampada."},
+            ]
+            dialog = panel._build_lightbox_viewer(frames, first)
+            caption = dialog.findChild(QLabel, "lightboxViewerCaption")
+            buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+            self.assertEqual(caption.text(), "Il Tevere al crepuscolo.")
+            self.assertEqual(dialog.windowTitle(), "Scene 001 · still 1")
+            self.assertFalse(buttons["◀  Prev"].isEnabled())
+            self.assertTrue(buttons["Next  ▶"].isEnabled())
+            buttons["Next  ▶"].click()
+            self.assertEqual(caption.text(), "Uno studio a lume di lampada.")
+            self.assertEqual(dialog.windowTitle(), "Scene 002 · still 1")
+            self.assertTrue(buttons["◀  Prev"].isEnabled())
+            self.assertFalse(buttons["Next  ▶"].isEnabled())
+            buttons["Next  ▶"].click()
+            self.assertEqual(caption.text(), "Uno studio a lume di lampada.")
+            dialog.keyPressEvent(QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_Left, Qt.KeyboardModifier.NoModifier,
+            ))
+            self.assertEqual(caption.text(), "Il Tevere al crepuscolo.")
+            dialog.keyPressEvent(QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier,
+            ))
+            self.assertEqual(caption.text(), "Uno studio a lume di lampada.")
+            buttons["◀  Prev"].click()
+            self.assertEqual(caption.text(), "Il Tevere al crepuscolo.")
+            self.assertIn("Close", buttons)
+            self.assertIn("Tweak Prompt", buttons)
+            panel._project = ""
+            panel._scenes = [
+                {"id": 1, "text": "Buonasera.", "caption": "Il Tevere al crepuscolo."},
+                {"id": 2, "text": "La seconda scena.", "caption": "Uno studio a lume di lampada."},
+            ]
+            panel._stills = [
+                {"scene_id": 1, "beat": 1, "prompt": "Tiber prompt"},
+                {"scene_id": 2, "beat": 1, "prompt": "Study prompt"},
+            ]
+            panel._rebuild_still_list(select=(1, 1))
+            buttons["Next  ▶"].click()
+            dialog.show()
+            app.processEvents()
+            buttons["Tweak Prompt"].click()
+            app.processEvents()
+            self.assertFalse(dialog.isVisible())
+            self.assertEqual(panel.inner_tabs.tabText(panel.inner_tabs.currentIndex()), "Stills")
+            self.assertEqual(panel._still_list.currentRow(), 1)
+            self.assertEqual(panel._prompt.toPlainText(), "Study prompt")
+            self.assertIn("La seconda scena.", panel._scene_view.toPlainText())
+            dialog.deleteLater()
+            closed = panel._build_lightbox_viewer(frames, first)
+            closed.show()
+            app.processEvents()
+            close_buttons = {button.text(): button for button in closed.findChildren(QPushButton)}
+            close_buttons["Close"].click()
+            app.processEvents()
+            self.assertFalse(closed.isVisible())
+            closed.deleteLater()
+        panel.deleteLater()
+        app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()
