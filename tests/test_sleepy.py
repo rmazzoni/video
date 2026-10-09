@@ -26,16 +26,20 @@ from sleepy.chapter import (
     episode_folder_name,
     ensure_rome_softly_prompt,
     filenames_for_offsets,
+    image_prompt_map,
     is_sleepy_project,
+    lightbox_cards,
     load_episode_settings,
     load_scenes,
     load_stills,
     narration_path,
+    parse_image_script,
     prompts_missing,
     publish_scenes,
     save_stills,
     selections_for_stills,
     sleepy_pipeline_config,
+    split_scenes,
     still_file_path,
     list_lightbox_stills,
 )
@@ -267,6 +271,10 @@ class ChapterTests(unittest.TestCase):
             self.assertNotIn("PROMPT", scenes[0]["text"])
             self.assertNotIn("IMMAGINE", scenes[0]["text"])
             self.assertNotIn("non leggere", scenes[0]["text"].lower())
+            self.assertEqual(
+                scenes[0]["caption"],
+                'Il Tevere al crepuscolo. Testo sobrio: "Roma".',
+            )
             self.assertEqual(scenes[1]["text"], "In questa serie la racconteremo con calma.")
             self.assertEqual(scenes[2]["text"], "")
             self.assertNotIn("Routledge", "\n".join(scene["text"] for scene in scenes))
@@ -279,6 +287,96 @@ class ChapterTests(unittest.TestCase):
                 [(row["scene_id"], row["beat"]) for row in stills],
                 [(1, 1), (2, 1), (3, 1)],
             )
+
+    def test_palette_tag_on_the_prompt_line_is_not_spoken(self):
+        script = (
+            "[IMG 01] [IMMAGINE: Il Tevere al crepuscolo.]\n\n"
+            "IMG 01 — PROMPT (EN) [palette: Rural / domestic / dusk]: "
+            "Wide view of the Tiber at dusk, distant huts. "
+            "Style: flat vector-style illustration, no text.\n\n"
+            "Buonasera, e benvenuti.\n\n"
+            "[IMG 02] [IMMAGINE: Cielo stellato.]\n\n"
+            "IMG 02 — PROMPT (EN): A starry sky over a field.\n\n"
+            "Fine della storia.\n"
+        )
+        scenes = split_scenes(script)
+        self.assertEqual([scene["id"] for scene in scenes], [1, 2])
+        self.assertEqual(scenes[0]["text"], "Buonasera, e benvenuti.")
+        self.assertEqual(scenes[1]["text"], "Fine della storia.")
+        self.assertNotIn("PROMPT", scenes[0]["text"])
+        self.assertNotIn("palette", scenes[0]["text"].lower())
+        prompts = image_prompt_map(script)
+        self.assertTrue(
+            prompts[1].startswith("[palette: Rural / domestic / dusk]: Wide view")
+        )
+        self.assertEqual(prompts[2], "A starry sky over a field.")
+
+    def test_benvenuti_starts_speech_and_immagine_is_the_caption(self):
+        script = (
+            "Note di produzione (non leggere): non è una scena.\n\n"
+            "Titolo da non leggere prima del benvenuto.\n\n"
+            "[IMG 01] [IMMAGINE: Il Tevere al crepuscolo, con le capanne lontane.]\n\n"
+            "IMG 01 — PROMPT (EN) [palette: Rural / domestic / dusk]: Wide view of the Tiber.\n\n"
+            "Questa frase sta prima del benvenuto e non si legge.\n\n"
+            "Buonasera, e benvenuti. Qui inizia la narrazione.\n\n"
+            "[IMG 02] [IMMAGINE: Uno studio a lume di lampada.]\n\n"
+            "IMG 02 — PROMPT (EN): A quiet study at night.\n\n"
+            "La seconda scena continua da qui.\n"
+        )
+        parsed = parse_image_script(script)
+        self.assertEqual(
+            parsed[0]["caption"],
+            "Il Tevere al crepuscolo, con le capanne lontane.",
+        )
+        self.assertEqual(parsed[1]["caption"], "Uno studio a lume di lampada.")
+        self.assertIn("benvenuti", parsed[0]["text"].lower())
+        self.assertIn("Qui inizia", parsed[0]["text"])
+        self.assertNotIn("prima del benvenuto", parsed[0]["text"].lower())
+        self.assertNotIn("Titolo da non leggere", parsed[0]["text"])
+        self.assertNotIn("PROMPT", parsed[0]["text"])
+        self.assertNotIn("Wide view", parsed[0]["text"])
+        self.assertEqual(parsed[1]["text"], "La seconda scena continua da qui.")
+        self.assertTrue(parsed[0]["prompt"].startswith("[palette: Rural"))
+
+    def test_speech_is_kept_when_the_script_has_no_welcome(self):
+        script = (
+            "[IMG 01] [IMMAGINE: Il fiume.]\n\n"
+            "IMG 01 — PROMPT (EN): A river at dusk.\n\n"
+            "Il racconto comincia senza la formula di benvenuto.\n"
+        )
+        parsed = parse_image_script(script)
+        self.assertEqual(parsed[0]["caption"], "Il fiume.")
+        self.assertIn("racconto", parsed[0]["text"])
+        self.assertNotIn("A river", parsed[0]["text"])
+
+    def test_lightbox_cards_skip_a_deleted_still_file(self):
+        script = (
+            "[IMG 01] [IMMAGINE: Il Tevere al crepuscolo.]\n\n"
+            "IMG 01 — PROMPT (EN): Wide view of the Tiber.\n\n"
+            "Buonasera, e benvenuti.\n\n"
+            "[IMG 02] [IMMAGINE: Uno studio a lume di lampada.]\n\n"
+            "IMG 02 — PROMPT (EN): A quiet study at night.\n\n"
+            "La seconda scena.\n"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            project = create_episode(folder, "Cartelle")
+            publish_scenes(project, "Italian", script)
+            lightbox = os.path.join(project, "output", "lightbox")
+            os.makedirs(lightbox, exist_ok=True)
+            for name in (
+                "scene_001_hidream_b01_v1.png",
+                "scene_001_hidream_b02_v1.png",
+            ):
+                Path(os.path.join(lightbox, name)).write_bytes(b"png")
+            cards = lightbox_cards(load_scenes(project), load_stills(project), project)
+            self.assertEqual([card["scene_id"] for card in cards], [1, 2])
+            self.assertEqual(cards[0]["caption"], "Il Tevere al crepuscolo.")
+            self.assertEqual(cards[1]["caption"], "Uno studio a lume di lampada.")
+            self.assertEqual(
+                [os.path.basename(image["path"]) for image in cards[0]["images"]],
+                ["scene_001_hidream_b01_v1.png"],
+            )
+            self.assertEqual(cards[1]["images"], [{"beat": 1, "path": ""}])
 
     def test_a_colon_in_the_title_is_saved_as_a_folder_name(self):
         self.assertEqual(episode_folder_name("Ep. 01: Il Tevere"), "Ep. 01 - Il Tevere")

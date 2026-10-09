@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -48,13 +47,14 @@ from sleepy.chapter import (
     ensure_rome_softly_prompt,
     filenames_for_offsets,
     is_sleepy_project,
-    list_lightbox_stills,
+    lightbox_cards,
     load_app_prefs,
     load_episode_settings,
     load_scenes,
     load_stills,
     narration_path,
     normalize_language,
+    parse_image_script,
     profile_text,
     prompts_missing,
     publish_scenes,
@@ -491,9 +491,11 @@ class SleepyPanel(QWidget):
         layout.addWidget(self._heading("Narration"))
         hint = QLabel(
             "Picture scenes come from the Italian narration. "
-            "A script with [IMG 01] cues becomes one scene per image, "
-            "about one picture every 75–80 seconds. "
-            "The English prompt under each cue is the still, and it is not spoken. "
+            "Benvenuti starts the spoken script. "
+            "[IMG 01] [IMMAGINE: ...] is the Lightbox caption, and it is not spoken. "
+            "IMG 01 — PROMPT (EN) starts the English still prompt. "
+            "Keep that prompt in one paragraph. The blank line after it separates it from the narration. "
+            "One [IMG] cue is one scene, about one picture every 75–80 seconds. "
             "A script without those cues still uses one paragraph per scene. "
             "Update Italian Word loads a revised Italian file. "
             "Add the English Word file when the translation is ready. "
@@ -597,8 +599,9 @@ class SleepyPanel(QWidget):
         layout = QVBoxLayout(page)
         layout.addWidget(self._heading("Lightbox"))
         note = QLabel(
-            "Every painted still for this episode. Click an image to see it larger. "
-            "The final video uses these files."
+            "One card per picture. The caption is the [IMMAGINE] line from the script. "
+            "The card stays empty until that still is painted. "
+            "Click a painted image to see it larger."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1190,6 +1193,7 @@ class SleepyPanel(QWidget):
             current["prompt"] = ""
             self._show_still(self._editing_index)
         else:
+            self._discard_still_file(scene_id, int(current["beat"]))
             del self._stills[self._editing_index]
             self._editing_index = None
         if self._project:
@@ -1209,6 +1213,51 @@ class SleepyPanel(QWidget):
         if self.inner_tabs.tabText(index) == "Lightbox":
             self._refresh_lightbox()
 
+    def _discard_still_file(self, scene_id: int, beat: int) -> None:
+        """Remove the painted file for a still that left the list."""
+        if not self._project:
+            return
+        path = still_file_path(self._project, scene_id, beat)
+        if not os.path.isfile(path):
+            return
+        try:
+            os.remove(path)
+        except OSError:
+            self._log(f"Could not remove {os.path.basename(path)}. Close the picture and try again.")
+
+    def _lightbox_scene_rows(self) -> list:
+        """Picture cards follow the image cues, with captions from the script."""
+        italian = ""
+        if self._shown_language == "Italian":
+            italian = self._script.toPlainText()
+        elif self._project:
+            italian = read_text(narration_path(self._project, "Italian"))
+        parsed = parse_image_script(italian) if italian else None
+        if parsed and (
+            not self._scenes
+            or [int(scene["id"]) for scene in self._scenes]
+            != [int(row["id"]) for row in parsed]
+        ):
+            return [
+                {
+                    "id": int(row["id"]),
+                    "text": str(row.get("text") or ""),
+                    "caption": str(row.get("caption") or ""),
+                }
+                for row in parsed
+            ]
+        captions = {
+            int(row["id"]): str(row.get("caption") or "")
+            for row in (parsed or [])
+        }
+        rows = []
+        for scene in self._scenes:
+            row = dict(scene)
+            if not str(row.get("caption") or "").strip():
+                row["caption"] = captions.get(int(scene["id"]), "")
+            rows.append(row)
+        return rows
+
     def _refresh_lightbox(self) -> None:
         while self._lightbox_layout.count() > 1:
             item = self._lightbox_layout.takeAt(0)
@@ -1218,81 +1267,87 @@ class SleepyPanel(QWidget):
         if not self._project:
             self._lightbox_status.setText("Open an episode to see its stills.")
             return
-        rows = list_lightbox_stills(self._project)
-        if not rows:
+        scenes = self._lightbox_scene_rows()
+        if not scenes:
             self._lightbox_status.setText(
-                "No stills yet. Write a prompt on the Stills tab and choose Generate this still."
+                "Split the script to build one card per picture."
             )
             return
-        self._lightbox_status.setText(f"{len(rows)} still(s) in this episode.")
-        grouped: dict = {}
-        for row in rows:
-            grouped.setdefault(int(row["scene_id"]), []).append(row)
-        for scene_id in sorted(grouped):
-            card = self._lightbox_scene_card(scene_id, grouped[scene_id])
-            self._lightbox_layout.insertWidget(self._lightbox_layout.count() - 1, card)
+        cards = lightbox_cards(scenes, self._stills, self._project)
+        painted = sum(
+            1 for card in cards for image in card["images"] if image["path"]
+        )
+        self._lightbox_status.setText(f"{len(cards)} pictures. {painted} painted.")
+        for card in cards:
+            widget = self._lightbox_scene_card(card)
+            self._lightbox_layout.insertWidget(self._lightbox_layout.count() - 1, widget)
 
-    def _lightbox_scene_card(self, scene_id: int, rows: list) -> QWidget:
-        card = QWidget()
-        card.setStyleSheet(
+    def _lightbox_scene_card(self, card: dict) -> QWidget:
+        scene_id = int(card["scene_id"])
+        widget = QWidget()
+        widget.setStyleSheet(
             "background:#1D1B20; border:1px solid #36343B; border-radius:4px;"
         )
-        outer = QHBoxLayout(card)
+        outer = QHBoxLayout(widget)
         outer.setContentsMargins(10, 8, 10, 8)
-        number = QLabel(f"{scene_id:03d}" if scene_id else "—")
+        number = QLabel(f"{scene_id:03d}")
         number.setFixedWidth(72)
         number.setAlignment(Qt.AlignmentFlag.AlignCenter)
         number.setStyleSheet(
             "color:#D7B58A; font-size:28px; font-weight:bold; "
             "background:transparent; border:none;"
         )
-        outer.addWidget(number, 0, Qt.AlignmentFlag.AlignVCenter)
-        body = QVBoxLayout()
-        title = self._scene_text(scene_id).strip().replace("\n", " ")
-        if len(title) > 160:
-            title = title[:157] + "..."
-        header = QLabel(f"Scene {scene_id:03d}" + (f"  —  {title}" if title else ""))
-        header.setWordWrap(True)
-        header.setStyleSheet(
-            "color:#E8E4EA; font-weight:bold; background:transparent; border:none;"
+        outer.addWidget(number, 0, Qt.AlignmentFlag.AlignTop)
+        pictures = QVBoxLayout()
+        pictures.setSpacing(6)
+        for image in card["images"]:
+            pictures.addWidget(self._lightbox_thumb(image))
+        outer.addLayout(pictures, 0)
+        caption = QLabel(str(card.get("caption") or ""))
+        caption.setWordWrap(True)
+        caption.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         )
-        body.addWidget(header)
-        grid = QGridLayout()
-        grid.setSpacing(8)
-        for index, row in enumerate(rows):
-            grid.addWidget(self._lightbox_thumb(row), index // 3, index % 3)
-        body.addLayout(grid)
-        outer.addLayout(body, 1)
-        return card
+        caption.setStyleSheet(
+            "color:#E8E4EA; background:transparent; border:none;"
+        )
+        outer.addWidget(caption, 1)
+        return widget
 
-    def _lightbox_thumb(self, row: dict) -> QWidget:
+    def _lightbox_thumb(self, image: dict) -> QWidget:
         cell = QWidget()
         cell.setStyleSheet("background:transparent; border:none;")
         layout = QVBoxLayout(cell)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-        path = str(row["path"])
+        path = str(image.get("path") or "")
         button = QPushButton()
         button.setFixedSize(240, 135)
-        image = QImage(path)
-        if image.isNull():
-            button.setText("Unreadable")
+        if not path:
+            button.setText("Not painted yet")
+            button.setEnabled(False)
         else:
-            pixmap = QPixmap.fromImage(image).scaled(
-                240, 135,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            button.setIcon(QIcon(pixmap))
-            button.setIconSize(pixmap.size())
-        button.clicked.connect(lambda _checked=False, image_path=path: self._open_still_viewer(image_path))
+            picture = QImage(path)
+            if picture.isNull():
+                button.setText("Unreadable")
+            else:
+                pixmap = QPixmap.fromImage(picture).scaled(
+                    240, 135,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                button.setIcon(QIcon(pixmap))
+                button.setIconSize(pixmap.size())
+                button.clicked.connect(
+                    lambda _checked=False, image_path=path: self._open_still_viewer(image_path)
+                )
         layout.addWidget(button)
-        beat = int(row.get("beat") or 0)
-        caption = QLabel(f"Still {beat}" if beat else os.path.basename(path))
-        caption.setStyleSheet(
+        beat = int(image.get("beat") or 0)
+        label = QLabel(f"Still {beat}" if beat else "")
+        label.setStyleSheet(
             "color:#8E8B90; font-size:11px; background:transparent; border:none;"
         )
-        layout.addWidget(caption)
+        layout.addWidget(label)
         return cell
 
     def _open_still_viewer(self, path: str) -> None:

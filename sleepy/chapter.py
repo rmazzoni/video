@@ -111,6 +111,46 @@ _STILL_NAME = re.compile(
 )
 
 
+def lightbox_cards(
+    scenes: Sequence[dict],
+    stills: Sequence[dict],
+    project: str,
+) -> List[dict]:
+    """One card per picture. A file is shown only while its still is in the list.
+
+    Deleting a still drops it here even if the PNG is still in the folder.
+    A scene with no painted file keeps an empty card for its caption.
+    """
+    grouped: Dict[int, List[dict]] = {}
+    for row in stills or []:
+        try:
+            scene_id = int(row["scene_id"])
+            beat = int(row["beat"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        grouped.setdefault(scene_id, []).append({"beat": beat})
+    cards = []
+    for scene in scenes or []:
+        try:
+            scene_id = int(scene["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows = sorted(grouped.get(scene_id) or [{"beat": 1}], key=lambda item: item["beat"])
+        images = []
+        for row in rows:
+            path = still_file_path(project, scene_id, int(row["beat"]))
+            images.append({
+                "beat": int(row["beat"]),
+                "path": path if os.path.isfile(path) else "",
+            })
+        cards.append({
+            "scene_id": scene_id,
+            "caption": str(scene.get("caption") or ""),
+            "images": images,
+        })
+    return cards
+
+
 def list_lightbox_stills(project: str) -> List[dict]:
     """Painted stills in this episode's lightbox, in scene and beat order."""
     folder = ProjectLayout(project).lightbox
@@ -443,15 +483,34 @@ def write_text(path: str, text: str) -> None:
 
 
 # One picture per [IMG NN] cue. The English prompt under the cue is not spoken.
+# The v3 line is "IMG 01 — PROMPT (EN) [palette: Rural / domestic / dusk]: ...".
+# The palette tag sits between (EN) and the prompt, so the colon is optional.
+# A blank line ends that prompt. The next paragraph is narration.
 _IMG_CUE = re.compile(r"^\s*\[IMG\s*(\d+)\]", re.IGNORECASE)
 _PROMPT_LINE = re.compile(
-    r"^\s*IMG\s*(\d+)\s*[—–\-:]+?\s*PROMPT\s*\(\s*EN\s*\)\s*:\s*(.*)$",
+    r"^\s*IMG\s*(\d+)\s*[—–\-:]+?\s*PROMPT\s*\(\s*EN\s*\)\s*:?\s*(.*)$",
     re.IGNORECASE,
 )
-_PROMPT_BARE = re.compile(r"^\s*PROMPT\s*\(\s*EN\s*\)\s*:\s*(.*)$", re.IGNORECASE)
-_STAGE_DIRECTION = re.compile(r"^\s*\[IMMAGINE\s*:", re.IGNORECASE)
+_PROMPT_BARE = re.compile(
+    r"^\s*PROMPT\s*\(\s*EN\s*\)\s*:?\s*(.*)$",
+    re.IGNORECASE,
+)
+_CAPTION_START = re.compile(r"\[IMMAGINE\s*:\s*", re.IGNORECASE)
+_SPOKEN_START = re.compile(r"\bbenvenuti\b", re.IGNORECASE)
 _PRODUCTION_NOTE = re.compile(r"\(\s*non leggere\s*\)", re.IGNORECASE)
 _CHAPTER_TITLE = re.compile(r"^(?:capitolo|chapter)\b", re.IGNORECASE)
+
+
+def _caption_text(paragraph: str) -> str:
+    """The [IMMAGINE: ...] line is the lightbox caption, not speech."""
+    match = _CAPTION_START.search(paragraph or "")
+    if not match:
+        return ""
+    body = paragraph[match.end():]
+    close = body.rfind("]")
+    if close >= 0:
+        body = body[:close]
+    return " ".join(body.split())
 
 
 def _narration_paragraphs(text: str) -> List[str]:
@@ -504,13 +563,18 @@ def _strip_trailing_sources(paragraphs: Sequence[str]) -> List[str]:
     return rows
 
 
+def _new_image_block(number: int) -> dict:
+    return {"id": number, "spoken": [], "prompt": "", "caption": ""}
+
+
 def parse_image_script(text: str) -> List[dict] | None:
     """One scene per ``[IMG NN]`` cue.
 
     Returns None when the script has no image cues, so a plain narration
-    still splits on paragraphs. Spoken text is the paragraphs after each
-    cue. Stage directions, the English prompt, the production note, and a
-    trailing bibliography are not spoken. The prompt is kept for the still.
+    still splits on paragraphs. ``Benvenuti`` starts the spoken Italian.
+    ``[IMMAGINE: ...]`` is the lightbox caption. ``IMG NN — PROMPT (EN)``
+    is the still prompt and ends at the blank line. The production note
+    and a trailing bibliography are not spoken.
     """
     paragraphs = _narration_paragraphs(text)
     if not any(_IMG_CUE.match(paragraph) for paragraph in paragraphs):
@@ -518,20 +582,26 @@ def parse_image_script(text: str) -> List[dict] | None:
     blocks: Dict[int, dict] = {}
     order: List[int] = []
     current: int | None = None
+    # A script that never says Benvenuti keeps every narration paragraph.
+    has_welcome = any(_SPOKEN_START.search(paragraph) for paragraph in paragraphs)
+    spoken_open = not has_welcome
     for paragraph in paragraphs:
         cue = _IMG_CUE.match(paragraph)
         if cue:
             number = int(cue.group(1))
             if number not in blocks:
-                blocks[number] = {"id": number, "spoken": [], "prompt": ""}
+                blocks[number] = _new_image_block(number)
                 order.append(number)
+            caption = _caption_text(paragraph)
+            if caption and not blocks[number]["caption"]:
+                blocks[number]["caption"] = caption
             current = number
             continue
         prompt_line = _PROMPT_LINE.match(paragraph)
         if prompt_line:
             number = int(prompt_line.group(1))
             if number not in blocks:
-                blocks[number] = {"id": number, "spoken": [], "prompt": ""}
+                blocks[number] = _new_image_block(number)
                 order.append(number)
             body = str(prompt_line.group(2) or "").strip()
             if body and not blocks[number]["prompt"]:
@@ -546,9 +616,18 @@ def parse_image_script(text: str) -> List[dict] | None:
             if body and not blocks[current]["prompt"]:
                 blocks[current]["prompt"] = body
             continue
-        if _STAGE_DIRECTION.match(paragraph) or _PRODUCTION_NOTE.search(paragraph):
+        caption = _caption_text(paragraph)
+        if caption:
+            if not blocks[current]["caption"]:
+                blocks[current]["caption"] = caption
+            continue
+        if _PRODUCTION_NOTE.search(paragraph):
             continue
         if _CHAPTER_TITLE.match(paragraph) and len(paragraph) < 80:
+            continue
+        if _SPOKEN_START.search(paragraph):
+            spoken_open = True
+        if not spoken_open:
             continue
         blocks[current]["spoken"].append(paragraph)
     if order:
@@ -559,6 +638,7 @@ def parse_image_script(text: str) -> List[dict] | None:
             "id": number,
             "text": "\n\n".join(blocks[number]["spoken"]),
             "prompt": blocks[number]["prompt"],
+            "caption": blocks[number]["caption"],
         }
         for number in order
     ]
@@ -584,7 +664,11 @@ def split_scenes(text: str) -> List[dict]:
     image_scenes = parse_image_script(text)
     if image_scenes is not None:
         return [
-            {"id": int(row["id"]), "text": str(row.get("text") or "")}
+            {
+                "id": int(row["id"]),
+                "text": str(row.get("text") or ""),
+                "caption": str(row.get("caption") or ""),
+            }
             for row in image_scenes
         ]
     return SceneSplitter(min_sentence_length=MIN_SCENE_CHARS).split_into_scenes(
@@ -656,7 +740,11 @@ def load_scenes(project: str) -> List[dict]:
             scene_id = int(scene.get("id"))
         except (TypeError, ValueError):
             continue
-        cleaned.append({"id": scene_id, "text": str(scene.get("text") or "")})
+        cleaned.append({
+            "id": scene_id,
+            "text": str(scene.get("text") or ""),
+            "caption": str(scene.get("caption") or ""),
+        })
     return cleaned
 
 
