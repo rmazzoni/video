@@ -68,6 +68,7 @@ from sleepy.chapter import (
     selections_for_stills,
     sleepy_pipeline_config,
     still_file_path,
+    stills_for_scenes,
     source_config_dir,
     uses_image_cues,
     write_model_prompts,
@@ -529,8 +530,9 @@ class SleepyPanel(QWidget):
         layout = QVBoxLayout(page)
         layout.addWidget(self._heading("Final stills"))
         hint = QLabel(
-            "One English HiDream prompt per still. The Rome Softly sentence is added "
-            "if you leave it out. Generate this still paints the prompt you are "
+            "One English HiDream prompt per still. If the style ending is missing, "
+            "the flat City palette is added. A prompt that already names a palette "
+            "is left as written. Generate this still paints the prompt you are "
             "editing, and the image appears on the right: "
             + filenames_for_offsets(1, 1, [0])[0].replace("scene_001_hidream_b01", "scene_NNN_hidream_bNN")
         )
@@ -1004,7 +1006,22 @@ class SleepyPanel(QWidget):
         self._load_script()
         self._scenes = load_scenes(path)
         stored = load_stills(path)
-        self._stills = align_stills(self._scenes, stored) if self._scenes else stored
+        scene_ids = {int(scene["id"]) for scene in self._scenes}
+        stored_ids = {int(row["scene_id"]) for row in stored}
+        italian = read_text(narration_path(path, "Italian"))
+        # The still file can still list the old paragraph split after the
+        # picture scenes were published. Show one row per picture and keep a
+        # prompt that was already typed. Do not write here: opening the panel
+        # must not change the episode, including when a test opens it.
+        if (
+            scene_ids
+            and stored_ids - scene_ids
+            and str(settings.get("scenes_language") or "") == "Italian"
+            and uses_image_cues(italian)
+        ):
+            self._stills = stills_for_scenes(self._scenes, stored, italian)
+        else:
+            self._stills = align_stills(self._scenes, stored) if self._scenes else stored
         self._path_label.setText(path)
         self._final_path.setText(ProjectLayout(path).final_with_audio)
         self._refresh_profile_preview()

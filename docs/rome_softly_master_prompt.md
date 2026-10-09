@@ -7,11 +7,11 @@ later by the cloned voice. Prompts are English. HiDream paints them.
 Select visual style **Rome Softly** and, for Episode 1 Chapter 1, the
 project profile **Rome Softly, Chapter 1**.
 
-The render path leaves a prompt alone when it already contains the
-style sentence below. It does not append “sharp photograph” or a
-medium-full face clause. Do not use the words photograph, cinematic,
-motivated light, or soft focus. Those phrases are either deleted or
-pull the still back toward a photo.
+The render path leaves a prompt alone when it already contains a flat
+style ending, or the older gouache sentence. It does not append “sharp
+photograph” or a medium-full face clause. Do not use the words
+photograph, motivated light, soft focus, gouache, or watercolour. The
+ending itself says “cinematic 16:9”; do not add a second cinematic slogan.
 
 Canvas is **1344×768**. That is the size the HiDream FP8 graph fits on
 the 16 GB card. A keeper can be upscaled afterward. Do not ask the
@@ -22,11 +22,11 @@ sentence and in the chapter scene. There is no separate negative box.
 
 ## Assembly
 
-One still, in this order. Scene first. Palette next. Style sentence
-last, unchanged.
+One still, in this order. Scene first. One style ending last. The
+palette is inside that ending.
 
 ```
-{shot}. {time of day}, {place}, {period}, {who and one action}. {palette sentence} {style sentence}
+{shot}. {time of day}, {place}, {period}, {who and one action}. {one style ending}
 ```
 
 The scene is one or two English sentences from the script's image cue.
@@ -41,7 +41,7 @@ landscape, medium scene, close object, map, portrait, interior.
 | Wide | Wide view, horizon in the upper third, empty foreground, distant figures only. |
 | Medium | Medium view, one figure, plain wall or open ground, empty space beside them. |
 | Close | Close view of one object, soft light, nothing else competing. |
-| Map | Flat painted land and water filling the frame, no labels, nobody. |
+| Map | Flat land and water filling the frame, no labels, nobody. |
 | Portrait | One figure, calm face, plain ground, no action but standing or sitting. |
 | Interior | Medium view, one figure, dim room, one warm light. |
 
@@ -49,26 +49,34 @@ On a wide plate do not write king, man, woman, soldier, or worker.
 Those words are people. Write “distant figures” instead. A named
 person belongs on a medium, portrait, or interior plate.
 
-## Style sentence
+## Style ending
 
-Unchanged on every still:
+Style guide v2. Paste exactly one ending after the scene. The palette
+is inside the ending. The same five sentences are in
+`prompts/visual_styles.py`. If a hand prompt has no ending, the app
+adds the City one.
 
-> Painterly storybook illustration in gouache and watercolour on textured paper, soft brush edges, light ink accents, low contrast, soft light, generous empty space, no text, no letters, no photorealism, no 3D render, no gore.
+Rural / domestic / dusk: countryside, farms, rivers, dawn and dusk, the opening title.
 
-## Palette sentences
+> Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, subtle paper grain texture, smooth gradient sky, limited muted palette of apricot, dusk blue, olive green and parchment, soft low-contrast lighting, calm atmosphere, generous negative space, historically accurate, cinematic 16:9 wide composition, no text, no letters, no watermark, no photorealism, no 3D render, no gore.
 
-Use one. Put it immediately before the style sentence.
+City / political / religious: Rome by day. This is the default.
 
-| Plate | Sentence |
-| --- | --- |
-| Rome and the Latin world | Pigments of parchment cream, Roman ochre, terracotta, olive green, and Tiber brown, dusk blue in the shadows. |
-| United States, including the Florida study | Cooler pigments of slate blue, white marble, and dusk blue, with a little warm candlelight. |
-| Night and closing | Night pigments of indigo and dusk blue, one warm lamp or fire. |
-| Map | Pigments of parchment cream and dusk blue, soft hand-painted land and water, no labels. |
+> Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, subtle paper grain texture, smooth gradient sky, limited muted palette of tuff stone grey, roman ochre, terracotta and muted bronze, soft low-contrast lighting, calm atmosphere, generous negative space, historically accurate, cinematic 16:9 wide composition, no text, no letters, no watermark, no photorealism, no 3D render, no gore.
 
-Pompeian red is a small accent inside a Rome scene sentence, not a
-fifth palette. Muted gold waits for a later Hagia Sophia plate and is
-not used on archaic Rome.
+Military / conflict: armies, camps, sieges, and a camp at night. Soldiers stay distant.
+
+> Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, subtle paper grain texture, smooth gradient sky, limited muted palette of iron grey, dark bronze, deep oxblood red and overcast slate sky, austere mood, soldiers kept at a distance, no close combat, soft low-contrast lighting, calm atmosphere, generous negative space, historically accurate, cinematic 16:9 wide composition, no text, no letters, no watermark, no photorealism, no 3D render, no gore.
+
+Night: darkness or stillness is the mood, including the last images of an episode.
+
+> Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, subtle paper grain texture, smooth gradient sky, limited muted palette of deep indigo and dusk blue with a single warm light source, soft low-contrast lighting, calm atmosphere, generous negative space, historically accurate, cinematic 16:9 wide composition, no text, no letters, no watermark, no photorealism, no 3D render, no gore.
+
+Modern America / later parallels: any scene after antiquity, including the Florida study at night.
+
+> Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, subtle paper grain texture, smooth gradient sky, limited muted palette of cool slate blue, white marble and parchment, soft low-contrast lighting, calm atmosphere, generous negative space, historically accurate, cinematic 16:9 wide composition, no text, no letters, no watermark, no photorealism, no 3D render, no gore.
+
+Military beats Night. America beats every other palette. Inside Rome by day, City beats Rural.
 
 ## What the pictures refuse
 
@@ -93,4 +101,4 @@ locked episode.
 
 Wide dawn over the river, no named person:
 
-> Wide view, dawn, the yellow-brown Tiber at the ford by the island, Rome about 509 BC, reed beds, thatched huts on the Palatine, distant figures only, empty foreground. Pigments of parchment cream, Roman ochre, terracotta, olive green, and Tiber brown, dusk blue in the shadows. Painterly storybook illustration in gouache and watercolour on textured paper, soft brush edges, light ink accents, low contrast, soft light, generous empty space, no text, no letters, no photorealism, no 3D render, no gore.
+> Wide view, dawn, the yellow-brown Tiber at the ford by the island, Rome about 509 BC, reed beds, thatched huts on the Palatine, distant figures only, empty foreground. Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, subtle paper grain texture, smooth gradient sky, limited muted palette of apricot, dusk blue, olive green and parchment, soft low-contrast lighting, calm atmosphere, generous negative space, historically accurate, cinematic 16:9 wide composition, no text, no letters, no watermark, no photorealism, no 3D render, no gore.

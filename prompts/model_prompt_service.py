@@ -19,6 +19,8 @@ from prompts.visual_beats import (
 )
 from prompts.visual_styles import (
     DEFAULT_VISUAL_STYLE,
+    ensure_rome_softly_style,
+    prompt_is_rome_softly,
     visual_style_fallback_preset,
     visual_style_prompt_anchor,
 )
@@ -331,7 +333,13 @@ class ModelPromptService:
     def _finalize_prompt(
         prompt: str, beat: VisualBeat, style_anchor: str, model_key: str = ""
     ) -> str:
-        """Scene and visible identity first; style slogan last."""
+        """Scene and visible identity first; style slogan last.
+
+        A Rome Softly prompt already ends with one mood palette. Do not add a
+        photographic face line or a second palette on top of it.
+        """
+        if prompt_is_rome_softly(style_anchor) or prompt_is_rome_softly(prompt):
+            return ensure_rome_softly_style(prompt)
         scene = apply_visual_identity(prompt, beat.beat, model_key=model_key)
         return join_prompt_parts(scene, style_anchor)
 

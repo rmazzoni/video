@@ -96,12 +96,26 @@ class ChapterTests(unittest.TestCase):
         prompt = ensure_rome_softly_prompt(
             "Wide shot of the Tiber at dawn in 509 BC, distant figures on the bank."
         )
-        self.assertIn("painterly storybook illustration", prompt.lower())
+        self.assertIn("flat vector-style illustration", prompt.lower())
+        self.assertIn("tuff stone grey, roman ochre, terracotta and muted bronze", prompt.lower())
         self.assertIn("509 BC", prompt)
+        self.assertNotIn("gouache", prompt.lower())
         self.assertNotIn("sharp photograph", prompt.lower())
         self.assertNotIn("sharp focus, clear air", prompt.lower())
         again = ensure_rome_softly_prompt(prompt)
         self.assertEqual(again, prompt)
+        night = (
+            "A moonlit bend of the Tiber, Rome about 509 BC, no people. "
+            "Style: flat vector-style illustration, clean simplified shapes, "
+            "limited muted palette of deep indigo and dusk blue with a single warm light source, "
+            "no text, no gore."
+        )
+        self.assertEqual(ensure_rome_softly_prompt(night), " ".join(night.split()))
+        legacy = (
+            "Wide view of the Tiber. Painterly storybook illustration in gouache "
+            "and watercolour on textured paper, no text."
+        )
+        self.assertEqual(ensure_rome_softly_prompt(legacy), legacy)
 
     def test_episode_roundtrip_keeps_one_prompt_per_still(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -128,7 +142,8 @@ class ChapterTests(unittest.TestCase):
             self.assertEqual(set(prompts), {1, 2})
             row = prompts[1]["models"]["hidream"]["prompts"][0]
             self.assertEqual(row["source"], "manually_edited")
-            self.assertIn("painterly storybook illustration", row["text"].lower())
+            self.assertIn("flat vector-style illustration", row["text"].lower())
+            self.assertIn("tuff stone grey", row["text"].lower())
             self.assertNotIn("dev", prompts[1]["models"])
             selections, missing = selections_for_stills(
                 stills, os.path.join(project, "output", "lightbox"),

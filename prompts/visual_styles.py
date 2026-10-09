@@ -5,12 +5,79 @@ from typing import Dict
 
 DEFAULT_VISUAL_STYLE = "cinematic"
 
-ROME_SOFTLY_STYLE_SENTENCE = (
-    "Painterly storybook illustration in gouache and watercolour on textured paper, "
-    "soft brush edges, light ink accents, low contrast, soft light, generous empty space, "
-    "no text, no letters, no photorealism, no 3D render, no gore."
-)
-ROME_SOFTLY_MARKER = "painterly storybook illustration"
+# Style guide v2 (9 Oct 2026): flat illustration, one mood palette inside the ending.
+# The older gouache sentence is still recognised so a stored prompt is not rewritten.
+ROME_SOFTLY_MARKER = "flat vector-style illustration"
+ROME_SOFTLY_LEGACY_MARKER = "painterly storybook illustration"
+_ROME_SOFTLY_PALETTE_TEXT = {
+    "rural": "apricot, dusk blue, olive green and parchment",
+    "city": "tuff stone grey, roman ochre, terracotta and muted bronze",
+    "military": (
+        "iron grey, dark bronze, deep oxblood red and overcast slate sky, "
+        "austere mood, soldiers kept at a distance, no close combat"
+    ),
+    "night": "deep indigo and dusk blue with a single warm light source",
+    "america": "cool slate blue, white marble and parchment",
+}
+
+
+def rome_softly_style_sentence(palette: str = "city") -> str:
+    """One ready-made style ending. City is the default inside Rome by day."""
+    phrase = _ROME_SOFTLY_PALETTE_TEXT.get(str(palette or "").strip().lower())
+    if not phrase:
+        phrase = _ROME_SOFTLY_PALETTE_TEXT["city"]
+    return (
+        "Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, "
+        "subtle paper grain texture, smooth gradient sky, limited muted palette of "
+        f"{phrase}, soft low-contrast lighting, calm atmosphere, generous negative space, "
+        "historically accurate, cinematic 16:9 wide composition, no text, no letters, "
+        "no watermark, no photorealism, no 3D render, no gore."
+    )
+
+
+ROME_SOFTLY_STYLE_SENTENCE = rome_softly_style_sentence("city")
+
+
+def prompt_is_rome_softly(prompt_text: str) -> bool:
+    """True when the prompt already carries a Rome Softly style ending."""
+    lower = str(prompt_text or "").lower()
+    return ROME_SOFTLY_MARKER in lower or ROME_SOFTLY_LEGACY_MARKER in lower
+
+
+def ensure_rome_softly_style(prompt_text: str) -> str:
+    """Keep a prompt that already chose a palette. Otherwise end with City."""
+    text = " ".join(str(prompt_text or "").split())
+    if not text:
+        return ""
+    if prompt_is_rome_softly(text):
+        return text
+    if text[-1] not in ".!?":
+        text += "."
+    return text + " " + ROME_SOFTLY_STYLE_SENTENCE
+
+
+def _rome_softly_writer() -> str:
+    choices = "\n".join(
+        f"- {label}: {rome_softly_style_sentence(key)}"
+        for label, key in (
+            ("Rural, domestic, dawn, or dusk", "rural"),
+            ("City, political, or religious. Default for Rome in daylight", "city"),
+            ("Military or conflict, including an army camp at night", "military"),
+            ("Night, when darkness or stillness is the mood", "night"),
+            ("Modern America or any later age, including the Florida study", "america"),
+        )
+    )
+    return (
+        "Write one English flat illustration of the locked beat only. "
+        "Scene first: shot and framing, subject and action, place and date, light, then mood. "
+        "Use clean flat colour and simplified silhouettes. No black contour lines, no brush strokes, "
+        "no watercolour blooms, no gouache. Where smoke appears, write "
+        "\"thin straight wisps of smoke rising vertically, no stylized puffs\". "
+        "Soldiers stay distant: no gore, no close combat. No text in the image. "
+        "End with exactly one style sentence below, copied unchanged. "
+        "Do not add a second palette. Do not write photograph, motivated light, or soft focus.\n"
+        + choices
+    )
 
 VISUAL_STYLES: Dict[str, Dict[str, object]] = {
     "cinematic": {
@@ -138,40 +205,14 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
             "flux2": ROME_SOFTLY_STYLE_SENTENCE,
         },
         "models": {
-            "schnell": (
-                "Write a short English scene, then the Rome Softly palette sentence, then the "
-                "storybook style sentence. Gouache and watercolour on paper, not a photograph, "
-                "not anime, not a 3D render. One subject, large empty areas, no text."
-            ),
-            "zimage": (
-                "Write one English storybook illustration of the locked beat. Scene first. "
-                "Gouache and watercolour, soft light, low contrast, generous empty space. "
-                "Do not write photograph, cinematic, motivated light, or soft focus."
-            ),
-            "dev": (
-                "Write one English storybook illustration of the locked beat. Scene first, "
-                "palette sentence, then the frozen style sentence. Historically accurate for "
-                "the named century. No marble in an archaic scene. No text, no gore, no photorealism."
-            ),
-            "hidream": (
-                "Write one English storybook illustration of the locked beat only. Put the "
-                "scene first: time of day, place, period, and one action. Then one palette "
-                "sentence. End with the frozen painterly storybook sentence. Do not say "
-                "photograph, cinematic, motivated light, soft focus, aspect ratio, or lens. "
-                "No text, no gore, no 3D render."
-            ),
-            "flux2": (
-                "Write one English storybook illustration of the locked beat. Scene first. "
-                "Gouache and watercolour, not a photograph. No text and no gore."
-            ),
+            "schnell": _rome_softly_writer(),
+            "zimage": _rome_softly_writer(),
+            "dev": _rome_softly_writer(),
+            "hidream": _rome_softly_writer(),
+            "flux2": _rome_softly_writer(),
         },
     },
 }
-
-
-def prompt_is_rome_softly(prompt_text: str) -> bool:
-    """True when the stored prompt already carries the Rome Softly style sentence."""
-    return ROME_SOFTLY_MARKER in str(prompt_text or "").lower()
 
 
 def visual_style_choices() -> Dict[str, str]:

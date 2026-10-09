@@ -1215,6 +1215,26 @@ class RenderPromptTests(unittest.TestCase):
         self.assertNotIn("natural skin texture", lower)
         self.assertNotIn("motivated light", lower)
 
+    def test_hidream_rome_softly_keeps_a_flat_palette_ending(self):
+        prompt = (
+            "Wide view of the Tiber at dawn, Rome about 509 BC, distant figures only. "
+            "Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, "
+            "subtle paper grain texture, smooth gradient sky, limited muted palette of "
+            "apricot, dusk blue, olive green and parchment, soft low-contrast lighting, "
+            "calm atmosphere, generous negative space, historically accurate, "
+            "cinematic 16:9 wide composition, no text, no letters, no watermark, "
+            "no photorealism, no 3D render, no gore."
+        )
+        rendered = structure_prompt_for_model(prompt, "hidream-dev")
+        lower = rendered.lower()
+        self.assertIn("flat vector-style illustration", lower)
+        self.assertIn("apricot, dusk blue, olive green and parchment", lower)
+        self.assertIn("cinematic 16:9", lower)
+        self.assertIn("509 bc", lower)
+        self.assertNotIn("sharp photograph", lower)
+        self.assertNotIn("gouache", lower)
+        self.assertNotIn("medium-full shot", lower)
+
     def test_hidream_officer_keeps_face_framing_without_schnell_portrait(self):
         prompt = VisualIdentityTests.UAE_PROMPT
         rendered = structure_prompt_for_model(prompt, "hidream-dev")

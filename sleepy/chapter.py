@@ -13,7 +13,7 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import yaml
 
 from narration.scene_splitter import SceneSplitter
-from prompts.visual_styles import ROME_SOFTLY_STYLE_SENTENCE, prompt_is_rome_softly
+from prompts.visual_styles import ensure_rome_softly_style
 from utilis.project_paths import ProjectLayout
 
 LANGUAGES = ("Italian", "English")
@@ -148,15 +148,8 @@ def rome_softly_profile_keys(keys: Iterable[str]) -> List[str]:
 
 
 def ensure_rome_softly_prompt(prompt_text: str) -> str:
-    """Keep a hand-written scene, and end it with the storybook sentence."""
-    text = " ".join(str(prompt_text or "").split())
-    if not text:
-        return ""
-    if prompt_is_rome_softly(text):
-        return text
-    if text[-1] not in ".!?":
-        text += "."
-    return text + " " + ROME_SOFTLY_STYLE_SENTENCE
+    """Keep a prompt that already has one palette. Otherwise end with City."""
+    return ensure_rome_softly_style(prompt_text)
 
 
 def narration_path(project: str, language: str) -> str:

@@ -76,27 +76,27 @@ episode started.
 
 ## Style sentence
 
-Put this sentence, unchanged, at the end of every beat. It is the same
-sentence as `ROME_SOFTLY_STYLE_SENTENCE` in `prompts/visual_styles.py`.
+Style guide v2 (9 October 2026). Each still ends with exactly one flat
+style sentence. The palette words sit inside that sentence. City is
+`ROME_SOFTLY_STYLE_SENTENCE` in `prompts/visual_styles.py`, and it is
+what the app adds when a prompt has no ending. A prompt that already
+contains “flat vector-style illustration”, or the older “painterly
+storybook illustration”, is rendered as written. The app does not add
+“sharp photograph” or a medium-full face line. Do not write photograph,
+motivated light, soft focus, gouache, or watercolour. The ending itself
+contains the words “cinematic 16:9”; do not add a second cinematic slogan.
 
-> Painterly storybook illustration in gouache and watercolour on textured paper, soft brush edges, light ink accents, low contrast, soft light, generous empty space, no text, no letters, no photorealism, no 3D render, no gore.
+| Palette | Use | Words inside the ending |
+| --- | --- | --- |
+| Rural / domestic / dusk | Countryside, farms, rivers, dawn and dusk, the opening title | apricot, dusk blue, olive green and parchment |
+| City / political / religious | Rome by day: Forum, temples, gates, magistrates. The default | tuff stone grey, roman ochre, terracotta and muted bronze |
+| Military / conflict | Armies, camps, sieges, including a camp at night. Soldiers stay distant | iron grey, dark bronze, deep oxblood red and overcast slate sky, austere mood, soldiers kept at a distance, no close combat |
+| Night | Darkness or stillness is the mood, and the closing images | deep indigo and dusk blue with a single warm light source |
+| Modern America | Any later age, including the Florida study, even at night | cool slate blue, white marble and parchment |
 
-A prompt that contains “painterly storybook illustration” is rendered
-as written. The app does not add “sharp photograph” or a medium-full
-face line. Do not write photograph, cinematic, motivated light, or
-soft focus. Marker words that pull the other way: ultra detailed,
-epic sky, god rays, anime, crowds filling the frame, readable inscriptions.
+Military beats Night. America beats every other palette. City beats Rural inside Rome by day.
 
-## Palettes
-
-Append one palette sentence, unchanged, before the style sentence.
-The full set is in `docs/rome_softly_master_prompt.md`.
-
-| World | Palette sentence |
-| --- | --- |
-| Rome and Constantinople | Pigments of parchment cream, Roman ochre, terracotta, olive green, and Tiber brown, dusk blue in the shadows. |
-| United States | Cooler pigments of slate blue, white marble, and dusk blue, with a little warm candlelight. |
-| Night | Night pigments of indigo and dusk blue, one warm lamp or fire. |
+Smoke, when the scene has it: thin straight wisps of smoke rising vertically, no stylized puffs.
 
 Muted gold belongs only on the single Hagia Sophia interior plate.
 It is not part of the Constantinople series palette. A gold note on
@@ -172,20 +172,20 @@ clothes is the series design.
 
 ## Beat template
 
-One beat is one still. Fill the braces, then append the palette
-sentence and the style sentence.
+One beat is one still. Fill the braces, then append one flat style ending.
+The palette is inside that ending.
 
 ```
-{shot type}. {who}, {clothes from the table}, {one action}, {place from the table}, {century}. {framing sentence} {palette sentence} {style sentence}
+{shot type}. {who}, {clothes from the table}, {one action}, {place from the table}, {century}. {framing sentence} {one style ending}
 ```
 
 Example, Roman interior:
 
-> Interior. A senator in a wool toga seated on a wooden bench in the Curia, 1st century. Medium view, one figure, plain wall behind, empty floor. Pigments of parchment cream, Roman ochre, terracotta, olive green, and Tiber brown, dusk blue in the shadows. Painterly storybook illustration in gouache and watercolour on textured paper, soft brush edges, light ink accents, low contrast, soft light, generous empty space, no text, no letters, no photorealism, no 3D render, no gore.
+> Interior. A senator in a wool toga seated on a wooden bench in the Curia, 1st century. Medium view, one figure, plain wall behind, empty floor. Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, subtle paper grain texture, smooth gradient sky, limited muted palette of tuff stone grey, roman ochre, terracotta and muted bronze, soft low-contrast lighting, calm atmosphere, generous negative space, historically accurate, cinematic 16:9 wide composition, no text, no letters, no watermark, no photorealism, no 3D render, no gore.
 
 Example, United States road:
 
-> Road. Infantry in sack coats marching, small in the frame, on a dirt road, 1860s. Wide view, the column small in the frame, open sky above. Cooler pigments of slate blue, white marble, and dusk blue, with a little warm candlelight. Painterly storybook illustration in gouache and watercolour on textured paper, soft brush edges, light ink accents, low contrast, soft light, generous empty space, no text, no letters, no photorealism, no 3D render, no gore.
+> Road. Infantry in sack coats marching, small in the frame, on a dirt road, 1860s. Wide view, the column small in the frame, open sky above. Style: flat vector-style illustration, clean simplified shapes, simplified silhouettes, subtle paper grain texture, smooth gradient sky, limited muted palette of cool slate blue, white marble and parchment, soft low-contrast lighting, calm atmosphere, generous negative space, historically accurate, cinematic 16:9 wide composition, no text, no letters, no watermark, no photorealism, no 3D render, no gore.
 
 Write beats by hand from this template. Extract Beats will replace
 curated beats when the scene text no longer matches the stored source.
