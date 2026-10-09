@@ -38,6 +38,20 @@ def _measurement_json(stderr: str) -> Dict[str, str]:
     return {key: str(value) for key, value in values.items()}
 
 
+def configured_loudness(config: Optional[dict] = None):
+    """Loudness for the finished mix.
+
+    The pipeline's existing final is -17 LUFS / -1 dBTP when the keys are
+    absent. A Sleepy run passes its own targets and does not change this
+    default.
+    """
+    data = config or {}
+    return (
+        float(data.get("final_target_lufs", -17.0)),
+        float(data.get("final_true_peak_db", -1.0)),
+    )
+
+
 def normalize_loudness_in_place(
     audio_path,
     target_lufs: float = -19.0,

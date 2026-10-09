@@ -1195,6 +1195,26 @@ class RenderPromptTests(unittest.TestCase):
         self.assertFalse(drifted.ok)
         self.assertIn("retrieves", drifted.extras)
 
+    def test_hidream_rome_softly_keeps_the_storybook_sentence(self):
+        prompt = (
+            "Wide view of the Tiber at dawn, Rome about 509 BC, distant figures only. "
+            "A bearded king in a purple robe is a small shape on a timber porch. "
+            "Pigments of parchment cream, Roman ochre, terracotta, olive green, and Tiber brown. "
+            "Painterly storybook illustration in gouache and watercolour on textured paper, "
+            "soft brush edges, light ink accents, low contrast, soft light, generous empty space, "
+            "no text, no letters, no photorealism, no 3D render, no gore."
+        )
+        rendered = structure_prompt_for_model(prompt, "hidream-dev")
+        lower = rendered.lower()
+        self.assertIn("painterly storybook illustration", lower)
+        self.assertIn("509 bc", lower)
+        self.assertIn("distant figures", lower)
+        self.assertNotIn("sharp photograph", lower)
+        self.assertNotIn("sharp focus, clear air", lower)
+        self.assertNotIn("medium-full shot", lower)
+        self.assertNotIn("natural skin texture", lower)
+        self.assertNotIn("motivated light", lower)
+
     def test_hidream_officer_keeps_face_framing_without_schnell_portrait(self):
         prompt = VisualIdentityTests.UAE_PROMPT
         rendered = structure_prompt_for_model(prompt, "hidream-dev")

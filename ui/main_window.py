@@ -51,6 +51,7 @@ from PyQt6.QtCore import (Qt, pyqtSignal, QThread, QObject, QRect, QUrl,
                           QCoreApplication, QTimer, QEvent, QProcess,
                           QProcessEnvironment)
 from ui.pipeline_controller import PipelineController
+from ui.sleepy_panel import SleepyPanel
 from ui.comfy_controller import ComfyController
 from ui.widgets.workflow_selector import WorkflowSelector
 from ui.widgets.node_editor_stub import NodeEditorStub
@@ -298,7 +299,15 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_lightbox_tab(), "Lightbox")
         self.tabs.addTab(self._build_comfy_tab(), "Comfy lab")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
-        layout.addWidget(self.tabs)
+
+        self.mode_tabs = QTabWidget()
+        self.mode_tabs.setObjectName("modeTabs")
+        self.mode_tabs.tabBar().setObjectName("modeTabBar")
+        self.mode_tabs.addTab(self.tabs, "Main")
+        self.sleepy_panel = SleepyPanel(self.controller)
+        self.mode_tabs.addTab(self.sleepy_panel, "Sleepy")
+        self.mode_tabs.currentChanged.connect(self._on_mode_changed)
+        layout.addWidget(self.mode_tabs)
 
         self.setCentralWidget(central)
 
@@ -314,6 +323,9 @@ class MainWindow(QMainWindow):
         self._wire_signals()
 
         def _ctrl_s():
+            if self.mode_tabs.tabText(self.mode_tabs.currentIndex()) == "Sleepy":
+                self.sleepy_panel.save_all()
+                return
             tab_title = self.tabs.tabText(self.tabs.currentIndex())
             if tab_title == "Dubbing":
                 self._dub_save()
@@ -324,6 +336,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(_ctrl_s)
 
         def _ctrl_b():
+            if self.mode_tabs.tabText(self.mode_tabs.currentIndex()) != "Main":
+                return
             tab_title = self.tabs.tabText(self.tabs.currentIndex())
             if tab_title == "Lightbox":
                 self._lightbox_goto_bookmark()
@@ -1613,6 +1627,28 @@ class MainWindow(QMainWindow):
                 border-bottom: 2px solid #96BDE2;
             }
             QTabBar::tab:hover { background-color: #2A282F; }
+            QTabBar#modeTabBar::tab {
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px 28px;
+            }
+            QTabBar#modeTabBar::tab:selected {
+                color: #F4E8D0;
+                border-bottom: 2px solid #D7B58A;
+            }
+            QTabBar#sleepyTabBar::tab:selected {
+                border-bottom: 2px solid #D7B58A;
+            }
+            QListWidget {
+                background-color: #1D1B20;
+                color: #E6E1E5;
+                border: 1px solid #211F26;
+                border-radius: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: #96BDE2;
+                color: #0F0D13;
+            }
             QLabel { color: #8E8B90; }
             QProgressBar {
                 border: 1px solid #211F26;
@@ -7843,7 +7879,15 @@ class MainWindow(QMainWindow):
         subprocess.Popen([sys.executable] + sys.argv, cwd=os.getcwd())
         QCoreApplication.quit()
 
+    def _on_mode_changed(self, index: int) -> None:
+        if self.mode_tabs.tabText(index) == "Sleepy":
+            self.setWindowTitle("AI Cinematic Video Pipeline — Sleepy")
+        else:
+            self.setWindowTitle("AI Cinematic Video Pipeline")
+
     def closeEvent(self, event) -> None:
+        if hasattr(self, "sleepy_panel"):
+            self.sleepy_panel.shutdown()
         self.controller.cancel_pipeline()
         super().closeEvent(event)
 

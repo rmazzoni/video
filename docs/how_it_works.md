@@ -9,6 +9,7 @@ This document is the map. Specialized contracts live in:
 
 - `docs/image_prompt_pipeline.md` — locked beats, prompt rules, per-model style
 - `docs/show_types_and_models.md` — which still model, style, profile, and clip engine for each kind of show
+- `docs/sleep_history_stills.md` — Rome, Constantinople, and US sleep-video plates: one painted look, shared library, episode lock
 - `docs/real_political_figures.md` — named public figures, LoRA vs reference identity, 16 GB notes
 - `docs/comfy_role.md` — what ComfyUI owns vs what Qt owns
 - `docs/blender_role.md` — Blender as a later headless clip backend, not a new app

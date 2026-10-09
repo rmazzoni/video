@@ -5,6 +5,13 @@ from typing import Dict
 
 DEFAULT_VISUAL_STYLE = "cinematic"
 
+ROME_SOFTLY_STYLE_SENTENCE = (
+    "Painterly storybook illustration in gouache and watercolour on textured paper, "
+    "soft brush edges, light ink accents, low contrast, soft light, generous empty space, "
+    "no text, no letters, no photorealism, no 3D render, no gore."
+)
+ROME_SOFTLY_MARKER = "painterly storybook illustration"
+
 VISUAL_STYLES: Dict[str, Dict[str, object]] = {
     "cinematic": {
         "display_name": "Cinematic",
@@ -120,7 +127,51 @@ VISUAL_STYLES: Dict[str, Dict[str, object]] = {
             ),
         },
     },
+    "rome_softly": {
+        "display_name": "Rome Softly",
+        "fallback_preset": "illustration",
+        "prompt_anchors": {
+            "schnell": ROME_SOFTLY_STYLE_SENTENCE,
+            "zimage": ROME_SOFTLY_STYLE_SENTENCE,
+            "dev": ROME_SOFTLY_STYLE_SENTENCE,
+            "hidream": ROME_SOFTLY_STYLE_SENTENCE,
+            "flux2": ROME_SOFTLY_STYLE_SENTENCE,
+        },
+        "models": {
+            "schnell": (
+                "Write a short English scene, then the Rome Softly palette sentence, then the "
+                "storybook style sentence. Gouache and watercolour on paper, not a photograph, "
+                "not anime, not a 3D render. One subject, large empty areas, no text."
+            ),
+            "zimage": (
+                "Write one English storybook illustration of the locked beat. Scene first. "
+                "Gouache and watercolour, soft light, low contrast, generous empty space. "
+                "Do not write photograph, cinematic, motivated light, or soft focus."
+            ),
+            "dev": (
+                "Write one English storybook illustration of the locked beat. Scene first, "
+                "palette sentence, then the frozen style sentence. Historically accurate for "
+                "the named century. No marble in an archaic scene. No text, no gore, no photorealism."
+            ),
+            "hidream": (
+                "Write one English storybook illustration of the locked beat only. Put the "
+                "scene first: time of day, place, period, and one action. Then one palette "
+                "sentence. End with the frozen painterly storybook sentence. Do not say "
+                "photograph, cinematic, motivated light, soft focus, aspect ratio, or lens. "
+                "No text, no gore, no 3D render."
+            ),
+            "flux2": (
+                "Write one English storybook illustration of the locked beat. Scene first. "
+                "Gouache and watercolour, not a photograph. No text and no gore."
+            ),
+        },
+    },
 }
+
+
+def prompt_is_rome_softly(prompt_text: str) -> bool:
+    """True when the stored prompt already carries the Rome Softly style sentence."""
+    return ROME_SOFTLY_MARKER in str(prompt_text or "").lower()
 
 
 def visual_style_choices() -> Dict[str, str]:

@@ -136,6 +136,11 @@ Ken Burns on painted shapes is cleaner than on photographs.
 
 ## Show type: historical reconstruction (e.g. Roman Empire)
 
+The sleep-video series (painted Rome, Constantinople, and the United
+States, one look across episodes) is locked in
+`docs/sleep_history_stills.md`. That series uses HiDream and Cinematic
+Editorial Illustrator, not the photoreal stack below.
+
 Photoreal “living period” documentary. This is **not** a new still
 architecture. It is a period-lock problem.
 

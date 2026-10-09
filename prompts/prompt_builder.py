@@ -147,6 +147,12 @@ def structure_prompt_for_model(prompt_text: str, model_type: str, style_preset: 
 
     if not str(prompt_text or "").strip():
         return ""
+    from prompts.visual_styles import prompt_is_rome_softly
+
+    # Rome Softly prompts are written by hand, scene first, style sentence last.
+    # The photographic face clause and "sharp focus, clear air" undo that look.
+    if prompt_is_rome_softly(prompt_text):
+        return strip_haze_phrases(prompt_text)
     model = str(model_type or "").lower()
     model_key = _MODEL_TYPE_KEYS.get(model, "")
     is_schnell = model in {"flux-schnell", "schnell"}

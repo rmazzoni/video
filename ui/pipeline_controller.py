@@ -1302,13 +1302,22 @@ class PipelineWorker(QObject):
                     raise FileNotFoundError("No TTS audio found. Run Synthesise Audio first.")
 
                 if normalize_audio:
-                    from audio_loudness import normalize_loudness_in_place
+                    from audio_loudness import configured_loudness, normalize_loudness_in_place
 
                     self._emit_progress(90, "Equalizing final audio loudness...")
-                    result = normalize_loudness_in_place(audio_src, target_lufs=-17.0, trim_silence=False)
+                    target_lufs, true_peak_db = configured_loudness(self.config)
+                    result = normalize_loudness_in_place(
+                        audio_src,
+                        target_lufs=target_lufs,
+                        true_peak_db=true_peak_db,
+                        trim_silence=False,
+                    )
                     if not result.success:
                         raise RuntimeError(f"Audio normalization failed: {result.error}")
-                    self.log.emit(f"Normalized final audio to -17 LUFS: {audio_src}")
+                    self.log.emit(
+                        f"Normalized final audio to {target_lufs:g} LUFS "
+                        f"(true peak {true_peak_db:g} dBTP): {audio_src}"
+                    )
 
                 _before_a = _probe_duration(audio_src)
                 _pad_audio_edges(audio_src, AUDIO_LEAD_IN_S, AUDIO_TRAIL_OUT_S)
@@ -1616,8 +1625,11 @@ class PipelineWorker(QObject):
                     with open(model_prompts_path, "r", encoding="utf-8") as fh:
                         model_prompts = yaml.safe_load(fh) or {}
 
+                from sleepy.chapter import resolve_seed_offsets, variant_filename
+
                 base_seed = int(self.config.get("seed", 42))
-                seed_offsets = [-1, 0, 1]
+                # Missing key keeps Main on three neighbours. Sleepy passes [0].
+                seed_offsets = resolve_seed_offsets(self.config.get("seed_offsets", None))
                 model_variants = [
                     ("flux-schnell", "schnell"),
                     ("zimage-turbo", "zimage"),
@@ -1664,7 +1676,7 @@ class PipelineWorker(QObject):
 
                 def _variant_path(sid, model_key, beat_idx, v_idx):
                     return os.path.join(
-                        lightbox_dir, f"scene_{sid:03d}_{model_key}_b{beat_idx:02d}_v{v_idx}.png")
+                        lightbox_dir, variant_filename(sid, model_key, beat_idx, v_idx))
 
                 total_ops = sum(
                     len(seed_offsets)
@@ -2087,7 +2099,8 @@ class PipelineController(QObject):
 
         self._thread: Optional[QThread] = None
         self._worker: Optional[PipelineWorker] = None
-        self._pending_stages: List[Tuple[str, Optional[dict]]] = []
+        self._pending_stages: List[Tuple[str, Optional[dict], Optional[str]]] = []
+        self._gpu_owner = ""
 
     def set_project_path(self, path: str) -> None:
         normalized = os.path.abspath(path)
@@ -2166,14 +2179,43 @@ class PipelineController(QObject):
     def run_full_pipeline(self) -> None:
         self.run_pipeline("full")
 
-    def run_pipeline(self, stage: str = "full", extra_config: dict = None) -> None:
+    def is_busy(self) -> bool:
+        return self._thread is not None or bool(self._pending_stages)
+
+    def gpu_owner(self) -> str:
+        return self._gpu_owner
+
+    def reserve_gpu(self, owner: str) -> bool:
+        """Block HiDream and the voice model from sharing the GPU."""
+        name = str(owner or "").strip() or "other"
+        if self._gpu_owner or self.is_busy():
+            return False
+        self._gpu_owner = name
+        return True
+
+    def release_gpu(self, owner: str) -> None:
+        if self._gpu_owner == owner:
+            self._gpu_owner = ""
+
+    def run_pipeline(self, stage: str = "full", extra_config: dict = None, project_path: str = None) -> None:
+        """Run one stage. project_path leaves the Main project on the controller."""
+        if self._gpu_owner:
+            error = (
+                f"The GPU is in use ({self._gpu_owner}). "
+                "HiDream and the cloned voice do not run together."
+            )
+            self.log.error(error)
+            self.pipeline_finished.emit(False, error)
+            return
+
         if self._thread is not None:
-            self._pending_stages.append((stage, extra_config))
+            self._pending_stages.append((stage, extra_config, project_path))
             self.log.info(f"Pipeline busy — queued stage '{stage}' to run when idle "
                           f"({len(self._pending_stages)} queued).")
             return
 
-        if not self.project_path:
+        active_project = project_path or self.project_path
+        if not active_project:
             error = "No project path set."
             self.log.error(error)
             self.pipeline_finished.emit(False, error)
@@ -2184,7 +2226,7 @@ class PipelineController(QObject):
             merged_config.update(extra_config)
 
         self._thread = QThread()
-        self._worker = PipelineWorker(self.project_path, merged_config, self.root_dir, stage=stage)
+        self._worker = PipelineWorker(active_project, merged_config, self.root_dir, stage=stage)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -2214,6 +2256,22 @@ class PipelineController(QObject):
             return
         self._worker.cancel()
 
+    def cancel_owned(self, project_path: str) -> None:
+        """Cancel work for one project and leave another project's queue alone."""
+        if not project_path:
+            return
+        target = os.path.abspath(project_path)
+        kept = []
+        for stage, extra_config, queued_project in self._pending_stages:
+            queued = os.path.abspath(queued_project or self.project_path or "")
+            if queued == target:
+                continue
+            kept.append((stage, extra_config, queued_project))
+        self._pending_stages = kept
+        worker = self._worker
+        if worker is not None and os.path.abspath(worker.project_path) == target:
+            worker.cancel()
+
     @pyqtSlot(bool, str)
     def _handle_pipeline_finished(self, success: bool, payload: str) -> None:
         self.pipeline_finished.emit(success, payload)
@@ -2227,8 +2285,8 @@ class PipelineController(QObject):
         self._worker = None
         self._thread = None
         if self._pending_stages:
-            stage, extra_config = self._pending_stages.pop(0)
-            self.run_pipeline(stage, extra_config)
+            stage, extra_config, queued_project = self._pending_stages.pop(0)
+            self.run_pipeline(stage, extra_config, project_path=queued_project)
 
     def _load_recent_projects(self) -> List[str]:
         if not os.path.exists(self.recent_projects_path):
