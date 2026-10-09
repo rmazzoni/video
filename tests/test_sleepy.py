@@ -36,6 +36,8 @@ from sleepy.chapter import (
     save_stills,
     selections_for_stills,
     sleepy_pipeline_config,
+    still_file_path,
+    list_lightbox_stills,
 )
 
 
@@ -85,6 +87,7 @@ class SeedContractTests(unittest.TestCase):
         self.assertEqual(config["visual_style"], "rome_softly")
         self.assertEqual((config["image_width"], config["image_height"]), (1344, 768))
         self.assertEqual(config["lightbox_model_key"], "")
+        self.assertEqual(config["ken_burns_motion"], "sleepy")
         self.assertNotIn("schnell", config["enabled_image_models"])
 
 
@@ -187,6 +190,81 @@ class ChapterTests(unittest.TestCase):
             self.assertEqual(settings["scenes_language"], "Italian")
             self.assertTrue(is_sleepy_project(project))
 
+    def test_one_still_can_be_painted_without_the_others(self):
+        config = sleepy_pipeline_config(42, "rome_softly_ch01", replace=True, scene_id=4, beat=2)
+        self.assertEqual(config["lightbox_scene_id"], 4)
+        self.assertEqual(config["lightbox_beat_index"], 2)
+        self.assertEqual(config["lightbox_model_key"], "hidream")
+        self.assertTrue(config["force_lightbox_update"])
+        whole = sleepy_pipeline_config(42, "rome_softly_ch01")
+        self.assertEqual(whole["lightbox_scene_id"], 0)
+        self.assertEqual(whole["lightbox_model_key"], "")
+        with tempfile.TemporaryDirectory() as folder:
+            project = create_episode(folder, "Solo uno")
+            lightbox = os.path.join(project, "output", "lightbox")
+            os.makedirs(lightbox, exist_ok=True)
+            name = "scene_004_hidream_b02_v1.png"
+            Path(os.path.join(lightbox, name)).write_bytes(b"png")
+            rows = list_lightbox_stills(project)
+            self.assertEqual(
+                [(row["scene_id"], row["beat"], row["filename"]) for row in rows],
+                [(4, 2, name)],
+            )
+
+    def test_still_file_path_is_the_single_final_image(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = create_episode(folder, "Anteprima")
+            path = still_file_path(project, 3, 2)
+            self.assertTrue(path.endswith(os.path.join(
+                "output", "lightbox", "scene_003_hidream_b02_v1.png",
+            )))
+
+    def test_image_cues_are_one_scene_and_the_prompt_is_not_spoken(self):
+        script = (
+            "Note di produzione (non leggere): questa riga non è una scena.\n\n"
+            "[IMG 01] [IMMAGINE: Il Tevere al crepuscolo. Testo sobrio: \"Roma\".]\n\n"
+            "IMG 01 — PROMPT (EN): Wide view of the Tiber at dusk, distant huts. "
+            "Style: painterly storybook illustration in gouache and watercolour, no text.\n\n"
+            "Buonasera, e benvenuti.\n\n"
+            "Se siete arrivati fin qui, la giornata è stata lunga.\n\n"
+            "[IMG 02] [IMMAGINE: Uno studio a lume di lampada.]\n\n"
+            "IMG 02 — PROMPT (EN): A quiet study at night, one lamp, no people. "
+            "Style: painterly storybook illustration, no text.\n\n"
+            "In questa serie la racconteremo con calma.\n\n"
+            "[IMG 03] [IMMAGINE: Cielo stellato. Fine.]\n\n"
+            "IMG 03 — PROMPT (EN): A starry sky over a field. "
+            "Style: painterly storybook illustration, no text.\n\n"
+            "Tito Livio, Ab Urbe condita, praefatio; I.56–60 (Lucrezia); II.1–40 (Porsenna).\n\n"
+            "Dionigi di Alicarnasso, Antichità romane, libri IV–XI "
+            "(in particolare VI.13 sui Dioscuri, VI.95 sul foedus).\n\n"
+            "T. J. Cornell, The Beginnings of Rome, Routledge 1995.\n"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            project = create_episode(folder, "Novantasette")
+            scenes = publish_scenes(project, "Italian", script, stills=[{
+                "scene_id": 1,
+                "beat": 1,
+                "prompt": "The prompt I typed by hand.",
+            }])
+            self.assertEqual([scene["id"] for scene in scenes], [1, 2, 3])
+            self.assertIn("Buonasera", scenes[0]["text"])
+            self.assertIn("giornata è stata lunga", scenes[0]["text"])
+            self.assertNotIn("PROMPT", scenes[0]["text"])
+            self.assertNotIn("IMMAGINE", scenes[0]["text"])
+            self.assertNotIn("non leggere", scenes[0]["text"].lower())
+            self.assertEqual(scenes[1]["text"], "In questa serie la racconteremo con calma.")
+            self.assertEqual(scenes[2]["text"], "")
+            self.assertNotIn("Routledge", "\n".join(scene["text"] for scene in scenes))
+            stills = load_stills(project)
+            by_scene = {int(row["scene_id"]): row["prompt"] for row in stills}
+            self.assertEqual(by_scene[1], "The prompt I typed by hand.")
+            self.assertIn("quiet study", by_scene[2])
+            self.assertIn("starry sky", by_scene[3])
+            self.assertEqual(
+                [(row["scene_id"], row["beat"]) for row in stills],
+                [(1, 1), (2, 1), (3, 1)],
+            )
+
     def test_a_colon_in_the_title_is_saved_as_a_folder_name(self):
         self.assertEqual(episode_folder_name("Ep. 01: Il Tevere"), "Ep. 01 - Il Tevere")
         self.assertEqual(episode_folder_name('Roma "sottovoce"'), "Roma sottovoce")
@@ -259,6 +337,26 @@ class ChapterTests(unittest.TestCase):
             self.assertEqual(load_stills(project)[0]["prompt"], "Dawn on the river.")
             self.assertIn("Prima scena", Path(narration_path(project, "Italian")).read_text(encoding="utf-8"))
             self.assertTrue(os.path.isfile(os.path.join(project, "input", "narration_en.docx")))
+
+            revised = os.path.join(folder, "it_revised.docx")
+            _narration_docx(revised, [
+                ("Capitolo 1", "Heading 1"),
+                ("Il Tevere di notte scorre piano sotto la luna piena.", ""),
+                ("Nella capanna il fuoco è spento e la voce è più bassa.", ""),
+                ("Una terza scena arriva solo nel copione rivisto, con calma.", ""),
+            ])
+            updated = add_narration(project, "Italian", revised)
+            self.assertIn("luna piena", updated)
+            self.assertNotIn("Capitolo", updated)
+            self.assertEqual(load_scenes(project), scenes_before)
+            self.assertEqual(
+                Path(project, "input", "narration.txt").read_text(encoding="utf-8"),
+                narration_txt,
+            )
+            self.assertEqual(load_stills(project)[0]["prompt"], "Dawn on the river.")
+            self.assertIn("Tiber", Path(narration_path(project, "English")).read_text(encoding="utf-8"))
+            self.assertIn("luna piena", Path(narration_path(project, "Italian")).read_text(encoding="utf-8"))
+            self.assertTrue(os.path.isfile(os.path.join(project, "input", "narration_it.docx")))
             with self.assertRaises(ValueError) as raised:
                 align_narration_to_scenes(stored, scenes_before, "English")
             self.assertIn("picture scenes", str(raised.exception))
@@ -415,6 +513,7 @@ class VoiceChunkTests(unittest.TestCase):
 class SleepyPanelTests(unittest.TestCase):
     def test_panel_has_only_the_chapter_tabs(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6.QtGui import QColor, QImage
         from PyQt6.QtWidgets import QApplication, QPushButton
         from ui.pipeline_controller import PipelineController
         from ui.sleepy_panel import SleepyPanel, _EpisodeIntakeDialog
@@ -440,7 +539,10 @@ class SleepyPanelTests(unittest.TestCase):
         self.assertIn("Chapter lock for this episode", page_labels)
         self.assertNotIn("Chapter profile", page_labels)
         titles = [panel.inner_tabs.tabText(index) for index in range(panel.inner_tabs.count())]
-        self.assertEqual(titles, ["Episode", "Script", "Stills", "Voice", "Final"])
+        self.assertEqual(
+            titles,
+            ["Episode", "Script", "Stills", "Lightbox", "Voice", "Final"],
+        )
         window_source = Path("ui/main_window.py").read_text(encoding="utf-8")
         self.assertIn('self.mode_tabs.addTab(self.tabs, "Main")', window_source)
         self.assertIn('self.mode_tabs.addTab(self.sleepy_panel, "Sleepy")', window_source)
@@ -451,6 +553,22 @@ class SleepyPanelTests(unittest.TestCase):
         self.assertNotIn("QInputDialog", panel_source)
         labels = [button.text() for button in panel.findChildren(QPushButton)]
         self.assertIn("Add English Word", labels)
+        self.assertIn("Update Italian Word", labels)
+        self.assertIn("Generate this still", labels)
+        self.assertIn("Refresh", labels)
+        preview = panel._still_preview
+        preview.resize(320, 180)
+        with tempfile.TemporaryDirectory() as image_dir:
+            missing = os.path.join(image_dir, "scene_001_hidream_b01_v1.png")
+            preview.show_path(missing)
+            self.assertIn("Not painted yet", preview.text())
+            painted = os.path.join(image_dir, "scene_002_hidream_b01_v1.png")
+            image = QImage(8, 8, QImage.Format.Format_RGB32)
+            image.fill(QColor(180, 140, 90))
+            self.assertTrue(image.save(painted, "PNG"))
+            preview.show_path(painted)
+            self.assertFalse(preview.pixmap().isNull())
+            self.assertEqual(preview.text(), "")
         panel.deleteLater()
         app.processEvents()
 

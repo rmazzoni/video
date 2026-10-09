@@ -84,12 +84,16 @@ def motion_cache_key(motion_style: str, fps: int = 24) -> dict:
     }
 
 
-def _pan_aligns(clip_index: int) -> tuple:
+def _pan_aligns(clip_index: int, motion_style: str = "auto") -> tuple:
     """Crop x origin as a 0=left … 1=right fraction at start and end.
 
-    Half the available slack, kept in the middle. A full left-to-right sweep
-    looks fast and stair-steps.
+    Auto uses half the spare margin, kept in the middle. A full left-to-right
+    sweep looks fast and stair-steps. Sleepy uses the small 3–5% margin itself.
     """
+    if str(motion_style or "auto") == "sleepy":
+        if pan_direction(clip_index) == "right":
+            return SLEEPY_PAN_NEAR, SLEEPY_PAN_FAR
+        return SLEEPY_PAN_FAR, SLEEPY_PAN_NEAR
     if pan_direction(clip_index) == "right":
         return 0.25, 0.75
     return 0.75, 0.25
@@ -117,6 +121,7 @@ def interpolated_crop(
     clip_index: int,
     zoom_start: float = ZOOM_START,
     zoom_end: float = ZOOM_END,
+    motion_style: str = "auto",
 ) -> tuple:
     """
     Linearly interpolate the crop rectangle from the start window to the end
@@ -124,7 +129,11 @@ def interpolated_crop(
     frame center moving in one direction for the whole clip.
     """
     t = max(0.0, min(1.0, float(t)))
-    start_align, end_align = _pan_aligns(clip_index)
+    style = str(motion_style or "auto")
+    if style == "sleepy":
+        zoom_start = SLEEPY_ZOOM_START
+        zoom_end = SLEEPY_ZOOM_END
+    start_align, end_align = _pan_aligns(clip_index, style)
     start = crop_window(img_w, img_h, zoom_start, start_align)
     end = crop_window(img_w, img_h, zoom_end, end_align)
     return tuple(a + (b - a) * t for a, b in zip(start, end))
@@ -136,6 +145,14 @@ def interpolated_crop(
 # of the path, so a 2s clip does not rush through the whole move.
 OPTIMAL_SHOT_SECONDS = 12.0
 MOTION_CAP = OPTIMAL_SHOT_SECONDS
+
+# Sleepy holds one picture for the whole spoken scene, about 75–80 seconds.
+# Zoom runs from 3% to 5%. The pan crosses that same spare margin. Progress
+# uses the whole clip, so the picture never freezes and a phone stays awake.
+SLEEPY_ZOOM_START = 1.03
+SLEEPY_ZOOM_END = 1.05
+SLEEPY_PAN_NEAR = 0.05
+SLEEPY_PAN_FAR = 0.95
 
 
 def required_shot_count(audio_seconds: float, shot_seconds: float = OPTIMAL_SHOT_SECONDS) -> int:
@@ -161,25 +178,38 @@ def ken_burns_vf(
     clip_index: int,
     fps: int = 24,
     nframes: Optional[int] = None,
+    motion_style: str = "auto",
 ) -> str:
-    """ffmpeg zoompan matching interpolated_crop, with hold after MOTION_CAP.
+    """ffmpeg zoompan matching interpolated_crop.
 
-    crop w/h are configured once with t=NAN, so a t-based crop graph fails on
-    FFmpeg 8. zoompan evaluates zoom/x/y per output frame. A 4x pre-scale keeps
-    those steps subpixel on the output frame. Progress is always over
-    MOTION_CAP, not the clip length, so short clips move slowly.
+    Auto holds the end crop after MOTION_CAP. Sleepy keeps drifting until the
+    last frame. crop w/h are configured once with t=NAN, so a t-based crop
+    graph fails on FFmpeg 8. zoompan evaluates zoom/x/y per output frame. A 4x
+    pre-scale keeps those steps subpixel on the output frame. Auto progress is
+    over MOTION_CAP, not the clip length, so short clips move slowly.
     """
-    frames_motion = max(1.0, MOTION_CAP * float(fps))
     if nframes is None:
         nframes = ken_burns_frame_count(duration, fps)
-    p = f"min(1\\,on/{frames_motion:.6f})"
-    z_expr = f"{ZOOM_START:.6f}+({ZOOM_END - ZOOM_START:.6f})*{p}"
+    style = str(motion_style or "auto")
+    if style == "sleepy":
+        zoom_start = SLEEPY_ZOOM_START
+        zoom_end = SLEEPY_ZOOM_END
+        # Reach the end crop on the last frame. There is no frozen hold.
+        span = max(1.0, float(int(nframes) - 1))
+        progress = f"min(1\\,on/{span:.6f})"
+    else:
+        zoom_start = ZOOM_START
+        zoom_end = ZOOM_END
+        frames_motion = max(1.0, MOTION_CAP * float(fps))
+        progress = f"min(1\\,on/{frames_motion:.6f})"
+        style = "auto"
     # Linear x between the two crop origins. Multiplying the live slack by
     # progress sweeps the whole frame; these aligns stay in the middle.
-    start_align, end_align = _pan_aligns(clip_index)
-    x0 = f"(iw-iw/{ZOOM_START:.6f})*{start_align:.6f}"
-    x1 = f"(iw-iw/{ZOOM_END:.6f})*{end_align:.6f}"
-    x_expr = f"{x0}+({x1}-{x0})*{p}"
+    start_align, end_align = _pan_aligns(clip_index, style)
+    z_expr = f"{zoom_start:.6f}+({zoom_end - zoom_start:.6f})*{progress}"
+    x0 = f"(iw-iw/{zoom_start:.6f})*{start_align:.6f}"
+    x1 = f"(iw-iw/{zoom_end:.6f})*{end_align:.6f}"
+    x_expr = f"{x0}+({x1}-{x0})*{progress}"
     # Even dimensions: zoompan rejects odd scaled sizes.
     return (
         f"scale=trunc(iw*{ZOOM_PRESCALE}/2)*2:trunc(ih*{ZOOM_PRESCALE}/2)*2:flags=lanczos,"
@@ -205,7 +235,8 @@ class KenBurnsGenerator:
         :param fps: frames per second
         :param duration: clip length in seconds
         :param seed: kept for caller compatibility; auto motion is deterministic
-        :param motion_style: "auto" = one-way pan + slight zoom-in, "static" = no motion
+        :param motion_style: "auto" = one-way pan + slight zoom-in,
+            "sleepy" = 3–5% drift for the whole clip, "static" = no motion
         :param output_size: optional (width, height); default is 1920x1080 for 16:9
         """
         self.output_dir = output_dir
@@ -267,6 +298,7 @@ class KenBurnsGenerator:
             vf = ken_burns_vf(
                 img_w, img_h, out_w, out_h, clip_dur, pan_number,
                 fps=self.fps, nframes=nframes,
+                motion_style=self.motion_style,
             )
             # One still → zoompan emits nframes. Looping plus -r restamps
             # timestamps and makes the pan stutter.

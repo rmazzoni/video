@@ -255,6 +255,18 @@ def synthesize_scenes(
         except (TypeError, ValueError):
             continue
 
+    missing_speech = [
+        int(scene["id"])
+        for scene in scenes
+        if not str(scene.get("text") or "").strip()
+    ]
+    if missing_speech:
+        listed = ", ".join(f"{scene_id:03d}" for scene_id in missing_speech)
+        raise RuntimeError(
+            f"Scenes {listed} have an image but no spoken lines. "
+            "Add a line, or remove that scene, before speaking."
+        )
+
     pending = []
     tokens = {}
     for scene in scenes:

@@ -4,6 +4,8 @@ from video.ken_burns_generator import (
     MOTION_CAP,
     MOTION_VERSION,
     OPTIMAL_SHOT_SECONDS,
+    SLEEPY_ZOOM_END,
+    SLEEPY_ZOOM_START,
     ZOOM_END,
     ZOOM_PRESCALE,
     ZOOM_START,
@@ -123,3 +125,43 @@ class KenBurnsPanTests(unittest.TestCase):
         self.assertEqual(key["motion_version"], MOTION_VERSION)
         self.assertEqual(key["motion_style"], "auto")
         self.assertNotEqual(key, motion_cache_key("static", 24))
+
+    def test_sleepy_drift_is_three_to_five_percent_for_the_whole_clip(self):
+        img_w, img_h = 1344.0, 768.0
+        frames = ken_burns_frame_count(80.0, 24)
+        vf = ken_burns_vf(
+            img_w, img_h, 1920, 1080, duration=80.0, clip_index=0,
+            nframes=frames, motion_style="sleepy",
+        )
+        self.assertIn(f"{SLEEPY_ZOOM_START:.6f}", vf)
+        self.assertIn(f"{SLEEPY_ZOOM_END - SLEEPY_ZOOM_START:.6f}", vf)
+        self.assertIn(f"min(1\\,on/{frames - 1:.6f})", vf)
+        self.assertNotIn(f"min(1\\,on/{MOTION_CAP * 24:.6f})", vf)
+        self.assertIn("(iw-iw/1.030000)*0.050000", vf)
+        self.assertIn("(iw-iw/1.050000)*0.950000", vf)
+        self.assertNotIn("1.120000", vf)
+        vf_left = ken_burns_vf(
+            img_w, img_h, 1920, 1080, duration=80.0, clip_index=1,
+            motion_style="sleepy",
+        )
+        self.assertIn("(iw-iw/1.030000)*0.950000", vf_left)
+        self.assertIn("(iw-iw/1.050000)*0.050000", vf_left)
+        for clip_index, sign in ((0, 1.0), (1, -1.0)):
+            start = interpolated_crop(img_w, img_h, 0.0, clip_index, motion_style="sleepy")
+            mid = interpolated_crop(img_w, img_h, 0.5, clip_index, motion_style="sleepy")
+            end = interpolated_crop(img_w, img_h, 1.0, clip_index, motion_style="sleepy")
+            def center(crop):
+                return crop[2] + crop[0] / 2.0
+            travel = (center(end) - center(start)) / img_w
+            self.assertGreater(sign * travel, 0.03)
+            self.assertLess(sign * travel, 0.05)
+            if sign > 0:
+                self.assertLess(center(start), center(mid))
+                self.assertLess(center(mid), center(end))
+            else:
+                self.assertGreater(center(start), center(mid))
+                self.assertGreater(center(mid), center(end))
+            self.assertGreaterEqual(start[2], -1e-6)
+            self.assertLessEqual(start[2] + start[0], img_w + 1e-6)
+            self.assertLessEqual(end[2] + end[0], img_w + 1e-6)
+            self.assertAlmostEqual(start[3] + start[1] / 2.0, img_h / 2.0, places=6)

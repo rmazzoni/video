@@ -1800,11 +1800,22 @@ class PipelineWorker(QObject):
                 total = len(all_work)
                 failed_fc: list = []
                 from video.ken_burns_generator import OPTIMAL_SHOT_SECONDS
+                motion_name = str(self.config.get("ken_burns_motion", "auto"))
+                if clip_engine == "ken_burns" and motion_name == "sleepy":
+                    pace = (
+                        " Each still drifts for the whole scene, "
+                        "a pan and zoom of about 3–5%."
+                    )
+                else:
+                    pace = (
+                        f" (about {OPTIMAL_SHOT_SECONDS:.0f}s each "
+                        "when the shot counter is green)."
+                    )
                 self.log.emit(
                     f"Final clips use the current Lightbox selection: {total} still(s) "
                     f"across {len(selections)} scene(s). Each scene's dubbed audio is "
                     f"split across its selected stills"
-                    f" (about {OPTIMAL_SHOT_SECONDS:.0f}s each when the shot counter is green)."
+                    f"{pace}"
                 )
                 keep_names = {
                     self._final_clip_name(sid, v_idx)

@@ -6,6 +6,7 @@ Sleepy paints one HiDream still per beat and does not write Main's settings.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from typing import Dict, Iterable, List, Sequence, Tuple
 
@@ -96,6 +97,49 @@ def filenames_for_offsets(
         variant_filename(scene_id, model_key, beat_idx, v_idx)
         for v_idx, _offset in enumerate(resolve_seed_offsets(offsets), 1)
     ]
+
+
+def still_file_path(project: str, scene_id: int, beat: int) -> str:
+    """The one final still for a beat: scene_NNN_hidream_bNN_v1.png."""
+    filename = filenames_for_offsets(int(scene_id), int(beat), [0])[0]
+    return os.path.join(ProjectLayout(project).lightbox, filename)
+
+
+_STILL_NAME = re.compile(
+    r"^scene_(\d+)_([A-Za-z0-9]+)_b(\d+)_v(\d+)\.png$",
+    re.IGNORECASE,
+)
+
+
+def list_lightbox_stills(project: str) -> List[dict]:
+    """Painted stills in this episode's lightbox, in scene and beat order."""
+    folder = ProjectLayout(project).lightbox
+    if not os.path.isdir(folder):
+        return []
+    rows = []
+    for name in os.listdir(folder):
+        if not name.lower().endswith(".png"):
+            continue
+        match = _STILL_NAME.match(name)
+        if match:
+            scene_id = int(match.group(1))
+            model = match.group(2).lower()
+            beat = int(match.group(3))
+            variant = int(match.group(4))
+        else:
+            scene_id, model, beat, variant = 0, "", 0, 0
+        rows.append({
+            "scene_id": scene_id,
+            "model": model,
+            "beat": beat,
+            "variant": variant,
+            "filename": name,
+            "path": os.path.join(folder, name),
+        })
+    rows.sort(key=lambda row: (
+        int(row["scene_id"]), int(row["beat"]), int(row["variant"]), row["filename"],
+    ))
+    return rows
 
 
 def rome_softly_profile_keys(keys: Iterable[str]) -> List[str]:
@@ -405,7 +449,151 @@ def write_text(path: str, text: str) -> None:
         handle.write(text)
 
 
+# One picture per [IMG NN] cue. The English prompt under the cue is not spoken.
+_IMG_CUE = re.compile(r"^\s*\[IMG\s*(\d+)\]", re.IGNORECASE)
+_PROMPT_LINE = re.compile(
+    r"^\s*IMG\s*(\d+)\s*[—–\-:]+?\s*PROMPT\s*\(\s*EN\s*\)\s*:\s*(.*)$",
+    re.IGNORECASE,
+)
+_PROMPT_BARE = re.compile(r"^\s*PROMPT\s*\(\s*EN\s*\)\s*:\s*(.*)$", re.IGNORECASE)
+_STAGE_DIRECTION = re.compile(r"^\s*\[IMMAGINE\s*:", re.IGNORECASE)
+_PRODUCTION_NOTE = re.compile(r"\(\s*non leggere\s*\)", re.IGNORECASE)
+_CHAPTER_TITLE = re.compile(r"^(?:capitolo|chapter)\b", re.IGNORECASE)
+
+
+def _narration_paragraphs(text: str) -> List[str]:
+    paragraphs = []
+    for block in re.split(r"\n{2,}", str(text or "")):
+        cleaned = " ".join(line.strip() for line in block.splitlines() if line.strip())
+        if cleaned:
+            paragraphs.append(cleaned)
+    return paragraphs
+
+
+def _looks_like_source_note(paragraph: str) -> bool:
+    """A works-cited line, not a sentence of the sleep narration."""
+    text = " ".join(str(paragraph or "").split())
+    if not text:
+        return False
+    if _PRODUCTION_NOTE.search(text):
+        return True
+    loci = re.findall(r"\b[IVXLC]{1,8}\.\d+", text)
+    if len(loci) >= 2 or (loci and text.count(";") >= 1):
+        return True
+    if re.search(
+        r"\b(?:CIL\b|Ab Urbe condita|Routledge|University Press|Harvard|Oxford University)\b",
+        text,
+    ):
+        return True
+    has_year = re.search(r"\b(?:1[5-9]\d{2}|20\d{2})\b", text)
+    if (
+        has_year
+        and len(text.split()) <= 45
+        and text.count(",") >= 1
+        and not re.search(r"\b(?:che|quando|perché|perche|oggi|stasera)\b", text, re.IGNORECASE)
+    ):
+        return True
+    return False
+
+
+def _strip_trailing_sources(paragraphs: Sequence[str]) -> List[str]:
+    """Drop a bibliography that follows the last picture. Spoken lines stay."""
+    rows = list(paragraphs or [])
+    for index, paragraph in enumerate(rows):
+        if not _looks_like_source_note(paragraph):
+            continue
+        tail = rows[index:]
+        if len(tail) < 3:
+            continue
+        hits = sum(1 for item in tail if _looks_like_source_note(item))
+        if hits >= 3 and hits * 2 >= len(tail):
+            return rows[:index]
+    return rows
+
+
+def parse_image_script(text: str) -> List[dict] | None:
+    """One scene per ``[IMG NN]`` cue.
+
+    Returns None when the script has no image cues, so a plain narration
+    still splits on paragraphs. Spoken text is the paragraphs after each
+    cue. Stage directions, the English prompt, the production note, and a
+    trailing bibliography are not spoken. The prompt is kept for the still.
+    """
+    paragraphs = _narration_paragraphs(text)
+    if not any(_IMG_CUE.match(paragraph) for paragraph in paragraphs):
+        return None
+    blocks: Dict[int, dict] = {}
+    order: List[int] = []
+    current: int | None = None
+    for paragraph in paragraphs:
+        cue = _IMG_CUE.match(paragraph)
+        if cue:
+            number = int(cue.group(1))
+            if number not in blocks:
+                blocks[number] = {"id": number, "spoken": [], "prompt": ""}
+                order.append(number)
+            current = number
+            continue
+        prompt_line = _PROMPT_LINE.match(paragraph)
+        if prompt_line:
+            number = int(prompt_line.group(1))
+            if number not in blocks:
+                blocks[number] = {"id": number, "spoken": [], "prompt": ""}
+                order.append(number)
+            body = str(prompt_line.group(2) or "").strip()
+            if body and not blocks[number]["prompt"]:
+                blocks[number]["prompt"] = body
+            current = number
+            continue
+        if current is None:
+            continue
+        bare = _PROMPT_BARE.match(paragraph)
+        if bare:
+            body = str(bare.group(1) or "").strip()
+            if body and not blocks[current]["prompt"]:
+                blocks[current]["prompt"] = body
+            continue
+        if _STAGE_DIRECTION.match(paragraph) or _PRODUCTION_NOTE.search(paragraph):
+            continue
+        if _CHAPTER_TITLE.match(paragraph) and len(paragraph) < 80:
+            continue
+        blocks[current]["spoken"].append(paragraph)
+    if order:
+        last = blocks[order[-1]]
+        last["spoken"] = _strip_trailing_sources(last["spoken"])
+    return [
+        {
+            "id": number,
+            "text": "\n\n".join(blocks[number]["spoken"]),
+            "prompt": blocks[number]["prompt"],
+        }
+        for number in order
+    ]
+
+
+def uses_image_cues(text: str) -> bool:
+    return parse_image_script(text) is not None
+
+
+def image_prompt_map(text: str) -> Dict[int, str]:
+    parsed = parse_image_script(text)
+    if not parsed:
+        return {}
+    return {
+        int(row["id"]): str(row.get("prompt") or "")
+        for row in parsed
+        if str(row.get("prompt") or "").strip()
+    }
+
+
 def split_scenes(text: str) -> List[dict]:
+    """Image cues become one scene each. Plain text stays one paragraph each."""
+    image_scenes = parse_image_script(text)
+    if image_scenes is not None:
+        return [
+            {"id": int(row["id"]), "text": str(row.get("text") or "")}
+            for row in image_scenes
+        ]
     return SceneSplitter(min_sentence_length=MIN_SCENE_CHARS).split_into_scenes(
         text or "",
         method="paragraph",
@@ -447,7 +635,8 @@ def align_narration_to_scenes(
         raise ValueError(
             f"{language} has {len(spoken)} scenes and the episode has "
             f"{len(pictures)} picture scenes. The pictures stay on the original "
-            "scenes. Match the paragraph count before speaking this language."
+            "scenes. Match the scene count before speaking this language. "
+            "An image script uses one scene per [IMG] cue."
         )
     return [
         {"id": int(picture["id"]), "text": str(spoken_row["text"])}
@@ -478,17 +667,57 @@ def load_scenes(project: str) -> List[dict]:
     return cleaned
 
 
-def publish_scenes(project: str, language: str, text: str) -> List[dict]:
-    """Write scenes from one language and mirror that text to narration.txt."""
+def stills_for_scenes(
+    scenes: Sequence[dict],
+    stills: Sequence[dict],
+    script_text: str = "",
+) -> List[dict]:
+    """One still per scene. A prompt already typed is kept.
+
+    Empty stills take the English prompt written under that image cue.
+    """
+    prompts = image_prompt_map(script_text)
+    aligned = align_stills(scenes, stills)
+    if not prompts:
+        return aligned
+    filled = []
+    for row in aligned:
+        prompt = str(row.get("prompt") or "")
+        if int(row["beat"]) == 1 and not prompt.strip():
+            scripted = prompts.get(int(row["scene_id"]), "")
+            if scripted:
+                prompt = scripted
+        filled.append({
+            "scene_id": int(row["scene_id"]),
+            "beat": int(row["beat"]),
+            "prompt": prompt,
+        })
+    return filled
+
+
+def publish_scenes(
+    project: str,
+    language: str,
+    text: str,
+    stills: Sequence[dict] | None = None,
+) -> List[dict]:
+    """Write scenes from one language and mirror that text to narration.txt.
+
+    Image cues also fill empty still prompts. A prompt already stored for
+    that scene is left as it was.
+    """
     language = normalize_language(language)
     scenes = split_scenes(text)
     if not scenes:
         raise ValueError(
-            "No scenes were produced. Leave a blank line between paragraphs."
+            "No scenes were produced. Leave a blank line between paragraphs, "
+            "or mark each picture with [IMG 01]."
         )
     write_text(narration_path(project, language), text)
     write_text(os.path.join(project, "input", "narration.txt"), text)
     _write_yaml(scenes_path(project), {"scenes": scenes})
+    existing = list(stills) if stills is not None else load_stills(project)
+    save_stills(project, stills_for_scenes(scenes, existing, text))
     settings = load_episode_settings(project)
     settings["scenes_language"] = language
     settings["language"] = language
@@ -635,8 +864,19 @@ def write_selections(project: str, selections: dict) -> str:
     return path
 
 
-def sleepy_pipeline_config(seed: int, profile_key: str, replace: bool = False) -> dict:
-    """extra_config for a Sleepy run. This is not saved into Main settings."""
+def sleepy_pipeline_config(
+    seed: int,
+    profile_key: str,
+    replace: bool = False,
+    scene_id: int = 0,
+    beat: int = 0,
+) -> dict:
+    """extra_config for a Sleepy run. This is not saved into Main settings.
+
+    A scene id limits the run to that scene. A beat limits it to one still.
+    """
+    scene_id = int(scene_id or 0)
+    beat = int(beat or 0)
     return {
         "visual_style": "rome_softly",
         "style_preset": "illustration",
@@ -653,13 +893,13 @@ def sleepy_pipeline_config(seed: int, profile_key: str, replace: bool = False) -
         "hidream_sampler": "euler",
         "hidream_scheduler": "normal",
         "clip_engine": "ken_burns",
-        "ken_burns_motion": "auto",
+        "ken_burns_motion": "sleepy",
         "project_profile_key": profile_key or DEFAULT_PROFILE_KEY,
         "final_target_lufs": SLEEPY_TARGET_LUFS,
         "final_true_peak_db": SLEEPY_TRUE_PEAK_DB,
-        "lightbox_scene_id": 0,
-        "lightbox_beat_index": 0,
-        "lightbox_model_key": "",
+        "lightbox_scene_id": scene_id,
+        "lightbox_beat_index": beat,
+        "lightbox_model_key": "hidream" if scene_id else "",
         "force_lightbox_update": bool(replace),
         "fps": 24,
     }

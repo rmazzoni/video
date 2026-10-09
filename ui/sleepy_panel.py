@@ -10,12 +10,14 @@ from __future__ import annotations
 import os
 
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
+from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,6 +26,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -45,6 +48,7 @@ from sleepy.chapter import (
     ensure_rome_softly_prompt,
     filenames_for_offsets,
     is_sleepy_project,
+    list_lightbox_stills,
     load_app_prefs,
     load_episode_settings,
     load_scenes,
@@ -63,7 +67,9 @@ from sleepy.chapter import (
     scene_counts,
     selections_for_stills,
     sleepy_pipeline_config,
+    still_file_path,
     source_config_dir,
+    uses_image_cues,
     write_model_prompts,
     write_selections,
     write_text,
@@ -94,6 +100,59 @@ class _VoiceWorker(QObject):
             self.finished.emit(False, str(exc))
         except Exception as exc:
             self.finished.emit(False, str(exc))
+
+
+class _StillPreview(QLabel):
+    """Shows the painted still for the prompt that is open."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(320, 180)
+        self.setStyleSheet(
+            "background:#1D1B20; color:#B7B3B8; border:1px solid #3A3640;"
+        )
+        self._path = ""
+        self._source = QPixmap()
+        self._painting = False
+        self.setText("Select a still to see the painted image.")
+
+    def show_path(self, path: str) -> None:
+        self._path = path or ""
+        image = QImage(self._path) if self._path and os.path.isfile(self._path) else QImage()
+        self._source = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+        self._paint()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._paint()
+
+    def _paint(self) -> None:
+        if self._painting:
+            return
+        self._painting = True
+        try:
+            if self._source.isNull():
+                self.setPixmap(QPixmap())
+                if not self._path:
+                    self.setText("Select a still to see the painted image.")
+                elif not os.path.isfile(self._path):
+                    self.setText("Not painted yet.\n" + os.path.basename(self._path))
+                else:
+                    self.setText("The still file could not be read.")
+                return
+            target = self.contentsRect().size()
+            if target.width() < 2 or target.height() < 2:
+                return
+            scaled = self._source.scaled(
+                target,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.setText("")
+            self.setPixmap(scaled)
+        finally:
+            self._painting = False
 
 
 class _EpisodeIntakeDialog(QDialog):
@@ -338,8 +397,10 @@ class SleepyPanel(QWidget):
         self.inner_tabs.addTab(self._build_episode_tab(), "Episode")
         self.inner_tabs.addTab(self._build_script_tab(), "Script")
         self.inner_tabs.addTab(self._build_stills_tab(), "Stills")
+        self.inner_tabs.addTab(self._build_lightbox_tab(), "Lightbox")
         self.inner_tabs.addTab(self._build_voice_tab(), "Voice")
         self.inner_tabs.addTab(self._build_final_tab(), "Final")
+        self.inner_tabs.currentChanged.connect(self._on_inner_tab)
         root.addWidget(self.inner_tabs, 1)
 
         self._progress = QProgressBar()
@@ -413,7 +474,8 @@ class SleepyPanel(QWidget):
 
         layout.addWidget(self._heading("What this tab does not do"))
         limits = QLabel(
-            "No preview stills, no extra seeds, no other image models, and no Edge TTS. "
+            "No extra seeds, no draft variants, no other image models, and no Edge TTS. "
+            "The Stills tab shows the painted file. "
             "These settings stay in the episode and in config/sleepy.yaml. "
             "They are not written into Main settings."
         )
@@ -428,8 +490,13 @@ class SleepyPanel(QWidget):
         layout.addWidget(self._heading("Narration"))
         hint = QLabel(
             "Picture scenes come from the Italian narration. "
+            "A script with [IMG 01] cues becomes one scene per image, "
+            "about one picture every 75–80 seconds. "
+            "The English prompt under each cue is the still, and it is not spoken. "
+            "A script without those cues still uses one paragraph per scene. "
+            "Update Italian Word loads a revised Italian file. "
             "Add the English Word file when the translation is ready. "
-            "One body paragraph is one scene. English does not move the pictures."
+            "Neither file moves the pictures until you split again."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -442,12 +509,15 @@ class SleepyPanel(QWidget):
         row = QHBoxLayout()
         save = QPushButton("Save script")
         save.clicked.connect(self.save_all)
+        update_italian = QPushButton("Update Italian Word")
+        update_italian.clicked.connect(self._update_italian_narration)
         add_english = QPushButton("Add English Word")
         add_english.clicked.connect(self._add_english_narration)
         split = QPushButton("Split into scenes")
         split.clicked.connect(self._split)
-        self._action_buttons.extend([save, add_english, split])
+        self._action_buttons.extend([save, update_italian, add_english, split])
         row.addWidget(save)
+        row.addWidget(update_italian)
         row.addWidget(add_english)
         row.addWidget(split)
         row.addStretch(1)
@@ -460,7 +530,8 @@ class SleepyPanel(QWidget):
         layout.addWidget(self._heading("Final stills"))
         hint = QLabel(
             "One English HiDream prompt per still. The Rome Softly sentence is added "
-            "if you leave it out. Generate paints the final file only: "
+            "if you leave it out. Generate this still paints the prompt you are "
+            "editing, and the image appears on the right: "
             + filenames_for_offsets(1, 1, [0])[0].replace("scene_001_hidream_b01", "scene_NNN_hidream_bNN")
         )
         hint.setWordWrap(True)
@@ -484,8 +555,20 @@ class SleepyPanel(QWidget):
         self._prompt.setPlaceholderText("Time of day, place, period, and one action. Then the palette.")
         self._prompt.textChanged.connect(self._store_prompt)
         right_layout.addWidget(self._prompt, 1)
+        generate_one = QPushButton("Generate this still")
+        generate_one.setToolTip(
+            "Paint the prompt in this box. Other stills can wait."
+        )
+        generate_one.clicked.connect(self._generate_current)
+        self._action_buttons.append(generate_one)
+        right_layout.addWidget(generate_one)
         splitter.addWidget(right)
+        self._still_preview = _StillPreview()
+        splitter.addWidget(self._still_preview)
+        splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 2)
+        self._still_list.setMinimumWidth(180)
         layout.addWidget(splitter, 1)
 
         row = QHBoxLayout()
@@ -495,6 +578,7 @@ class SleepyPanel(QWidget):
         remove = QPushButton("Remove still")
         remove.clicked.connect(self._remove_still)
         generate = QPushButton("Generate final stills")
+        generate.setToolTip("Paint every still that already has a prompt.")
         generate.clicked.connect(self._generate)
         self._replace_stills = QCheckBox("Replace existing stills")
         self._action_buttons.extend([add, remove, generate])
@@ -504,6 +588,34 @@ class SleepyPanel(QWidget):
         row.addWidget(self._replace_stills)
         row.addStretch(1)
         layout.addLayout(row)
+        return page
+
+    def _build_lightbox_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._heading("Lightbox"))
+        note = QLabel(
+            "Every painted still for this episode. Click an image to see it larger. "
+            "The final video uses these files."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        row = QHBoxLayout()
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self._refresh_lightbox)
+        self._action_buttons.append(refresh)
+        self._lightbox_status = QLabel("Open an episode to see its stills.")
+        self._lightbox_status.setWordWrap(True)
+        row.addWidget(refresh)
+        row.addWidget(self._lightbox_status, 1)
+        layout.addLayout(row)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self._lightbox_host = QWidget()
+        self._lightbox_layout = QVBoxLayout(self._lightbox_host)
+        self._lightbox_layout.addStretch(1)
+        scroll.setWidget(self._lightbox_host)
+        layout.addWidget(scroll, 1)
         return page
 
     def _build_voice_tab(self) -> QWidget:
@@ -566,8 +678,9 @@ class SleepyPanel(QWidget):
         layout = QVBoxLayout(page)
         layout.addWidget(self._heading("Final video"))
         note = QLabel(
-            "Ken Burns moves across the one chosen still per beat, then the spoken scenes "
-            "are muxed. The finished mix is −20 LUFS with true peak −3 dBTP. "
+            "Each still drifts for the whole scene: a slow pan and zoom of about 3–5%, "
+            "so the picture keeps moving and the phone display stays awake. "
+            "The finished mix is −20 LUFS with true peak −3 dBTP. "
             "Only the single-seed stills are edited in."
         )
         note.setWordWrap(True)
@@ -716,9 +829,19 @@ class SleepyPanel(QWidget):
         italian, english = self._texts_for_counts()
         italian_count, english_count = scene_counts(italian, english)
         scenes_language = load_episode_settings(self._project).get("scenes_language") or "not split"
+        again = ""
+        if (
+            uses_image_cues(italian)
+            and self._scenes
+            and italian_count
+            and italian_count != len(self._scenes)
+            and str(scenes_language) == "Italian"
+        ):
+            again = "    Split again: one scene per image cue."
         self._counts.setText(
             f"Italian scenes: {italian_count}    English scenes: {english_count}    "
             f"Split language: {scenes_language}    Scenes on disk: {len(self._scenes)}"
+            f"{again}"
         )
         if italian_count and english_count and italian_count != english_count:
             self._counts.setStyleSheet("color:#E7C07A;")
@@ -751,6 +874,50 @@ class SleepyPanel(QWidget):
             )
         else:
             self._log(f"Episode created. Chapter lock for this episode: {profile_key}.")
+
+    def _update_italian_narration(self) -> None:
+        if not self._require_project():
+            return
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Italian narration",
+            self._project,
+            "Word (*.docx)",
+        )
+        if not path:
+            return
+        existing = read_text(narration_path(self._project, "Italian"))
+        if self._shown_language == "Italian":
+            existing = self._script.toPlainText()
+        if existing.strip():
+            answer = QMessageBox.question(
+                self,
+                "Replace Italian narration",
+                "This episode already has an Italian narration. "
+                "Replace it with this Word file?\n\n"
+                "The pictures stay as they are until you split again.",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            text = add_narration(self._project, "Italian", path)
+        except Exception as exc:
+            self._fail(str(exc))
+            return
+        if self._shown_language == "Italian":
+            self._script.blockSignals(True)
+            self._script.setPlainText(text)
+            self._script.blockSignals(False)
+        self._update_counts()
+        italian_count, _english_count = scene_counts(*self._texts_for_counts())
+        self._log(
+            f"Italian narration updated ({italian_count} scenes). "
+            "Picture scenes stay until you split again."
+        )
+        if self._scenes and italian_count != len(self._scenes):
+            self._status.setText("Italian updated; split again to use it")
+        else:
+            self._status.setText("Italian narration updated")
 
     def _add_english_narration(self) -> None:
         if not self._require_project():
@@ -884,16 +1051,26 @@ class SleepyPanel(QWidget):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return False
+        self._store_prompt()
         try:
-            self._scenes = publish_scenes(self._project, language, self._script.toPlainText())
+            self._scenes = publish_scenes(
+                self._project,
+                language,
+                self._script.toPlainText(),
+                stills=self._stills,
+            )
         except ValueError as exc:
             self._fail(str(exc))
             return False
-        self._stills = align_stills(self._scenes, self._stills)
-        save_stills(self._project, self._stills)
+        self._stills = load_stills(self._project)
         self._update_counts()
         self._rebuild_still_list()
         self._log(f"Split {language} into {len(self._scenes)} scenes.")
+        if uses_image_cues(self._script.toPlainText()):
+            self._log(
+                "Each [IMG] cue is one scene. Empty stills took the English prompt "
+                "from the script. A prompt you already typed was left in place."
+            )
         self._status.setText(f"{len(self._scenes)} scenes")
         return True
 
@@ -922,6 +1099,20 @@ class SleepyPanel(QWidget):
             self._scene_view.setPlainText(self._scene_text(int(still["scene_id"])))
         self._prompt.blockSignals(False)
         self._scene_view.blockSignals(False)
+        self._show_still_image(index)
+
+    def _show_still_image(self, index) -> None:
+        if (
+            not self._project
+            or index is None
+            or not (0 <= index < len(self._stills))
+        ):
+            self._still_preview.show_path("")
+            return
+        still = self._stills[index]
+        self._still_preview.show_path(
+            still_file_path(self._project, int(still["scene_id"]), int(still["beat"]))
+        )
 
     def _on_still_selected(self, row: int) -> None:
         if row == self._editing_index:
@@ -988,38 +1179,204 @@ class SleepyPanel(QWidget):
             save_stills(self._project, self._stills)
         self._rebuild_still_list()
 
-    def _pipeline_config(self, replace: bool = False) -> dict:
-        return sleepy_pipeline_config(int(self._seed.value()), self._profile_key(), replace=replace)
+    def _pipeline_config(self, replace: bool = False, scene_id: int = 0, beat: int = 0) -> dict:
+        return sleepy_pipeline_config(
+            int(self._seed.value()),
+            self._profile_key(),
+            replace=replace,
+            scene_id=scene_id,
+            beat=beat,
+        )
 
-    def _generate(self) -> None:
-        if not self._require_project() or self._busy:
+    def _on_inner_tab(self, index: int) -> None:
+        if self.inner_tabs.tabText(index) == "Lightbox":
+            self._refresh_lightbox()
+
+    def _refresh_lightbox(self) -> None:
+        while self._lightbox_layout.count() > 1:
+            item = self._lightbox_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if not self._project:
+            self._lightbox_status.setText("Open an episode to see its stills.")
             return
-        if self.controller.gpu_owner() or self.controller.is_busy():
-            self._fail(
-                "The GPU is busy. Wait for the current run to finish. "
-                "HiDream and the cloned voice do not fit on the card together."
+        rows = list_lightbox_stills(self._project)
+        if not rows:
+            self._lightbox_status.setText(
+                "No stills yet. Write a prompt on the Stills tab and choose Generate this still."
             )
+            return
+        self._lightbox_status.setText(f"{len(rows)} still(s) in this episode.")
+        grouped: dict = {}
+        for row in rows:
+            grouped.setdefault(int(row["scene_id"]), []).append(row)
+        for scene_id in sorted(grouped):
+            card = self._lightbox_scene_card(scene_id, grouped[scene_id])
+            self._lightbox_layout.insertWidget(self._lightbox_layout.count() - 1, card)
+
+    def _lightbox_scene_card(self, scene_id: int, rows: list) -> QWidget:
+        card = QWidget()
+        card.setStyleSheet(
+            "background:#1D1B20; border:1px solid #36343B; border-radius:4px;"
+        )
+        outer = QHBoxLayout(card)
+        outer.setContentsMargins(10, 8, 10, 8)
+        number = QLabel(f"{scene_id:03d}" if scene_id else "—")
+        number.setFixedWidth(72)
+        number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        number.setStyleSheet(
+            "color:#D7B58A; font-size:28px; font-weight:bold; "
+            "background:transparent; border:none;"
+        )
+        outer.addWidget(number, 0, Qt.AlignmentFlag.AlignVCenter)
+        body = QVBoxLayout()
+        title = self._scene_text(scene_id).strip().replace("\n", " ")
+        if len(title) > 160:
+            title = title[:157] + "..."
+        header = QLabel(f"Scene {scene_id:03d}" + (f"  —  {title}" if title else ""))
+        header.setWordWrap(True)
+        header.setStyleSheet(
+            "color:#E8E4EA; font-weight:bold; background:transparent; border:none;"
+        )
+        body.addWidget(header)
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        for index, row in enumerate(rows):
+            grid.addWidget(self._lightbox_thumb(row), index // 3, index % 3)
+        body.addLayout(grid)
+        outer.addLayout(body, 1)
+        return card
+
+    def _lightbox_thumb(self, row: dict) -> QWidget:
+        cell = QWidget()
+        cell.setStyleSheet("background:transparent; border:none;")
+        layout = QVBoxLayout(cell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        path = str(row["path"])
+        button = QPushButton()
+        button.setFixedSize(240, 135)
+        image = QImage(path)
+        if image.isNull():
+            button.setText("Unreadable")
+        else:
+            pixmap = QPixmap.fromImage(image).scaled(
+                240, 135,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            button.setIcon(QIcon(pixmap))
+            button.setIconSize(pixmap.size())
+        button.clicked.connect(lambda _checked=False, image_path=path: self._open_still_viewer(image_path))
+        layout.addWidget(button)
+        beat = int(row.get("beat") or 0)
+        caption = QLabel(f"Still {beat}" if beat else os.path.basename(path))
+        caption.setStyleSheet(
+            "color:#8E8B90; font-size:11px; background:transparent; border:none;"
+        )
+        layout.addWidget(caption)
+        return cell
+
+    def _open_still_viewer(self, path: str) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(os.path.basename(path))
+        dialog.resize(960, 540)
+        dialog.setStyleSheet("QDialog { background:#0F0D13; } QLabel { color:#E8E4EA; }")
+        label = QLabel()
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image = QImage(path)
+        if image.isNull():
+            label.setText("The still file could not be read.")
+        else:
+            pixmap = QPixmap.fromImage(image).scaled(
+                940, 520,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            label.setPixmap(pixmap)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(label)
+        dialog.exec()
+
+    def _gpu_is_free(self) -> bool:
+        if not (self.controller.gpu_owner() or self.controller.is_busy()):
+            return True
+        self._fail(
+            "The GPU is busy. Wait for the current run to finish. "
+            "HiDream and the cloned voice do not fit on the card together."
+        )
+        return False
+
+    def _write_prompts_for_paint(self) -> bool:
+        prompts = build_model_prompts(self._scenes, self._stills)
+        if not prompts:
+            self._fail("Write an English prompt for the still you want to paint.")
+            return False
+        ProjectLayout(self._project).ensure_dirs()
+        write_model_prompts(self._project, prompts)
+        return True
+
+    def _generate_current(self) -> None:
+        if not self._require_project() or self._busy or not self._gpu_is_free():
             return
         self._store_prompt()
         if not self._scenes:
             self._fail("Split the script into scenes first.")
             return
-        missing = prompts_missing(self._stills)
-        if missing:
-            self._fail("Write an English prompt for every still first:\n" + "\n".join(missing))
+        index = self._editing_index
+        if index is None or not (0 <= index < len(self._stills)):
+            self._fail("Select a still, then write its English prompt.")
             return
+        prompt = ensure_rome_softly_prompt(str(self._stills[index].get("prompt") or ""))
+        if not prompt:
+            self._fail("Write the English prompt for this still first.")
+            return
+        self._stills[index]["prompt"] = prompt
+        self._prompt.blockSignals(True)
+        self._prompt.setPlainText(prompt)
+        self._prompt.blockSignals(False)
+        save_stills(self._project, self._stills)
+        if not self._write_prompts_for_paint():
+            return
+        still = self._stills[index]
+        scene_id = int(still["scene_id"])
+        beat = int(still["beat"])
+        self._log(f"Painting scene {scene_id:03d} still {beat}.")
+        self._start_pipeline(
+            "final_images",
+            self._pipeline_config(replace=True, scene_id=scene_id, beat=beat),
+        )
+
+    def _generate(self) -> None:
+        if not self._require_project() or self._busy or not self._gpu_is_free():
+            return
+        self._store_prompt()
+        if not self._scenes:
+            self._fail("Split the script into scenes first.")
+            return
+        ready = 0
         for row in self._stills:
-            row["prompt"] = ensure_rome_softly_prompt(row["prompt"])
+            text = str(row.get("prompt") or "").strip()
+            if not text:
+                continue
+            row["prompt"] = ensure_rome_softly_prompt(text)
+            ready += 1
+        if not ready:
+            self._fail("Write an English prompt for the still you want to paint.")
+            return
+        missing = prompts_missing(self._stills)
         save_stills(self._project, self._stills)
         self._rebuild_still_list()
-        prompts = build_model_prompts(self._scenes, self._stills)
-        if not prompts:
-            self._fail("No stills to paint.")
+        if not self._write_prompts_for_paint():
             return
-        ProjectLayout(self._project).ensure_dirs()
-        write_model_prompts(self._project, prompts)
-        self._log("Wrote HiDream prompts. Generating one final still per beat.")
-        self._start_pipeline("final_images", self._pipeline_config(self._replace_stills.isChecked()))
+        if missing:
+            self._log("Left for later: " + ", ".join(missing))
+        self._log(f"Painting {ready} still(s).")
+        self._start_pipeline(
+            "final_images",
+            self._pipeline_config(self._replace_stills.isChecked()),
+        )
 
     def _browse_ref(self) -> None:
         path, _selected = QFileDialog.getOpenFileName(
@@ -1228,6 +1585,9 @@ class SleepyPanel(QWidget):
                 self._status.setText("Failed")
             return
         stage = self._sleepy_stage
+        if stage == "final_images":
+            self._show_still_image(self._editing_index)
+            self._refresh_lightbox()
         if not ok:
             self._sleepy_stage = ""
             self._then = []
