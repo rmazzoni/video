@@ -13,9 +13,10 @@ from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -35,9 +36,12 @@ from prompts.project_profiles import load_project_profiles
 from sleepy.chapter import (
     DEFAULT_PROFILE_KEY,
     LANGUAGES,
+    add_narration,
+    align_narration_to_scenes,
     align_stills,
     build_model_prompts,
     create_episode,
+    episode_folder_name,
     ensure_rome_softly_prompt,
     filenames_for_offsets,
     is_sleepy_project,
@@ -92,6 +96,157 @@ class _VoiceWorker(QObject):
             self.finished.emit(False, str(exc))
 
 
+class _EpisodeIntakeDialog(QDialog):
+    """Name, folder, Italian Word file, and this episode's chapter lock."""
+
+    def __init__(self, parent=None, initial_folder: str = "", profiles=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create Sleepy episode")
+        self.setMinimumWidth(640)
+        self._initial_folder = initial_folder or ""
+        self.setStyleSheet(
+            "QDialog { background:#0F0D13; color:#E8E4EA; }"
+            "QLabel { color:#E8E4EA; }"
+            "QLineEdit, QComboBox, QPlainTextEdit { background:#1D1B20; color:#E8E4EA; "
+            "border:1px solid #3A3640; padding:4px; }"
+            "QComboBox QAbstractItemView { background:#1D1B20; color:#E8E4EA; }"
+            "QPushButton { background:#1D1B20; color:#E8E4EA; "
+            "border:1px solid #3A3640; padding:4px 10px; }"
+            "QPushButton:hover { background:#2A282F; }"
+        )
+        layout = QVBoxLayout(self)
+        hint = QLabel(
+            "Create this episode from the Italian Word file. "
+            "Each body paragraph becomes one picture scene. Headings are left out. "
+            "English is added later from the Script tab. "
+            "The chapter lock below is saved with this episode only."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self._name = QLineEdit()
+        self._folder = QLineEdit(self._initial_folder)
+        self._italian = QLineEdit()
+        self._italian.setPlaceholderText("Italian Word file for this episode")
+        self._profiles = profiles or {}
+        self._profile = QComboBox()
+        for key in rome_softly_profile_keys(self._profiles):
+            self._profile.addItem(key, key)
+        self._lock = QPlainTextEdit()
+        self._lock.setReadOnly(True)
+        self._lock.setMaximumHeight(110)
+        self._profile.currentIndexChanged.connect(self._refresh_lock)
+        self._refresh_lock()
+        layout.addLayout(self._labeled_row("Episode name", self._name))
+        name_hint = QLabel(
+            'A folder name cannot contain < > : " / \\ | ? *. '
+            "A colon in the title is saved as a hyphen."
+        )
+        name_hint.setWordWrap(True)
+        layout.addWidget(name_hint)
+        layout.addLayout(self._path_row(
+            "Folder", self._folder, "Choose folder", self._browse_folder,
+        ))
+        layout.addLayout(self._path_row(
+            "Italian narration", self._italian, "Italian .docx",
+            lambda _checked=False: self._browse_docx(self._italian, "Italian narration"),
+        ))
+        layout.addLayout(self._labeled_row("Chapter lock", self._profile))
+        lock_label = QLabel("Chapter lock for this episode")
+        lock_label.setStyleSheet("color:#D7B58A;")
+        layout.addWidget(lock_label)
+        layout.addWidget(self._lock)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _labeled_row(self, label: str, field: QLineEdit) -> QHBoxLayout:
+        row = QHBoxLayout()
+        name = QLabel(label)
+        name.setMinimumWidth(140)
+        row.addWidget(name)
+        row.addWidget(field, 1)
+        return row
+
+    def _path_row(self, label: str, field: QLineEdit, button_text: str, slot) -> QHBoxLayout:
+        row = self._labeled_row(label, field)
+        button = QPushButton(button_text)
+        button.clicked.connect(slot)
+        row.addWidget(button)
+        return row
+
+    def _browse_folder(self, _checked: bool = False) -> None:
+        start = self._folder.text().strip() or self._initial_folder
+        folder = QFileDialog.getExistingDirectory(
+            self, "Folder for the new episode", start,
+        )
+        if folder:
+            self._folder.setText(folder)
+
+    def _browse_docx(self, field: QLineEdit, title: str) -> None:
+        start = self._folder.text().strip() or self._initial_folder
+        path, _selected = QFileDialog.getOpenFileName(
+            self, title, start, "Word (*.docx)",
+        )
+        if not path:
+            return
+        field.setText(path)
+        if not self._name.text().strip():
+            stem = os.path.splitext(os.path.basename(path))[0]
+            try:
+                stem = episode_folder_name(stem)
+            except ValueError:
+                pass
+            self._name.setText(stem)
+
+    def _refresh_lock(self, _index: int = 0) -> None:
+        key = str(self._profile.currentData() or "")
+        self._lock.setPlainText(profile_text(self._profiles, key))
+
+    def accept(self) -> None:
+        folder = self._folder.text().strip()
+        try:
+            episode_name = episode_folder_name(self._name.text())
+        except ValueError as exc:
+            QMessageBox.warning(self, "Create episode", str(exc))
+            return
+        self._name.setText(episode_name)
+        if not folder or not os.path.isdir(folder):
+            QMessageBox.warning(
+                self, "Create episode",
+                "Choose the folder that will hold the episode.",
+            )
+            return
+        italian = self._italian.text().strip()
+        if italian:
+            if os.path.splitext(italian)[1].lower() != ".docx":
+                QMessageBox.warning(
+                    self, "Create episode",
+                    "Save the narration as a .docx file. Older .doc files are not read.",
+                )
+                return
+            if not os.path.isfile(italian):
+                QMessageBox.warning(
+                    self, "Create episode",
+                    "The Italian Word file was not found.",
+                )
+                return
+        super().accept()
+
+    def values(self) -> tuple:
+        return (
+            self._name.text().strip(),
+            self._folder.text().strip(),
+            self._italian.text().strip(),
+            str(self._profile.currentData() or DEFAULT_PROFILE_KEY),
+        )
+
+
 class SleepyPanel(QWidget):
     """Top-level Sleepy environment. It does not switch the Main project."""
 
@@ -100,6 +255,7 @@ class SleepyPanel(QWidget):
         self.controller = controller
         self._config_dir = controller.config_dir
         self._project = ""
+        self._episode_profile = ""
         self._prefs = load_app_prefs(self._config_dir)
         self._profiles = {}
         try:
@@ -227,33 +383,31 @@ class SleepyPanel(QWidget):
         self._recent.activated.connect(self._on_recent)
         row.addWidget(self._recent, 1)
         layout.addLayout(row)
+        intake = QLabel(
+            "Create asks for the Italian Word file and the chapter lock for that episode. "
+            "Add the English Word file afterwards from the Script tab."
+        )
+        intake.setWordWrap(True)
+        layout.addWidget(intake)
         self._refresh_recent()
 
         seed_row = QHBoxLayout()
-        seed_row.addWidget(QLabel("Seed"))
+        seed_row.addWidget(QLabel("Seed for this episode"))
         self._seed = QSpinBox()
         self._seed.setRange(0, 2_147_483_647)
         self._seed.setValue(42)
-        self._seed.setToolTip("One seed. Final stills use this seed with no neighbours.")
+        self._seed.setToolTip("One seed for this episode. Final stills use it with no neighbours.")
         self._seed.valueChanged.connect(self._on_seed_changed)
         seed_row.addWidget(self._seed)
-        seed_row.addWidget(QLabel("Chapter profile"))
-        self._profile = QComboBox()
-        self._profile.setMinimumWidth(240)
-        for key in rome_softly_profile_keys(self._profiles):
-            self._profile.addItem(key, key)
-        self._profile.setToolTip(
-            "Saved with this episode. It reminds you of the period lock. "
-            "It is not painted into a prompt you have already written."
-        )
-        self._profile.currentIndexChanged.connect(self._on_profile_changed)
-        seed_row.addWidget(self._profile, 1)
+        seed_row.addStretch(1)
         layout.addLayout(seed_row)
 
-        layout.addWidget(self._heading("Chapter lock"))
+        layout.addWidget(self._heading("Chapter lock for this episode"))
+        self._profile_name = QLabel("No episode open")
+        layout.addWidget(self._profile_name)
         self._profile_view = QPlainTextEdit()
         self._profile_view.setReadOnly(True)
-        self._profile_view.setMaximumHeight(110)
+        self._profile_view.setMaximumHeight(140)
         layout.addWidget(self._profile_view)
         self._refresh_profile_preview()
 
@@ -273,8 +427,9 @@ class SleepyPanel(QWidget):
         layout = QVBoxLayout(page)
         layout.addWidget(self._heading("Narration"))
         hint = QLabel(
-            "One scene per paragraph. Leave a blank line between scenes. "
-            "Italian and English are stored apart. Split the language selected above."
+            "Picture scenes come from the Italian narration. "
+            "Add the English Word file when the translation is ready. "
+            "One body paragraph is one scene. English does not move the pictures."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -287,10 +442,13 @@ class SleepyPanel(QWidget):
         row = QHBoxLayout()
         save = QPushButton("Save script")
         save.clicked.connect(self.save_all)
+        add_english = QPushButton("Add English Word")
+        add_english.clicked.connect(self._add_english_narration)
         split = QPushButton("Split into scenes")
         split.clicked.connect(self._split)
-        self._action_buttons.extend([save, split])
+        self._action_buttons.extend([save, add_english, split])
         row.addWidget(save)
+        row.addWidget(add_english)
         row.addWidget(split)
         row.addStretch(1)
         layout.addLayout(row)
@@ -459,20 +617,13 @@ class SleepyPanel(QWidget):
         return normalize_language(str(self._language.currentData() or "Italian"))
 
     def _profile_key(self) -> str:
-        return str(self._profile.currentData() or DEFAULT_PROFILE_KEY)
+        return str(self._episode_profile or DEFAULT_PROFILE_KEY)
 
     def _set_language(self, language: str) -> None:
         target = normalize_language(language)
         index = self._language.findData(target)
         if index >= 0:
             self._language.setCurrentIndex(index)
-
-    def _set_profile(self, key: str) -> None:
-        index = self._profile.findData(key)
-        if index < 0:
-            self._profile.addItem(key, key)
-            index = self._profile.findData(key)
-        self._profile.setCurrentIndex(index)
 
     def _refresh_recent(self) -> None:
         self._recent.blockSignals(True)
@@ -484,14 +635,18 @@ class SleepyPanel(QWidget):
         self._recent.blockSignals(False)
 
     def _refresh_profile_preview(self) -> None:
-        self._profile_view.setPlainText(profile_text(self._profiles, self._profile_key()))
+        if not self._project:
+            self._profile_name.setText("No episode open")
+            self._profile_view.setPlainText(
+                "The chapter lock is chosen when you create an episode. "
+                "It is saved with that episode only."
+            )
+            return
+        key = self._profile_key()
+        self._profile_name.setText(key)
+        self._profile_view.setPlainText(profile_text(self._profiles, key))
 
     def _on_seed_changed(self, _value: int) -> None:
-        if not self._loading:
-            self._save_episode_from_form()
-
-    def _on_profile_changed(self, _index: int) -> None:
-        self._refresh_profile_preview()
         if not self._loading:
             self._save_episode_from_form()
 
@@ -571,18 +726,77 @@ class SleepyPanel(QWidget):
             self._counts.setStyleSheet("color:#8E8B90;")
 
     def _create_episode(self) -> None:
-        parent = QFileDialog.getExistingDirectory(self, "Folder for the new episode")
-        if not parent:
+        initial = os.path.dirname(self._project) if self._project else ""
+        dialog = _EpisodeIntakeDialog(self, initial, self._profiles)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name, accepted = QInputDialog.getText(self, "Create Sleepy episode", "Episode name:")
-        if not accepted or not str(name).strip():
-            return
+        name, parent, italian_docx, profile_key = dialog.values()
         try:
-            project = create_episode(parent, str(name).strip())
+            project = create_episode(
+                parent,
+                name,
+                italian_docx=italian_docx,
+                profile_key=profile_key,
+            )
         except Exception as exc:
             self._fail(str(exc))
             return
         self._open_path(project)
+        if italian_docx:
+            italian_count, _english_count = scene_counts(*self._texts_for_counts())
+            self._log(
+                f"Italian narration stored ({italian_count} scenes). "
+                f"Chapter lock for this episode: {profile_key}. "
+                "Add the English Word file later from the Script tab."
+            )
+        else:
+            self._log(f"Episode created. Chapter lock for this episode: {profile_key}.")
+
+    def _add_english_narration(self) -> None:
+        if not self._require_project():
+            return
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            "English narration",
+            self._project,
+            "Word (*.docx)",
+        )
+        if not path:
+            return
+        existing = read_text(narration_path(self._project, "English"))
+        if self._shown_language == "English":
+            existing = self._script.toPlainText()
+        if existing.strip():
+            answer = QMessageBox.question(
+                self,
+                "Replace English narration",
+                "This episode already has an English narration. "
+                "Replace it with this Word file?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            text = add_narration(self._project, "English", path)
+        except Exception as exc:
+            self._fail(str(exc))
+            return
+        if self._shown_language == "English":
+            self._script.blockSignals(True)
+            self._script.setPlainText(text)
+            self._script.blockSignals(False)
+        self._update_counts()
+        italian_count, english_count = scene_counts(*self._texts_for_counts())
+        self._log(
+            f"English narration added ({english_count} scenes). "
+            f"Picture scenes stay Italian ({italian_count})."
+        )
+        if italian_count and english_count and italian_count != english_count:
+            self._log(
+                "The paragraph counts differ. Match them before speaking English."
+            )
+            self._status.setText("English added; scene counts differ")
+        else:
+            self._status.setText("English narration added")
 
     def _browse_episode(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Open Sleepy episode")
@@ -602,7 +816,9 @@ class SleepyPanel(QWidget):
                 "Create one here. Main projects stay on the Main tab."
             )
             return
-        if self._project and os.path.abspath(self._project) != path:
+        if self._project and os.path.abspath(self._project) == path:
+            return
+        if self._project:
             self._save_script_file()
             self._store_prompt()
             save_stills(self._project, self._stills)
@@ -614,7 +830,7 @@ class SleepyPanel(QWidget):
         settings = load_episode_settings(path)
         self._loading = True
         self._seed.setValue(int(settings["seed"]))
-        self._set_profile(str(settings["profile_key"]))
+        self._episode_profile = str(settings["profile_key"])
         self._set_language(str(settings["language"]))
         self._loading = False
         self._shown_language = normalize_language(str(settings["language"]))
@@ -631,12 +847,31 @@ class SleepyPanel(QWidget):
             self._log(f"Episode: {path}")
             self._status.setText("Episode open")
 
+    def _picture_language(self) -> str:
+        if not self._project:
+            return ""
+        return str(load_episode_settings(self._project).get("scenes_language") or "")
+
     def _split(self) -> bool:
         if not self._require_project():
             return False
         self._save_script_file()
         self._save_episode_from_form()
         language = self._language_value()
+        owner = self._picture_language()
+        if owner and owner != language and self._scenes:
+            self._update_counts()
+            italian_count, english_count = scene_counts(*self._texts_for_counts())
+            count = english_count if language == "English" else italian_count
+            self._log(
+                f"{language} narration saved ({count} scenes). "
+                f"Picture scenes stay on the {owner} narration."
+            )
+            if italian_count and english_count and italian_count != english_count:
+                self._status.setText("Narration saved; scene counts differ")
+            else:
+                self._status.setText(f"{language} narration saved")
+            return True
         italian, english = self._texts_for_counts()
         italian_count, english_count = scene_counts(italian, english)
         if italian_count and english_count and italian_count != english_count:
@@ -806,8 +1041,24 @@ class SleepyPanel(QWidget):
     def _speak(self) -> None:
         if not self._require_project() or self._busy:
             return
-        if not self._split():
-            return
+        self._save_script_file()
+        language = self._language_value()
+        owner = self._picture_language()
+        if owner and owner != language and self._scenes:
+            try:
+                voice_scenes = align_narration_to_scenes(
+                    self._script.toPlainText(),
+                    self._scenes,
+                    language,
+                )
+            except ValueError as exc:
+                self._update_counts()
+                self._fail(str(exc))
+                return
+        else:
+            if not self._split():
+                return
+            voice_scenes = self._scenes
         self._save_voice_prefs()
         checkpoint = self._checkpoint.text().strip()
         try:
@@ -831,7 +1082,7 @@ class SleepyPanel(QWidget):
         layout.ensure_dirs()
         self._voice_run = VoiceRun()
         worker = _VoiceWorker({
-            "scenes": self._scenes,
+            "scenes": voice_scenes,
             "output_dir": layout.audio,
             "timings_path": os.path.join(layout.audio, "timings.yaml"),
             "language": self._language_value(),
@@ -926,7 +1177,7 @@ class SleepyPanel(QWidget):
         if not os.path.isfile(path):
             self._fail(f"No final video yet.\n{path}")
             return
-        os.startfile(path)  # noqa: on Windows this opens the file with its app
+        os.startfile(path)
 
     def _start_pipeline(self, stage: str, config: dict, then=None) -> None:
         self._then = list(then or [])

@@ -18,17 +18,43 @@ from narration.qwen_voice import (
     worker_script,
 )
 from sleepy.chapter import (
+    add_narration,
+    align_narration_to_scenes,
     align_stills,
     build_model_prompts,
     create_episode,
+    episode_folder_name,
     ensure_rome_softly_prompt,
     filenames_for_offsets,
     is_sleepy_project,
+    load_episode_settings,
+    load_scenes,
+    load_stills,
+    narration_path,
     prompts_missing,
     publish_scenes,
+    save_stills,
     selections_for_stills,
     sleepy_pipeline_config,
 )
+
+
+def _narration_docx(path: str, blocks) -> None:
+    """Write a small .docx. Each block is (text, style name or "")."""
+    from docx import Document
+    from docx.enum.style import WD_STYLE_TYPE
+
+    document = Document()
+    if "Titolo 1" not in [style.name for style in document.styles]:
+        document.styles.add_style("Titolo 1", WD_STYLE_TYPE.PARAGRAPH)
+    for text, style in blocks:
+        paragraph = document.add_paragraph(text)
+        if style:
+            paragraph.style = style
+    document.add_table(rows=1, cols=2)
+    document.tables[0].cell(0, 0).text = "DO NOT READ TABLE LEFT"
+    document.tables[0].cell(0, 1).text = "DO NOT READ TABLE RIGHT"
+    document.save(path)
 
 
 class SeedContractTests(unittest.TestCase):
@@ -112,6 +138,212 @@ class ChapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             self.assertFalse(is_sleepy_project(folder))
 
+    def test_word_intake_keeps_both_languages_and_splits_the_italian(self):
+        with tempfile.TemporaryDirectory() as folder:
+            italian = os.path.join(folder, "narration_it.docx")
+            english = os.path.join(folder, "narration_en.docx")
+            _narration_docx(italian, [
+                ("Roma, sottovoce", "Title"),
+                ("Capitolo 1", "Heading 1"),
+                ("Da non leggere", "Titolo 1"),
+                ("", ""),
+                ("Il  Tevere\xa0scorre piano davanti alle capanne all'alba.", ""),
+                ("Dentro la capanna il fuoco è basso e nessuno parla.", ""),
+            ])
+            _narration_docx(english, [
+                ("Chapter 1", "Heading 1"),
+                ("The Tiber moves slowly past the huts at dawn.", ""),
+                ("Inside the hut the fire is low and nobody speaks.", ""),
+            ])
+            project = create_episode(
+                folder, "Episodio 1",
+                italian_docx=italian,
+                english_docx=english,
+            )
+            italian_text = Path(narration_path(project, "Italian")).read_text(encoding="utf-8")
+            english_text = Path(narration_path(project, "English")).read_text(encoding="utf-8")
+            self.assertEqual(
+                italian_text,
+                "Il Tevere scorre piano davanti alle capanne all'alba.\n\n"
+                "Dentro la capanna il fuoco è basso e nessuno parla.\n",
+            )
+            self.assertEqual(
+                english_text,
+                "The Tiber moves slowly past the huts at dawn.\n\n"
+                "Inside the hut the fire is low and nobody speaks.\n",
+            )
+            self.assertNotIn("DO NOT READ TABLE", italian_text)
+            self.assertNotIn("Capitolo", italian_text)
+            scenes = load_scenes(project)
+            self.assertEqual([scene["id"] for scene in scenes], [1, 2])
+            self.assertIn("Tevere", scenes[0]["text"])
+            self.assertNotIn("Tiber", scenes[0]["text"])
+            mirrored = Path(project, "input", "narration.txt").read_text(encoding="utf-8")
+            self.assertEqual(mirrored, italian_text)
+            self.assertTrue(os.path.isfile(os.path.join(project, "input", "narration_it.docx")))
+            self.assertTrue(os.path.isfile(os.path.join(project, "input", "narration_en.docx")))
+            settings = load_episode_settings(project)
+            self.assertEqual(settings["language"], "Italian")
+            self.assertEqual(settings["scenes_language"], "Italian")
+            self.assertTrue(is_sleepy_project(project))
+
+    def test_a_colon_in_the_title_is_saved_as_a_folder_name(self):
+        self.assertEqual(episode_folder_name("Ep. 01: Il Tevere"), "Ep. 01 - Il Tevere")
+        self.assertEqual(episode_folder_name('Roma "sottovoce"'), "Roma sottovoce")
+        self.assertEqual(episode_folder_name("Prima l'italiano"), "Prima l'italiano")
+        with self.assertRaises(ValueError) as raised:
+            episode_folder_name("   ")
+        self.assertIn("episode name", str(raised.exception).lower())
+        with tempfile.TemporaryDirectory() as folder:
+            project = create_episode(folder, "Ep. 01: Il Tevere")
+            self.assertTrue(project.endswith(os.path.join("Ep. 01 - Il Tevere")))
+            self.assertTrue(is_sleepy_project(project))
+
+    def test_chapter_lock_is_stored_on_the_episode_that_was_created(self):
+        with tempfile.TemporaryDirectory() as folder:
+            italian = os.path.join(folder, "it.docx")
+            _narration_docx(italian, [
+                ("Prima scena sul Tevere all'alba, con le capanne lontane.", ""),
+            ])
+            first = create_episode(
+                folder, "Uno",
+                italian_docx=italian,
+                profile_key="rome_softly_ch01",
+            )
+            second = create_episode(folder, "Due", profile_key="rome_softly_ch02")
+            self.assertEqual(load_episode_settings(first)["profile_key"], "rome_softly_ch01")
+            self.assertEqual(load_episode_settings(second)["profile_key"], "rome_softly_ch02")
+            self.assertEqual(load_scenes(second), [])
+            self.assertEqual(Path(narration_path(first, "English")).read_text(encoding="utf-8"), "")
+            self.assertIn("Tevere", load_scenes(first)[0]["text"])
+            self.assertEqual(
+                sleepy_pipeline_config(1, "rome_softly_ch02")["project_profile_key"],
+                "rome_softly_ch02",
+            )
+
+    def test_english_word_can_be_added_after_the_italian_episode(self):
+        with tempfile.TemporaryDirectory() as folder:
+            italian = os.path.join(folder, "it.docx")
+            _narration_docx(italian, [
+                ("Capitolo 1", "Heading 1"),
+                ("Prima scena sul Tevere all'alba, con le capanne lontane.", ""),
+                ("Seconda scena dentro la capanna, con il fuoco basso.", ""),
+            ])
+            project = create_episode(folder, "Prima l'italiano", italian_docx=italian)
+            self.assertEqual(Path(narration_path(project, "English")).read_text(encoding="utf-8"), "")
+            self.assertEqual(load_episode_settings(project)["scenes_language"], "Italian")
+            scenes_before = load_scenes(project)
+            self.assertEqual([scene["id"] for scene in scenes_before], [1, 2])
+            save_stills(project, [{
+                "scene_id": 1,
+                "beat": 1,
+                "prompt": "Dawn on the river.",
+            }])
+            narration_txt = Path(project, "input", "narration.txt").read_text(encoding="utf-8")
+
+            short_english = os.path.join(folder, "en_short.docx")
+            _narration_docx(short_english, [
+                ("Chapter 1", "Heading 1"),
+                ("The Tiber moves slowly past the huts at dawn.", ""),
+            ])
+            with self.assertRaises(ValueError):
+                add_narration(folder, "English", short_english)
+            stored = add_narration(project, "English", short_english)
+            self.assertIn("Tiber", stored)
+            self.assertEqual(load_scenes(project), scenes_before)
+            self.assertEqual(
+                Path(project, "input", "narration.txt").read_text(encoding="utf-8"),
+                narration_txt,
+            )
+            self.assertEqual(load_episode_settings(project)["scenes_language"], "Italian")
+            self.assertEqual(load_stills(project)[0]["prompt"], "Dawn on the river.")
+            self.assertIn("Prima scena", Path(narration_path(project, "Italian")).read_text(encoding="utf-8"))
+            self.assertTrue(os.path.isfile(os.path.join(project, "input", "narration_en.docx")))
+            with self.assertRaises(ValueError) as raised:
+                align_narration_to_scenes(stored, scenes_before, "English")
+            self.assertIn("picture scenes", str(raised.exception))
+
+            matching = os.path.join(folder, "en_full.docx")
+            _narration_docx(matching, [
+                ("The Tiber moves slowly past the huts at dawn.", ""),
+                ("Inside the hut the fire is low and nobody speaks.", ""),
+            ])
+            matching_text = add_narration(project, "English", matching)
+            self.assertEqual(load_scenes(project), scenes_before)
+            spoken = align_narration_to_scenes(matching_text, scenes_before, "English")
+            self.assertEqual([row["id"] for row in spoken], [1, 2])
+            self.assertIn("Tiber", spoken[0]["text"])
+            self.assertIn("Tevere", load_scenes(project)[0]["text"])
+
+            legacy = os.path.join(folder, "late.doc")
+            Path(legacy).write_bytes(b"not a docx")
+            with self.assertRaises(ValueError):
+                add_narration(project, "English", legacy)
+            self.assertIn(
+                "Inside the hut",
+                Path(narration_path(project, "English")).read_text(encoding="utf-8"),
+            )
+
+    def test_english_only_word_file_becomes_the_split_language(self):
+        with tempfile.TemporaryDirectory() as folder:
+            english = os.path.join(folder, "rome.docx")
+            _narration_docx(english, [
+                ("The river is quiet and the bank is empty at dawn.", ""),
+            ])
+            project = create_episode(folder, "English only", english_docx=english)
+            self.assertEqual(Path(narration_path(project, "Italian")).read_text(encoding="utf-8"), "")
+            scenes = load_scenes(project)
+            self.assertEqual(len(scenes), 1)
+            self.assertIn("river", scenes[0]["text"])
+            self.assertEqual(load_episode_settings(project)["language"], "English")
+            self.assertEqual(load_episode_settings(project)["scenes_language"], "English")
+
+    def test_unequal_word_files_still_create_the_episode(self):
+        with tempfile.TemporaryDirectory() as folder:
+            italian = os.path.join(folder, "it.docx")
+            english = os.path.join(folder, "en.docx")
+            _narration_docx(italian, [
+                ("Prima scena sul Tevere all'alba, con le capanne lontane.", ""),
+                ("Seconda scena dentro la capanna, con il fuoco basso.", ""),
+            ])
+            _narration_docx(english, [
+                ("One English scene is enough to keep the other language on disk.", ""),
+            ])
+            project = create_episode(
+                folder, "Conteggi diversi",
+                italian_docx=italian,
+                english_docx=english,
+            )
+            self.assertEqual([scene["id"] for scene in load_scenes(project)], [1, 2])
+            english_text = Path(narration_path(project, "English")).read_text(encoding="utf-8")
+            self.assertIn("One English scene", english_text)
+
+    def test_legacy_doc_and_heading_only_do_not_create_a_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            legacy = os.path.join(folder, "old.doc")
+            Path(legacy).write_bytes(b"not a docx")
+            italian = os.path.join(folder, "it.docx")
+            _narration_docx(italian, [
+                ("Il Tevere scorre piano davanti alle capanne all'alba.", ""),
+            ])
+            with self.assertRaises(ValueError) as raised:
+                create_episode(
+                    folder, "Da non creare",
+                    italian_docx=italian,
+                    english_docx=legacy,
+                )
+            self.assertIn(".docx", str(raised.exception))
+            self.assertFalse(os.path.exists(os.path.join(folder, "Da non creare")))
+
+            headings = os.path.join(folder, "headings.docx")
+            _narration_docx(headings, [
+                ("Solo un titolo", "Title"),
+                ("Capitolo", "Heading 1"),
+            ])
+            with self.assertRaises(ValueError):
+                create_episode(folder, "Solo titoli", italian_docx=headings)
+            self.assertFalse(os.path.exists(os.path.join(folder, "Solo titoli")))
+
 
 class VoiceChunkTests(unittest.TestCase):
     def test_sentence_and_paragraph_pauses(self):
@@ -183,17 +415,42 @@ class VoiceChunkTests(unittest.TestCase):
 class SleepyPanelTests(unittest.TestCase):
     def test_panel_has_only_the_chapter_tabs(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication, QPushButton
         from ui.pipeline_controller import PipelineController
-        from ui.sleepy_panel import SleepyPanel
+        from ui.sleepy_panel import SleepyPanel, _EpisodeIntakeDialog
 
         app = QApplication.instance() or QApplication([])
         panel = SleepyPanel(PipelineController())
+        dialog = _EpisodeIntakeDialog(panel, profiles={
+            "rome_softly_ch01": "Chapter one lock.",
+            "rome_softly_ch02": "Chapter two lock.",
+        })
+        self.assertEqual(dialog.windowTitle(), "Create Sleepy episode")
+        self.assertEqual(dialog.values()[:3], ("", "", ""))
+        self.assertEqual(dialog.values()[3], "rome_softly_ch01")
+        from PyQt6.QtWidgets import QLabel
+        dialog_labels = [widget.text() for widget in dialog.findChildren(QLabel)]
+        self.assertNotIn("English narration", dialog_labels)
+        self.assertIn("Chapter lock for this episode", dialog_labels)
+        dialog._profile.setCurrentIndex(1)
+        self.assertEqual(dialog.values()[3], "rome_softly_ch02")
+        self.assertIn("Chapter two lock.", dialog._lock.toPlainText())
+        dialog.deleteLater()
+        page_labels = [widget.text() for widget in panel.findChildren(QLabel)]
+        self.assertIn("Chapter lock for this episode", page_labels)
+        self.assertNotIn("Chapter profile", page_labels)
         titles = [panel.inner_tabs.tabText(index) for index in range(panel.inner_tabs.count())]
         self.assertEqual(titles, ["Episode", "Script", "Stills", "Voice", "Final"])
         window_source = Path("ui/main_window.py").read_text(encoding="utf-8")
         self.assertIn('self.mode_tabs.addTab(self.tabs, "Main")', window_source)
         self.assertIn('self.mode_tabs.addTab(self.sleepy_panel, "Sleepy")', window_source)
+        panel_source = Path("ui/sleepy_panel.py").read_text(encoding="utf-8")
+        self.assertIn("italian_docx", panel_source)
+        self.assertIn("profile_key", panel_source)
+        self.assertNotIn("english_docx", panel_source)
+        self.assertNotIn("QInputDialog", panel_source)
+        labels = [button.text() for button in panel.findChildren(QPushButton)]
+        self.assertIn("Add English Word", labels)
         panel.deleteLater()
         app.processEvents()
 

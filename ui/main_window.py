@@ -7871,6 +7871,8 @@ class MainWindow(QMainWindow):
         self._tts_preview_thread.start()
 
     def _relaunch(self) -> None:
+        if hasattr(self, "sleepy_panel"):
+            self.sleepy_panel.shutdown()
         self.controller.cancel_pipeline()
         if os.environ.get("VID_COMFY_LAUNCHER") == "1":
             QCoreApplication.exit(75)

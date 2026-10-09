@@ -6,6 +6,7 @@ Sleepy paints one HiDream still per beat and does not write Main's settings.
 from __future__ import annotations
 
 import os
+import shutil
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 import yaml
@@ -170,14 +171,126 @@ def is_sleepy_project(project: str) -> bool:
     return str(read_manifest(project).get("environment") or "") == "sleepy"
 
 
-def create_episode(parent_dir: str, name: str) -> str:
-    """Create a Sleepy episode folder without touching the Main project."""
-    cleaned = str(name or "").strip()
-    if not cleaned or any(ch in cleaned for ch in '<>:"/\\|?*'):
-        raise ValueError("Episode name is empty or has illegal characters.")
+def _paragraph_is_heading(paragraph) -> bool:
+    """Skip chapter titles. Body paragraphs are the scenes."""
+    style = getattr(paragraph, "style", None)
+    if style is None:
+        return False
+    style_id = str(getattr(style, "style_id", "") or "").replace(" ", "").lower()
+    name = str(getattr(style, "name", "") or "").strip().lower()
+    if style_id.startswith("heading") or style_id in {"title", "subtitle"}:
+        return True
+    if name.startswith("heading") or name.startswith("titolo"):
+        return True
+    if name in {"title", "subtitle", "sottotitolo"} or name.startswith("sottotitolo"):
+        return True
+    return False
+
+
+def read_docx_narration(path: str) -> str:
+    """Read a .docx into narration text: one body paragraph, then a blank line.
+
+    Headings and title styles are left out. Tables and headers are not read.
+    A legacy .doc file is refused so it is not mistaken for narration.
+    """
+    source = os.path.abspath(str(path or "").strip())
+    if not source or not os.path.isfile(source):
+        raise ValueError(f"Word file not found: {path}")
+    if os.path.splitext(source)[1].lower() != ".docx":
+        raise ValueError(
+            "Save the narration as a .docx file. Older .doc files are not read."
+        )
+    try:
+        from docx import Document
+    except ImportError as exc:
+        raise RuntimeError(
+            "python-docx is not installed. Run: pip install python-docx"
+        ) from exc
+    try:
+        document = Document(source)
+    except Exception as exc:
+        raise ValueError(f"Could not read the Word file: {source}") from exc
+
+    paragraphs = []
+    for paragraph in document.paragraphs:
+        if _paragraph_is_heading(paragraph):
+            continue
+        text = " ".join(str(paragraph.text or "").replace("\xa0", " ").split())
+        if text:
+            paragraphs.append(text)
+    if not paragraphs:
+        raise ValueError(
+            "The Word file has no narration paragraphs. "
+            "Headings are skipped. Put each scene in its own body paragraph."
+        )
+    return "\n\n".join(paragraphs) + "\n"
+
+
+def _require_scenes(text: str, language: str) -> None:
+    if text and not split_scenes(text):
+        raise ValueError(
+            f"The {language} Word file did not produce any scenes. "
+            "Use a body paragraph of at least a short sentence for each scene."
+        )
+
+
+# Windows folder names reject these characters.
+_FOLDER_FORBIDDEN = '<>:"/\\|?*'
+_RESERVED_FOLDER_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def episode_folder_name(name: str) -> str:
+    """Turn an episode title into a Windows folder name.
+
+    ``< > : " / \\ | ? *`` cannot appear in the folder. A colon becomes a
+    hyphen. Apostrophes, accents, commas, and periods are kept.
+    """
+    raw = " ".join(str(name or "").split())
+    if not raw:
+        raise ValueError("Type an episode name.")
+    pieces = []
+    for character in raw:
+        if character in _FOLDER_FORBIDDEN or ord(character) < 32:
+            pieces.append(" - " if character == ":" else " ")
+        else:
+            pieces.append(character)
+    folder = " ".join("".join(pieces).split()).rstrip(" .")
+    if not folder:
+        raise ValueError(
+            "Type an episode name using letters or numbers. "
+            'A folder cannot contain < > : " / \\ | ? *'
+        )
+    if folder.upper() in _RESERVED_FOLDER_NAMES:
+        folder = f"{folder} episode"
+    return folder
+
+
+def create_episode(
+    parent_dir: str,
+    name: str,
+    italian_docx: str = "",
+    english_docx: str = "",
+    profile_key: str = "",
+) -> str:
+    """Create a Sleepy episode folder without touching the Main project.
+
+    The Italian Word file is the narration that starts the episode. English
+    can be stored as well, but picture scenes come from Italian when that
+    text is present. ``profile_key`` is saved on this episode only.
+    """
+    cleaned = episode_folder_name(name)
     project = os.path.abspath(os.path.join(parent_dir, cleaned))
     if os.path.exists(project):
         raise FileExistsError(f"Episode already exists: {project}")
+
+    italian_text = read_docx_narration(italian_docx) if str(italian_docx or "").strip() else ""
+    english_text = read_docx_narration(english_docx) if str(english_docx or "").strip() else ""
+    _require_scenes(italian_text, "Italian")
+    _require_scenes(english_text, "English")
 
     os.makedirs(os.path.join(project, "input"), exist_ok=True)
     ProjectLayout(project).ensure_dirs()
@@ -189,13 +302,28 @@ def create_episode(parent_dir: str, name: str) -> str:
         "input_dir": "input",
         "output_dir": "output",
     })
-    for language in LANGUAGES:
-        path = narration_path(project, language)
-        if not os.path.exists(path):
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write("")
-    save_episode_settings(project, dict(DEFAULT_EPISODE))
+    write_text(narration_path(project, "Italian"), italian_text)
+    write_text(narration_path(project, "English"), english_text)
+    if str(italian_docx or "").strip():
+        shutil.copy2(
+            os.path.abspath(italian_docx),
+            os.path.join(project, "input", "narration_it.docx"),
+        )
+    if str(english_docx or "").strip():
+        shutil.copy2(
+            os.path.abspath(english_docx),
+            os.path.join(project, "input", "narration_en.docx"),
+        )
+    settings = dict(DEFAULT_EPISODE)
+    chosen_profile = str(profile_key or "").strip()
+    if chosen_profile:
+        settings["profile_key"] = chosen_profile
+    save_episode_settings(project, settings)
     save_stills(project, [])
+    if italian_text:
+        publish_scenes(project, "Italian", italian_text)
+    elif english_text:
+        publish_scenes(project, "English", english_text)
     return project
 
 
@@ -282,6 +410,49 @@ def split_scenes(text: str) -> List[dict]:
         text or "",
         method="paragraph",
     )
+
+
+def add_narration(project: str, language: str, docx_path: str) -> str:
+    """Store one language from a Word file on an episode that already exists.
+
+    Picture scenes, stills, and the other language stay as they are.
+    Italian is the narration that owns those scenes once it has been split.
+    """
+    if not is_sleepy_project(project):
+        raise ValueError(
+            "That folder is not a Sleepy episode. "
+            "Create one here. Main projects stay on the Main tab."
+        )
+    language = normalize_language(language)
+    text = read_docx_narration(docx_path)
+    _require_scenes(text, language)
+    write_text(narration_path(project, language), text)
+    shutil.copy2(
+        os.path.abspath(docx_path),
+        os.path.join(project, "input", f"narration_{language_suffix(language)}.docx"),
+    )
+    return text
+
+
+def align_narration_to_scenes(
+    text: str,
+    picture_scenes: Sequence[dict],
+    language: str,
+) -> List[dict]:
+    """Speak a later language on the scene ids the pictures already use."""
+    language = normalize_language(language)
+    spoken = split_scenes(text)
+    pictures = list(picture_scenes or [])
+    if len(spoken) != len(pictures):
+        raise ValueError(
+            f"{language} has {len(spoken)} scenes and the episode has "
+            f"{len(pictures)} picture scenes. The pictures stay on the original "
+            "scenes. Match the paragraph count before speaking this language."
+        )
+    return [
+        {"id": int(picture["id"]), "text": str(spoken_row["text"])}
+        for picture, spoken_row in zip(pictures, spoken)
+    ]
 
 
 def scene_counts(italian_text: str, english_text: str) -> Tuple[int, int]:
