@@ -336,7 +336,10 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(_ctrl_s)
 
         def _ctrl_b():
-            if self.mode_tabs.tabText(self.mode_tabs.currentIndex()) != "Main":
+            if self.mode_tabs.tabText(self.mode_tabs.currentIndex()) == "Sleepy":
+                titles = self.sleepy_panel.inner_tabs
+                if titles.tabText(titles.currentIndex()) == "Dubbing":
+                    self.sleepy_panel._dubbing.goto_next_bookmark()
                 return
             tab_title = self.tabs.tabText(self.tabs.currentIndex())
             if tab_title == "Lightbox":

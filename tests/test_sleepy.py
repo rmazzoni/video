@@ -654,7 +654,7 @@ class SleepyPanelTests(unittest.TestCase):
         titles = [panel.inner_tabs.tabText(index) for index in range(panel.inner_tabs.count())]
         self.assertEqual(
             titles,
-            ["Episode", "Script", "Stills", "Lightbox", "Voice", "Final"],
+            ["Episode", "Script", "Dubbing", "Stills", "Lightbox", "Voice", "Final"],
         )
         window_source = Path("ui/main_window.py").read_text(encoding="utf-8")
         self.assertIn('self.mode_tabs.addTab(self.tabs, "Main")', window_source)
@@ -761,6 +761,86 @@ class SleepyPanelTests(unittest.TestCase):
             app.processEvents()
             self.assertFalse(closed.isVisible())
             closed.deleteLater()
+        panel.deleteLater()
+        app.processEvents()
+
+    def test_dubbing_tab_has_the_main_commands(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        import yaml
+        from PyQt6.QtWidgets import QApplication, QPushButton
+        from ui.pipeline_controller import PipelineController
+        from ui.sleepy_dubbing import rate_percent, speed_badge_text
+        from ui.sleepy_panel import SleepyPanel
+
+        self.assertEqual(rate_percent(1.0), 0)
+        self.assertEqual(rate_percent(0.95), -5)
+        self.assertEqual(speed_badge_text(None, False), "—")
+        self.assertEqual(speed_badge_text(-5, True), "0.95x")
+
+        app = QApplication.instance() or QApplication([])
+        panel = SleepyPanel(PipelineController())
+        dubbing = panel._dubbing
+        labels = [button.text() for button in dubbing.findChildren(QPushButton)]
+        for command in (
+            "Load from Scenes",
+            "💾 Save Dubbing",
+            "⏩ Dub All",
+            "↻ Redub All",
+            "▶ Play",
+            "📄 Export Word",
+            "🔍 Find",
+            "🇮🇹 IT",
+            "🇬🇧 EN",
+        ):
+            self.assertIn(command, labels)
+        self.assertFalse(dubbing._find_panel.isVisible())
+        self.assertEqual(dubbing._speed.value(), 1.0)
+        self.assertEqual(dubbing._voice.itemText(0), "Italian")
+        self.assertEqual(dubbing._voice.itemText(1), "English")
+        with tempfile.TemporaryDirectory() as folder:
+            os.makedirs(os.path.join(folder, "output"))
+            Path(os.path.join(folder, "output", "scenes.yaml")).write_text(
+                "scenes:\n"
+                "- {id: 1, text: The river was quiet., caption: Tiber}\n"
+                "- {id: 2, text: Rome slept., caption: Night}\n",
+                encoding="utf-8",
+            )
+            panel._project = folder
+            dubbing.load_from_scenes()
+            app.processEvents()
+            self.assertEqual(set(dubbing._editors), {1, 2})
+            self.assertEqual(dubbing._editors[1].toPlainText(), "The river was quiet.")
+            self.assertFalse(dubbing._dirty[1])
+            card_buttons = [
+                button.text() for button in dubbing._cards[1].findChildren(QPushButton)
+            ]
+            self.assertIn("DeepL", card_buttons)
+            self.assertIn("🔖", card_buttons)
+            self.assertIn("Images 0 / 0", dubbing._image_labels[1].text())
+            dubbing._editors[1].setPlainText("The river moved slowly.")
+            self.assertTrue(dubbing._dirty[1])
+            self.assertTrue(dubbing.save(quiet=True))
+            saved = yaml.safe_load(
+                Path(os.path.join(folder, "output", "dubbing.yaml")).read_text(encoding="utf-8")
+            )
+            self.assertEqual(saved[1]["dubbed"], "The river moved slowly.")
+            self.assertEqual(saved[1]["original"], "The river was quiet.")
+            dubbing._open_find()
+            dubbing._find_input.setText("Rome")
+            dubbing.find_next()
+            self.assertEqual(dubbing._editors[2].textCursor().selectedText(), "Rome")
+            dubbing._replace_input.setText("The city")
+            dubbing.replace_all()
+            self.assertEqual(dubbing._editors[2].toPlainText(), "The city slept.")
+            dubbing.set_spell_language("en")
+            self.assertEqual(dubbing._spell_lang, "en")
+            audio = os.path.join(folder, "output", "audio")
+            os.makedirs(audio, exist_ok=True)
+            Path(os.path.join(audio, "scene_001.mp3")).write_bytes(b"")
+            dubbing._dirty[1] = False
+            dubbing._voice.setCurrentIndex(1)
+            self.assertEqual(panel._language_value(), "English")
+            self.assertTrue(dubbing._dirty[1])
         panel.deleteLater()
         app.processEvents()
 

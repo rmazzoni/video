@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 )
 
 from narration.qwen_voice import VoiceCancelled, VoiceRun, synthesize_scenes, validate_request
+from ui.sleepy_dubbing import SleepyDubbingTab
 from prompts.project_profiles import load_project_profiles
 from sleepy.chapter import (
     DEFAULT_PROFILE_KEY,
@@ -355,6 +356,7 @@ class SleepyPanel(QWidget):
         save_stills(self._project, self._stills)
         self._save_episode_from_form()
         self._save_voice_prefs()
+        self._dubbing.save(quiet=True)
         self._log("Saved.")
         self._status.setText("Saved")
 
@@ -362,11 +364,13 @@ class SleepyPanel(QWidget):
         self._then = []
         self._sleepy_stage = ""
         self._stop_voice()
+        self._dubbing.stop()
         if self._project:
             try:
                 self._store_prompt()
                 save_stills(self._project, self._stills)
                 self._save_script_file()
+                self._dubbing.save(quiet=True)
             except Exception:
                 pass
             self.controller.cancel_owned(self._project)
@@ -398,6 +402,8 @@ class SleepyPanel(QWidget):
         self.inner_tabs.tabBar().setObjectName("sleepyTabBar")
         self.inner_tabs.addTab(self._build_episode_tab(), "Episode")
         self.inner_tabs.addTab(self._build_script_tab(), "Script")
+        self._dubbing = SleepyDubbingTab(self)
+        self.inner_tabs.addTab(self._dubbing, "Dubbing")
         self.inner_tabs.addTab(self._build_stills_tab(), "Stills")
         self.inner_tabs.addTab(self._build_lightbox_tab(), "Lightbox")
         self.inner_tabs.addTab(self._build_voice_tab(), "Voice")
@@ -722,6 +728,7 @@ class SleepyPanel(QWidget):
         self._busy = busy
         for button in self._action_buttons:
             button.setEnabled(not busy)
+        self._dubbing.set_busy(busy)
         self._script.setReadOnly(busy)
         self._prompt.setReadOnly(busy)
         self._language.setEnabled(not busy)
@@ -815,6 +822,7 @@ class SleepyPanel(QWidget):
         self._shown_language = new_language
         self._load_script()
         self._save_episode_from_form()
+        self._dubbing.sync_language(new_language)
         self._update_counts()
 
     def _texts_for_counts(self) -> tuple:
@@ -996,6 +1004,7 @@ class SleepyPanel(QWidget):
             self._store_prompt()
             save_stills(self._project, self._stills)
             self._save_episode_from_form()
+            self._dubbing.save(quiet=True)
         self._project = path
         self._prefs = remember_project(self._prefs, path)
         save_app_prefs(self._config_dir, self._prefs)
@@ -1031,6 +1040,8 @@ class SleepyPanel(QWidget):
         self._refresh_profile_preview()
         self._update_counts()
         self._rebuild_still_list()
+        self._dubbing.sync_language(self._language_value())
+        self._dubbing.note_project_changed()
         if announce:
             self._log(f"Episode: {path}")
             self._status.setText("Episode open")
@@ -1211,8 +1222,11 @@ class SleepyPanel(QWidget):
         )
 
     def _on_inner_tab(self, index: int) -> None:
-        if self.inner_tabs.tabText(index) == "Lightbox":
+        title = self.inner_tabs.tabText(index)
+        if title == "Lightbox":
             self._refresh_lightbox()
+        elif title == "Dubbing":
+            self._dubbing.ensure_loaded()
 
     def _discard_still_file(self, scene_id: int, beat: int) -> None:
         """Remove the painted file for a still that left the list."""

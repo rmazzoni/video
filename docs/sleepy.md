@@ -60,12 +60,13 @@ Episode files, under the episode folder:
 | `output/lightbox/scene_NNN_hidream_bNN_v1.png` | The painted file |
 | `output/lightbox_selections.yaml` | Files the final video will use |
 | `output/audio/scene_NNN.mp3` | One voice file per scene, plus `timings.yaml` |
+| `output/dubbing.yaml` | Spoken lines edited on the Dubbing tab. Audio is still the scene mp3 |
 
 Reopening the episode that is already open does not reload. That keeps unsaved script text. Close VID and open it again after a code change. A window that is already open keeps the old list in memory and will write it back if you Split or switch stills in that window.
 
-## 4. The six tabs
+## 4. The seven tabs
 
-Language at the top is Italian or English. It chooses the script on screen and the language the clone will speak. Stills stay English either way.
+Language at the top is Italian or English. It chooses the script on screen and the language the clone will speak. Stills stay English either way. The Dubbing tab’s Voice box follows the same choice.
 
 **Episode.** Create or open an episode. The create dialog asks for a name, a parent folder, the Italian Word file, and a chapter lock. English is not required at creation. The lock is stored on that episode only (`profile_key` in `sleepy_episode.yaml`). It is not a global switch. The only lock shipped today is `rome_softly_ch01`. The default seed is 42. Recent episodes: 8.
 
@@ -76,6 +77,8 @@ A colon in the title becomes ` - ` in the folder name. `< > " / \ | ? *` and con
 Update Italian Word and Add English Word read a `.docx` only. A `.doc` is refused before any folder is touched. Headings, titles, and subtitles are skipped (English and Italian style names). Tables and headers are not read. Non-breaking spaces collapse. Body paragraphs are joined with a blank line. The Word file is copied into `input/`. Neither button republishes scenes, stills, or the other language. The status line says to split again when the Italian image count and the scenes on disk differ.
 
 Split is what moves the pictures. It writes `scenes.yaml`, fills empty still prompts from the script, and keeps a prompt already typed for that scene id. If English is showing and Italian already owns the pictures, Split saves the English text and leaves the picture scenes on Italian. Speaking English later requires the same scene count.
+
+**Dubbing.** The same commands as Main’s Dubbing tab: Load from Scenes, Save Dubbing, Dub All, Redub All, Play, Speed, Voice, Export Word, Find / Replace, Italian and English spell check, DeepL, a bookmark, and a per-scene play button. Each card shows the scene narration and an editable spoken line. Save writes `output/dubbing.yaml`. Dub All, Redub All, and the scene play button speak with the Qwen clone, then apply Speed, and write `output/audio/scene_NNN.mp3`. The Voice box is Italian or English for that clone. It is not an Edge voice. Load from Scenes again after Split when the scene list has changed.
 
 **Stills.** Headed “Final stills”. One row per still: `Scene NNN · still N`. The scene narration is read-only. The English prompt is editable. Generate this still paints the prompt in the box and shows it on the right. Generate final stills paints every still that already has a prompt and skips the empty ones. Replace existing stills applies to the batch only. Generate this still always replaces that one file. Add still adds another beat for the same scene, sharing the narration. Remove still, when it is an extra beat, deletes the row and deletes the PNG. The last beat of a scene is cleared, not removed.
 
